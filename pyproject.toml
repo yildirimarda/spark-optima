@@ -1,0 +1,90 @@
+[tool.poetry]
+name = "spark-optima"
+version = "0.1.0"
+description = "Intelligent Apache Spark configuration optimization tool"
+authors = ["Spark Optima Contributors"]
+readme = "README.md"
+license = "Apache-2.0"
+keywords = ["spark", "optimization", "configuration", "big-data", "ml"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Systems Administration",
+]
+packages = [
+    {include = "spark_optima", from = "src"},
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+typer = "^0.15.0"
+rich = "^13.9.0"
+pydantic = "^2.10.0,<3.0.0"
+pyyaml = "^6.0.0"
+pandas = "^2.2.0"
+pyarrow = "^17.0.0"
+optuna = "^4.1.0"
+fastapi = "^0.115.0"
+uvicorn = "^0.34.0"
+astor = "^0.8.1"
+psutil = "^6.1.0"
+numpy = "^2.0.0"
+tqdm = "^4.67.0"
+click = "^8.1.0"
+importlib-resources = "^6.5.0"
+pyspark = "^4.1.1"
+joblib = "^1.4.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-cov = "^6.0.0"
+pytest-asyncio = "^0.25.0"
+pytest-xdist = "^3.6.0"
+ruff = "^0.8.0"
+mypy = "^1.14.0"
+pre-commit = "^4.2.0"
+mkdocs = "^1.6.0"
+mkdocs-material = "^9.5.0"
+bandit = "^1.8.0"
+
+[tool.poetry.scripts]
+spark-optima-api = "spark_optima.api.main:main"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",  # pycodestyle + pyflakes
+    "I",             # isort
+    "N",             # pep8-naming
+    "UP",            # pyupgrade
+    "B",             # flake8-bugbear
+    "SIM",           # flake8-simplify
+    "TCH",           # flake8-type-checking
+]
+ignore = ["E501"]  # line too long handled by formatter
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra -q --strict-markers --tb=short"
+testpaths = ["tests"]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow running tests",
+]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

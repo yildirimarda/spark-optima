@@ -1,0 +1,261 @@
+# Copyright 2024 Spark Optima Contributors
+# Licensed under the Apache License, Version 2.0
+
+# Default values for spark-optima.
+# This is a YAML-formatted file.
+
+# =============================================================================
+# Global Settings
+# =============================================================================
+
+# Image configuration
+image:
+  repository: spark-optima
+  tag: "latest"
+  pullPolicy: Always
+  # pullSecrets:
+  #   - name: my-registry-secret
+
+# =============================================================================
+# API Deployment
+# =============================================================================
+api:
+  enabled: true
+  replicaCount: 2
+  
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: ""
+  
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+    annotations: {}
+  
+  ingress:
+    enabled: false
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: /
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/rate-limit: "10"
+    hosts:
+      - host: spark-optima.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: spark-optima-tls
+        hosts:
+          - spark-optima.local
+  
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  
+  # Health probes
+  livenessProbe:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  
+  readinessProbe:
+    enabled: true
+    path: /health/ready
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  
+  startupProbe:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 12
+  
+  # Security context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop:
+        - ALL
+  
+  # Node selector, affinity, tolerations
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+  topologySpreadConstraints: []
+
+# =============================================================================
+# CLI Jobs
+# =============================================================================
+cli:
+  enabled: true
+  
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: ""
+  
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  
+  # CronJob for scheduled runs
+  cronjob:
+    enabled: false
+    schedule: "0 2 * * *"  # Daily at 2 AM
+    concurrencyPolicy: Forbid
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+
+# =============================================================================
+# Storage
+# =============================================================================
+persistence:
+  data:
+    enabled: true
+    storageClass: "standard"
+    accessMode: ReadWriteMany
+    size: 10Gi
+    annotations: {}
+  
+  logs:
+    enabled: true
+    storageClass: "standard"
+    accessMode: ReadWriteOnce
+    size: 5Gi
+    annotations: {}
+
+# =============================================================================
+# Configuration
+# =============================================================================
+config:
+  # Application settings
+  env: production
+  logLevel: INFO
+  
+  # Optimization settings
+  defaultPlatform: local
+  defaultSparkVersion: "3.5.0"
+  maxTrials: 50
+  timeoutMinutes: 30
+  
+  # Feature flags
+  enableCache: true
+  enableMetrics: true
+  enableProfiling: false
+  
+  # Extra environment variables
+  extraEnv: {}
+  #   MY_VAR: value
+  
+  # Extra configmap data
+  extraConfig: {}
+
+# =============================================================================
+# Monitoring
+# =============================================================================
+monitoring:
+  enabled: true
+  
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    namespace: ""
+    labels:
+      prometheus.io/scrape: "true"
+  
+  prometheusRule:
+    enabled: true
+    labels:
+      prometheus.io/scrape: "true"
+    rules: []
+
+# =============================================================================
+# Autoscaling
+# =============================================================================
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  behavior: {}
+
+# =============================================================================
+# Pod Disruption Budget
+# =============================================================================
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  # maxUnavailable: 1
+
+# =============================================================================
+# Network Policy
+# =============================================================================
+networkPolicy:
+  enabled: true
+  ingress:
+    enabled: true
+    # Allow from specific namespaces
+    allowedNamespaces:
+      - ingress-nginx
+      - monitoring
+  egress:
+    enabled: true
+
+# =============================================================================
+# Resource Quota
+# =============================================================================
+resourceQuota:
+  enabled: true
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    persistentvolumeclaims: "2"
+    pods: "10"
+    services: "5"
+
+# =============================================================================
+# Service Account
+# =============================================================================
+serviceAccount:
+  api:
+    create: true
+    name: ""
+    annotations: {}
+  cli:
+    create: true
+    name: ""
+    annotations: {}
+
+# =============================================================================
+# RBAC
+# =============================================================================
+rbac:
+  create: true

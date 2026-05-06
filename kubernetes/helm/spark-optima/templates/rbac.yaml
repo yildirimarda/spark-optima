@@ -1,0 +1,84 @@
+{{/* Copyright 2024 Spark Optima Contributors */}}
+{{/* Licensed under the Apache License, Version 2.0 */}}
+
+{{- if .Values.rbac.create }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "spark-optima.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spark-optima.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["endpoints", "services"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "spark-optima.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spark-optima.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rbac
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "spark-optima.api.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "spark-optima.fullname" . }}-api
+  apiGroup: rbac.authorization.k8s.io
+
+{{- if .Values.cli.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "spark-optima.fullname" . }}-cli
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spark-optima.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/subcomponent: cli
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "spark-optima.fullname" . }}-cli
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spark-optima.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/subcomponent: cli
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "spark-optima.cli.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "spark-optima.fullname" . }}-cli
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}

@@ -1,0 +1,94 @@
+# Copyright 2024 Spark Optima Contributors
+# Licensed under the Apache License, Version 2.0
+
+# Spark Optima ConfigMap
+# Non-sensitive configuration for Spark Optima application
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-optima-config
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: config
+    app.kubernetes.io/part-of: spark-optima
+data:
+  # Application settings
+  SPARK_OPTIMA_ENV: "production"
+  SPARK_OPTIMA_LOG_LEVEL: "INFO"
+  SPARK_OPTIMA_API_HOST: "0.0.0.0"
+  SPARK_OPTIMA_API_PORT: "8000"
+  
+  # Optimization settings
+  SPARK_OPTIMA_DEFAULT_PLATFORM: "local"
+  SPARK_OPTIMA_DEFAULT_SPARK_VERSION: "3.5.0"
+  SPARK_OPTIMA_MAX_TRIALS: "50"
+  SPARK_OPTIMA_TIMEOUT_MINUTES: "30"
+  
+  # Paths
+  SPARK_OPTIMA_CONFIG_PATH: "/app/config"
+  SPARK_OPTIMA_DATA_PATH: "/app/data"
+  SPARK_OPTIMA_LOG_PATH: "/app/logs"
+  
+  # Feature flags
+  SPARK_OPTIMA_ENABLE_CACHE: "true"
+  SPARK_OPTIMA_ENABLE_METRICS: "true"
+  SPARK_OPTIMA_ENABLE_PROFILING: "false"
+
+---
+# ConfigMap for CLI Job template
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-optima-cli-template
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: config
+    app.kubernetes.io/part-of: spark-optima
+    app.kubernetes.io/subcomponent: cli
+data:
+  # Template for CLI job execution
+  job-template.yaml: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      generateName: spark-optima-cli-
+      namespace: spark-optima
+      labels:
+        app.kubernetes.io/name: spark-optima
+        app.kubernetes.io/component: cli-job
+        app.kubernetes.io/part-of: spark-optima
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: spark-optima
+            app.kubernetes.io/component: cli-job
+        spec:
+          serviceAccountName: spark-optima-cli
+          restartPolicy: OnFailure
+          containers:
+            - name: spark-optima-cli
+              image: spark-optima:latest
+              command: ["python", "-m", "spark_optima.cli.main"]
+              resources:
+                requests:
+                  cpu: 500m
+                  memory: 1Gi
+                limits:
+                  cpu: 1000m
+                  memory: 2Gi
+              volumeMounts:
+                - name: data
+                  mountPath: /app/data
+                - name: config
+                  mountPath: /app/config
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: spark-optima-data
+            - name: config
+              configMap:
+                name: spark-optima-config

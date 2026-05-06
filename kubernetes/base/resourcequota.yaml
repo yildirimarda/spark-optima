@@ -1,0 +1,38 @@
+# Copyright 2024 Spark Optima Contributors
+# Licensed under the Apache License, Version 2.0
+
+# Spark Optima ResourceQuota
+# Limits total resource consumption in the namespace
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: spark-optima-quota
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: resourcequota
+    app.kubernetes.io/part-of: spark-optima
+spec:
+  hard:
+    # Compute resources
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    
+    # Storage
+    persistentvolumeclaims: "2"
+    requests.storage: 20Gi
+    
+    # Object counts
+    pods: "10"
+    services: "5"
+    replicationcontrollers: "0"
+    resourcequotas: "1"
+    secrets: "5"
+    configmaps: "5"
+    
+    # Job limits
+    count/jobs.batch: "20"
+    count/cronjobs.batch: "5"

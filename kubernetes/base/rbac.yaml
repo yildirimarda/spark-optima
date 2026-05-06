@@ -1,0 +1,96 @@
+# Copyright 2024 Spark Optima Contributors
+# Licensed under the Apache License, Version 2.0
+
+# Spark Optima RBAC Configuration
+# Implements least-privilege access control
+
+# Role for Spark Optima API - limited to reading config and managing its own resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spark-optima-api
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: spark-optima
+rules:
+  # Read ConfigMaps and Secrets for configuration
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+  # Read pod information for health checks
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Read endpoints for service discovery
+  - apiGroups: [""]
+    resources: ["endpoints", "services"]
+    verbs: ["get", "list", "watch"]
+
+---
+# Role for Spark Optima CLI Jobs - can create jobs and read config
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spark-optima-cli
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: spark-optima
+    app.kubernetes.io/subcomponent: cli
+rules:
+  # Read ConfigMaps for configuration
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list"]
+  # Manage Jobs for CLI execution
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Read pods for job monitoring
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+
+---
+# RoleBinding for API ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spark-optima-api
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: spark-optima
+subjects:
+  - kind: ServiceAccount
+    name: spark-optima
+    namespace: spark-optima
+roleRef:
+  kind: Role
+  name: spark-optima-api
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# RoleBinding for CLI ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spark-optima-cli
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: spark-optima
+    app.kubernetes.io/subcomponent: cli
+subjects:
+  - kind: ServiceAccount
+    name: spark-optima-cli
+    namespace: spark-optima
+roleRef:
+  kind: Role
+  name: spark-optima-cli
+  apiGroup: rbac.authorization.k8s.io

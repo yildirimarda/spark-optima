@@ -1,0 +1,121 @@
+# Copyright 2024 Spark Optima Contributors
+# Licensed under the Apache License, Version 2.0
+
+# Spark Optima ServiceMonitor
+# Prometheus Operator ServiceMonitor for metrics collection
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: spark-optima-api
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: spark-optima
+    prometheus.io/scrape: "true"
+  annotations:
+    description: "ServiceMonitor for Spark Optima API metrics"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spark-optima
+      app.kubernetes.io/component: api
+  
+  namespaceSelector:
+    matchNames:
+      - spark-optima
+  
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      honorLabels: true
+      
+      # Relabel configurations
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+      
+      # Metric relabeling
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: 'go_.*'  # Drop Go runtime metrics to reduce cardinality
+          action: drop
+
+---
+# PrometheusRule for alerting
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: spark-optima-alerts
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: spark-optima
+    prometheus.io/scrape: "true"
+  annotations:
+    description: "Prometheus alerting rules for Spark Optima"
+spec:
+  groups:
+    - name: spark-optima
+      rules:
+        # High error rate alert
+        - alert: SparkOptimaHighErrorRate
+          expr: |
+            (
+              sum(rate(http_requests_total{namespace="spark-optima",status=~"5.."}[5m]))
+              /
+              sum(rate(http_requests_total{namespace="spark-optima"}[5m]))
+            ) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High error rate in Spark Optima API"
+            description: "Error rate is above 10% for more than 5 minutes"
+        
+        # High latency alert
+        - alert: SparkOptimaHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(http_request_duration_seconds_bucket{namespace="spark-optima"}[5m])) by (le)
+            ) > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High latency in Spark Optima API"
+            description: "95th percentile latency is above 5 seconds"
+        
+        # Pod crash loop alert
+        - alert: SparkOptimaPodCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total{
+              namespace="spark-optima",
+              container="api"
+            }[10m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Spark Optima API pod is crash looping"
+            description: "Pod {{ $labels.pod }} is restarting frequently"
+        
+        # Low replica count alert
+        - alert: SparkOptimaLowReplicas
+          expr: |
+            kube_deployment_status_replicas_available{
+              namespace="spark-optima",
+              deployment="spark-optima-api"
+            } < 2
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Spark Optima API has low replica count"
+            description: "Only {{ $value }} replicas available, expected at least 2"

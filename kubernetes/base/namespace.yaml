@@ -1,0 +1,17 @@
+# Copyright 2024 Spark Optima Contributors
+# Licensed under the Apache License, Version 2.0
+
+# Spark Optima Kubernetes Namespace
+# Creates an isolated namespace for all Spark Optima resources
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: namespace
+    app.kubernetes.io/part-of: spark-optima
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    description: "Namespace for Spark Optima - Intelligent Spark Configuration Optimization Tool"

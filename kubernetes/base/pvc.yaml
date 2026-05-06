@@ -1,0 +1,46 @@
+# Copyright 2024 Spark Optima Contributors
+# Licensed under the Apache License, Version 2.0
+
+# Spark Optima PersistentVolumeClaim
+# Storage for optimization results, cache, and logs
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spark-optima-data
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: spark-optima
+  annotations:
+    description: "Persistent storage for Spark Optima data and optimization results"
+spec:
+  accessModes:
+    - ReadWriteMany  # Allow multiple pods to read, one to write
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard  # Adjust based on your cluster's storage classes
+  
+---
+# PVC for logs (optional - separate for log rotation)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spark-optima-logs
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: spark-optima
+    app.kubernetes.io/subcomponent: logs
+  annotations:
+    description: "Persistent storage for Spark Optima logs"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard

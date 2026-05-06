@@ -1,0 +1,22 @@
+{{/* Copyright 2024 Spark Optima Contributors */}}
+{{/* Licensed under the Apache License, Version 2.0 */}}
+
+{{- if and .Values.api.enabled .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "spark-optima.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spark-optima.api.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  {{- if .Values.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "spark-optima.api.selectorLabels" . | nindent 6 }}
+{{- end }}

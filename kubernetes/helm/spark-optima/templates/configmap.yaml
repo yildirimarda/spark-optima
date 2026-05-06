@@ -1,0 +1,41 @@
+{{/* Copyright 2024 Spark Optima Contributors */}}
+{{/* Licensed under the Apache License, Version 2.0 */}}
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "spark-optima.configMapName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spark-optima.labels" . | nindent 4 }}
+    app.kubernetes.io/component: config
+data:
+  # Application settings
+  SPARK_OPTIMA_ENV: {{ .Values.config.env | quote }}
+  SPARK_OPTIMA_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  SPARK_OPTIMA_API_HOST: "0.0.0.0"
+  SPARK_OPTIMA_API_PORT: "8000"
+  
+  # Optimization settings
+  SPARK_OPTIMA_DEFAULT_PLATFORM: {{ .Values.config.defaultPlatform | quote }}
+  SPARK_OPTIMA_DEFAULT_SPARK_VERSION: {{ .Values.config.defaultSparkVersion | quote }}
+  SPARK_OPTIMA_MAX_TRIALS: {{ .Values.config.maxTrials | quote }}
+  SPARK_OPTIMA_TIMEOUT_MINUTES: {{ .Values.config.timeoutMinutes | quote }}
+  
+  # Paths
+  SPARK_OPTIMA_CONFIG_PATH: "/app/config"
+  SPARK_OPTIMA_DATA_PATH: "/app/data"
+  SPARK_OPTIMA_LOG_PATH: "/app/logs"
+  
+  # Feature flags
+  SPARK_OPTIMA_ENABLE_CACHE: {{ .Values.config.enableCache | quote }}
+  SPARK_OPTIMA_ENABLE_METRICS: {{ .Values.config.enableMetrics | quote }}
+  SPARK_OPTIMA_ENABLE_PROFILING: {{ .Values.config.enableProfiling | quote }}
+  
+  # Extra config
+  {{- range $key, $value := .Values.config.extraEnv }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  {{- range $key, $value := .Values.config.extraConfig }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

@@ -1,0 +1,133 @@
+# Copyright 2024 Spark Optima Contributors
+# Licensed under the Apache License, Version 2.0
+
+# Spark Optima NetworkPolicy
+# Controls network traffic to/from Spark Optima pods
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spark-optima-api
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: networkpolicy
+    app.kubernetes.io/part-of: spark-optima
+  annotations:
+    description: "NetworkPolicy for Spark Optima API - restricts ingress traffic"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: spark-optima
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+    - Egress
+  
+  # Ingress rules
+  ingress:
+    # Allow HTTP traffic from ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+    
+    # Allow traffic from within the same namespace
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: spark-optima
+      ports:
+        - protocol: TCP
+          port: 8000
+    
+    # Allow Prometheus scraping
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+          podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 8000
+  
+  # Egress rules
+  egress:
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    
+    # Allow external HTTPS for API calls (AWS, Databricks, etc.)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    
+    # Allow HTTP for internal services
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 80
+
+---
+# NetworkPolicy for CLI Jobs
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spark-optima-cli
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: networkpolicy
+    app.kubernetes.io/part-of: spark-optima
+    app.kubernetes.io/subcomponent: cli
+  annotations:
+    description: "NetworkPolicy for Spark Optima CLI Jobs"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: spark-optima
+      app.kubernetes.io/component: cli-job
+  policyTypes:
+    - Egress
+  
+  # CLI jobs only need egress
+  egress:
+    # DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    
+    # External HTTPS for API calls
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443

@@ -1,0 +1,37 @@
+# Copyright 2024 Spark Optima Contributors
+# Licensed under the Apache License, Version 2.0
+
+# Spark Optima PodDisruptionBudget
+# Ensures availability during voluntary disruptions (node drains, upgrades)
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: spark-optima-api
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: pdb
+    app.kubernetes.io/part-of: spark-optima
+  annotations:
+    description: "PodDisruptionBudget for Spark Optima API - ensures availability during disruptions"
+spec:
+  minAvailable: 1  # At least 1 pod must be available
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spark-optima
+      app.kubernetes.io/component: api
+
+---
+# Alternative: Use maxUnavailable instead
+# apiVersion: policy/v1
+# kind: PodDisruptionBudget
+# metadata:
+#   name: spark-optima-api
+#   namespace: spark-optima
+# spec:
+#   maxUnavailable: 1  # At most 1 pod can be unavailable
+#   selector:
+#     matchLabels:
+#       app.kubernetes.io/name: spark-optima
+#       app.kubernetes.io/component: api

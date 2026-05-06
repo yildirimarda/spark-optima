@@ -1,0 +1,116 @@
+# Spark Optima - MkDocs Configuration
+# Documentation site configuration
+
+site_name: Spark Optima
+site_description: Intelligent Apache Spark Configuration Optimization Tool
+site_author: Spark Optima Contributors
+site_url: https://your-project.readthedocs.io
+
+# Repository
+repo_name: spark-optima/spark-optima
+repo_url: https://github.com/yourusername/spark-optima
+edit_uri: edit/main/docs/
+
+# Copyright
+copyright: Copyright &copy; 2024 Spark Optima Contributors
+
+# Theme
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
+    - content.code.annotation
+    - content.code.copy
+  language: en
+  icon:
+    logo: material/fire
+
+# Plugins
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            separate_signature: true
+
+# Extensions
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - pymdownx.mark
+  - admonition
+  - toc:
+      permalink: true
+
+# Extra
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/yourusername/spark-optima
+
+# Navigation
+nav:
+  - Home: index.md
+  - User Guide:
+      - Getting Started: user-guide/getting-started.md
+      - Installation: user-guide/installation.md
+      - Configuration: user-guide/configuration.md
+      - CLI Usage: user-guide/cli.md
+      - API Usage: user-guide/api.md
+  - Platform Guides:
+      - Local: platforms/local.md
+      - AWS Glue: platforms/aws-glue.md
+      - Databricks: platforms/databricks.md
+      - Azure Synapse: platforms/azure-synapse.md
+  - API Reference:
+      - Core: api/core.md
+      - Optimizer: api/optimizer.md
+      - Result: api/result.md
+  - Development:
+      - Contributing: development/contributing.md
+      - Architecture: development/architecture.md
+      - Testing: development/testing.md
+  - Changelog: changelog.md
+
+# Extra CSS
+extra_css:
+  - stylesheets/extra.css
+
+# Extra JavaScript
+extra_javascript: []

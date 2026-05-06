@@ -1,0 +1,144 @@
+# Spark Optima - Docker Compose Configuration
+# Provides local development and testing environment
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # Main Spark Optima Service
+  # ===========================================================================
+  spark-optima:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: development
+    container_name: spark-optima-dev
+    volumes:
+      - ../src:/app/spark_optima:ro
+      - ../tests:/app/tests:ro
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - spark-optima-cache:/app/.cache
+    environment:
+      - PYTHONPATH=/app
+      - SPARK_OPTIMA_ENV=development
+      - SPARK_OPTIMA_LOG_LEVEL=DEBUG
+      - SPARK_OPTIMA_CONFIG_PATH=/app/config
+    ports:
+      - "8000:8000"  # FastAPI
+      - "8888:8888"  # Jupyter (optional)
+    command: >
+      bash -c "
+        echo 'Spark Optima Development Environment Ready!' &&
+        echo 'Run: python -m spark_optima.cli.main --help' &&
+        tail -f /dev/null
+      "
+    networks:
+      - spark-optima-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "from spark_optima import __version__; print(__version__)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ===========================================================================
+  # Spark Optima API Server
+  # ===========================================================================
+  spark-optima-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: production
+    container_name: spark-optima-api
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ../config:/app/config:ro
+    environment:
+      - SPARK_OPTIMA_ENV=production
+      - SPARK_OPTIMA_LOG_LEVEL=INFO
+      - SPARK_OPTIMA_API_HOST=0.0.0.0
+      - SPARK_OPTIMA_API_PORT=8000
+    ports:
+      - "8001:8000"
+    command: >
+      uvicorn spark_optima.api.main:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 2
+      --log-level info
+    networks:
+      - spark-optima-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ===========================================================================
+  # Jupyter Notebook (Optional - for development and experimentation)
+  # ===========================================================================
+  jupyter:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: development
+    container_name: spark-optima-jupyter
+    volumes:
+      - ../src:/app/spark_optima:ro
+      - ../notebooks:/app/notebooks
+      - ../data:/app/data
+    environment:
+      - PYTHONPATH=/app
+      - JUPYTER_ENABLE_LAB=yes
+    ports:
+      - "8889:8888"
+    command: >
+      jupyter lab
+      --ip=0.0.0.0
+      --port=8888
+      --no-browser
+      --allow-root
+      --NotebookApp.token=''
+      --NotebookApp.password=''
+    networks:
+      - spark-optima-network
+    profiles:
+      - jupyter
+
+  # ===========================================================================
+  # Redis (Optional - for caching and session storage)
+  # ===========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: spark-optima-redis
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - spark-optima-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - cache
+
+# ===========================================================================
+# Networks
+# ===========================================================================
+networks:
+  spark-optima-network:
+    driver: bridge
+
+# ===========================================================================
+# Volumes
+# ===========================================================================
+volumes:
+  spark-optima-cache:
+  redis-data:

@@ -1,0 +1,116 @@
+# Spark Optima - Git Ignore Configuration
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+$Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# Poetry
+# poetry.lock MUST be committed for reproducible builds!
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+htmlcov/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# Documentation
+docs/_build/
+site/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Spark
+spark-warehouse/
+metastore_db/
+derby.log
+*.crc
+_SUCCESS
+
+# Data files (if large)
+*.csv
+*.parquet
+*.avro
+*.orc
+!tests/data/sample/*.csv
+
+# Logs
+*.log
+logs/
+
+# Local configuration
+config.local.yaml
+config.local.yml
+
+# Kubernetes
+*.kubeconfig
+kubeconfig
+
+# Terraform (if used for infrastructure)
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Docker
+.dockerignore
+
+# Temporary files
+tmp/
+temp/
+*.tmp

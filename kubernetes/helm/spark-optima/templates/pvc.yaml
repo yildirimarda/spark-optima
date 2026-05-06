@@ -1,0 +1,48 @@
+{{/* Copyright 2024 Spark Optima Contributors */}}
+{{/* Licensed under the Apache License, Version 2.0 */}}
+
+{{- if .Values.persistence.data.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "spark-optima.pvc.dataName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spark-optima.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storage
+  {{- with .Values.persistence.data.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.data.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.data.size }}
+  storageClassName: {{ .Values.persistence.data.storageClass }}
+{{- end }}
+
+{{- if .Values.persistence.logs.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "spark-optima.pvc.logsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "spark-optima.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/subcomponent: logs
+  {{- with .Values.persistence.logs.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.logs.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.logs.size }}
+  storageClassName: {{ .Values.persistence.logs.storageClass }}
+{{- end }}

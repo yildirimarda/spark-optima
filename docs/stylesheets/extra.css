@@ -1,0 +1,222 @@
+/* Spark Optima Documentation - Custom Styles */
+
+/* Brand Colors */
+:root {
+  --spark-orange: #ff6b35;
+  --spark-dark: #1a1a2e;
+  --spark-light: #f8f9fa;
+  --spark-blue: #4a90e2;
+  --spark-green: #27ae60;
+}
+
+/* Header Styling */
+.md-header {
+  background: linear-gradient(135deg, var(--spark-dark) 0%, #16213e 100%);
+}
+
+.md-header__title {
+  font-weight: 600;
+}
+
+/* Custom Admonitions */
+.md-typeset .admonition.example,
+.md-typeset details.example {
+  border-color: var(--spark-orange);
+}
+
+.md-typeset .example > .admonition-title,
+.md-typeset .example > summary {
+  background-color: rgba(255, 107, 53, 0.1);
+}
+
+.md-typeset .example > .admonition-title::before,
+.md-typeset .example > summary::before {
+  color: var(--spark-orange);
+}
+
+/* Code Block Enhancements */
+.md-typeset code {
+  border-radius: 4px;
+  padding: 0.2em 0.4em;
+}
+
+.md-typeset pre > code {
+  border-radius: 8px;
+  padding: 1em;
+}
+
+/* Table Styling */
+.md-typeset table {
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.md-typeset table th {
+  background-color: var(--spark-dark);
+  color: white;
+  font-weight: 600;
+}
+
+.md-typeset table tr:nth-child(even) {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+/* Custom Blockquote */
+.md-typeset blockquote {
+  border-left: 4px solid var(--spark-orange);
+  background-color: rgba(255, 107, 53, 0.05);
+  padding: 1em;
+  border-radius: 0 8px 8px 0;
+}
+
+/* Navigation Styling */
+.md-nav__title {
+  font-weight: 700;
+  color: var(--spark-dark);
+}
+
+.md-nav__link--active {
+  color: var(--spark-orange);
+  font-weight: 600;
+}
+
+/* Search Highlight */
+.md-search-result mark {
+  background-color: rgba(255, 107, 53, 0.2);
+  color: var(--spark-dark);
+}
+
+/* Content Tabs */
+.md-typeset .tabbed-set {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.md-typeset .tabbed-labels {
+  background-color: var(--spark-light);
+}
+
+.md-typeset .tabbed-labels > label {
+  font-weight: 500;
+  padding: 0.75em 1.5em;
+}
+
+.md-typeset .tabbed-labels > label:hover {
+  color: var(--spark-orange);
+}
+
+.md-typeset .tabbed-labels > .tabbed-label--active {
+  color: var(--spark-orange);
+  border-bottom-color: var(--spark-orange);
+}
+
+/* Custom Callouts */
+.md-typeset .admonition.tip {
+  border-color: var(--spark-green);
+}
+
+.md-typeset .tip > .admonition-title {
+  background-color: rgba(39, 174, 96, 0.1);
+}
+
+.md-typeset .tip > .admonition-title::before {
+  color: var(--spark-green);
+}
+
+/* Footer Styling */
+.md-footer {
+  background: linear-gradient(135deg, var(--spark-dark) 0%, #16213e 100%);
+}
+
+/* Print Styles */
+@media print {
+  .md-header,
+  .md-footer,
+  .md-nav {
+    display: none;
+  }
+  
+  .md-content {
+    margin-left: 0;
+  }
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--spark-light);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* Copy Button Enhancement */
+.md-clipboard {
+  color: var(--spark-orange);
+}
+
+.md-clipboard:focus,
+.md-clipboard:hover {
+  color: var(--spark-dark);
+}
+
+/* Mermaid Diagrams */
+.mermaid {
+  text-align: center;
+  margin: 2em 0;
+}
+
+/* API Documentation Specific */
+.doc-object {
+  border-left: 3px solid var(--spark-orange);
+  padding-left: 1em;
+  margin: 1em 0;
+}
+
+.doc-function h2,
+.doc-class h2 {
+  color: var(--spark-dark);
+  border-bottom: 2px solid var(--spark-orange);
+  padding-bottom: 0.3em;
+}
+
+/* Version Badge */
+.version-badge {
+  display: inline-block;
+  background-color: var(--spark-orange);
+  color: white;
+  padding: 0.2em 0.6em;
+  border-radius: 12px;
+  font-size: 0.8em;
+  font-weight: 600;
+  margin-left: 0.5em;
+}
+
+/* Platform Icons (if using emoji or icons) */
+.platform-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
+/* Responsive Adjustments */
+@media screen and (max-width: 768px) {
+  .md-typeset table {
+    font-size: 0.875em;
+  }
+  
+  .md-typeset pre > code {
+    font-size: 0.8em;
+  }
+}

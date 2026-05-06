@@ -1,0 +1,54 @@
+# Copyright 2024 Spark Optima Contributors
+# Licensed under the Apache License, Version 2.0
+
+# Spark Optima API Service
+# Internal service for API pods
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-optima-api
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: spark-optima
+  annotations:
+    description: "Service for Spark Optima API"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
+  sessionAffinity: None
+
+---
+# Headless service for direct pod access (if needed)
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-optima-api-headless
+  namespace: spark-optima
+  labels:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: spark-optima
+    app.kubernetes.io/subcomponent: headless
+  annotations:
+    description: "Headless service for direct pod access"
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless
+  selector:
+    app.kubernetes.io/name: spark-optima
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP

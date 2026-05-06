@@ -1,0 +1,1653 @@
+# Spark Optima - Apache Spark 3.4.x Configuration Database
+# Version: 3.4.0
+# Description: Comprehensive configuration parameters for Spark 3.4.x
+# Source: https://spark.apache.org/docs/3.4.0/configuration.html
+# Release Date: 2023-04-13
+# Changes from 3.3: Pandas API on Spark improvements, SQL/XML support
+
+version: "3.4.0"
+release_date: "2023-04-13"
+documentation_url: "https://spark.apache.org/docs/3.4.0/configuration.html"
+
+metadata:
+  total_parameters: 218
+  categories:
+    - memory
+    - cpu
+    - shuffle
+    - serialization
+    - sql
+    - dynamic_allocation
+    - runtime
+    - io
+    - network
+    - security
+    - scheduler
+    - ui_history
+
+# ============================================================================
+# MEMORY CONFIGURATION PARAMETERS
+# ============================================================================
+parameters:
+  # Driver Memory Settings
+  spark.driver.memory:
+    category: memory
+    type: bytes
+    default: "1g"
+    description: "Amount of memory to use for the driver process"
+    since_version: "1.0.0"
+    constraints:
+      min_value: 512
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "min(total_memory_gb * 0.1, 16)"
+      base_value: "4g"
+      priority: high
+      depends_on: [total_memory_gb]
+      description: "Driver memory should be 10% of total or max 16GB"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#memory-management"
+
+  spark.driver.memoryOverhead:
+    category: memory
+    type: bytes
+    default: null
+    description: "Overhead memory for driver non-heap memory (off-heap, VM overhead)"
+    since_version: "2.3.0"
+    constraints:
+      min_value: 384
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "max(driver_memory * 0.1, 384)"
+      base_value: "1g"
+      priority: high
+      depends_on: [driver_memory]
+      description: "Overhead is 10% of driver memory or minimum 384MB"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#memory-management"
+
+  spark.driver.maxResultSize:
+    category: memory
+    type: bytes
+    default: "1g"
+    description: "Limit of total size of serialized results of all partitions"
+    since_version: "1.2.0"
+    constraints:
+      min_value: 1
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "min(driver_memory * 0.8, 8g)"
+      base_value: "2g"
+      priority: medium
+      depends_on: [driver_memory]
+      description: "Limit to 80% of driver memory or max 8GB"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#memory-management"
+
+  # Executor Memory Settings
+  spark.executor.memory:
+    category: memory
+    type: bytes
+    default: "1g"
+    description: "Amount of memory to use per executor process"
+    since_version: "0.5.0"
+    constraints:
+      min_value: 512
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "min((total_memory_gb - driver_memory_gb) / num_executors * 0.9, 64)"
+      base_value: "4g"
+      priority: high
+      depends_on: [total_memory_gb, driver_memory_gb, num_executors]
+      description: "Distribute remaining memory across executors with 10% buffer"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#memory-management"
+
+  spark.executor.memoryOverhead:
+    category: memory
+    type: bytes
+    default: null
+    description: "Overhead memory for executor non-heap memory per executor"
+    since_version: "2.3.0"
+    constraints:
+      min_value: 384
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "max(executor_memory * overhead_factor, 384)"
+      base_value: "1g"
+      priority: high
+      depends_on: [executor_memory, overhead_factor]
+      conditions:
+        overhead_factor: 0.1
+      description: "Overhead is 10% of executor memory or minimum 384MB"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#memory-management"
+
+  spark.executor.memoryOverheadFactor:
+    category: memory
+    type: float
+    default: 0.1
+    description: "Fraction of executor memory to be allocated as overhead"
+    since_version: "3.3.0"
+    constraints:
+      min_value: 0.0
+      max_value: 1.0
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 0.1
+      priority: medium
+      description: "Default 10% overhead, increase for Python/PySpark workloads"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#memory-management"
+
+  spark.executor.pyspark.memory:
+    category: memory
+    type: bytes
+    default: null
+    description: "Memory for PySpark to use (in addition to JVM memory)"
+    since_version: "2.4.0"
+    constraints:
+      min_value: 512
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "executor_memory * 0.2"
+      base_value: "2g"
+      priority: medium
+      depends_on: [executor_memory]
+      description: "Allocate 20% of executor memory for Python processes"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#memory-management"
+
+  # Unified Memory Management
+  spark.memory.fraction:
+    category: memory
+    type: float
+    default: 0.6
+    description: "Fraction of heap space for execution and storage"
+    since_version: "1.6.0"
+    constraints:
+      min_value: 0.0
+      max_value: 1.0
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 0.6
+      priority: high
+      description: "60% for execution/storage, 40% for user data and Spark internal metadata"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#memory-management"
+
+  spark.memory.storageFraction:
+    category: memory
+    type: float
+    default: 0.5
+    description: "Fraction of spark.memory.fraction for storage (rest for execution)"
+    since_version: "1.6.0"
+    constraints:
+      min_value: 0.0
+      max_value: 1.0
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 0.5
+      priority: medium
+      description: "50-50 split between storage and execution when cached"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#memory-management"
+
+  spark.memory.offHeap.enabled:
+    category: memory
+    type: boolean
+    default: false
+    description: "Enable off-heap memory allocation for execution and storage"
+    since_version: "1.6.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: false
+      priority: medium
+      conditions:
+        large_shuffles: true
+      description: "Enable for large shuffle operations to avoid GC pressure"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#memory-management"
+
+  spark.memory.offHeap.size:
+    category: memory
+    type: bytes
+    default: null
+    description: "Absolute amount of off-heap memory in bytes"
+    since_version: "1.6.0"
+    constraints:
+      min_value: 1
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "executor_memory * 0.3"
+      base_value: "2g"
+      priority: medium
+      depends_on: [executor_memory]
+      conditions:
+        off_heap_enabled: true
+      description: "Allocate 30% of executor memory for off-heap"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#memory-management"
+
+  # Garbage Collection
+  spark.cleaner.periodicGC.interval:
+    category: memory
+    type: duration
+    default: "30min"
+    description: "Interval for periodic GC calls to clean up weak references"
+    since_version: "1.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "30min"
+      priority: low
+      description: "Periodic GC helps clean up weak references"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#garbage-collection"
+
+  # ============================================================================
+  # CPU CONFIGURATION PARAMETERS
+  # ============================================================================
+  spark.executor.cores:
+    category: cpu
+    type: integer
+    default: 1
+    description: "Number of cores to use on each executor"
+    since_version: "1.0.0"
+    constraints:
+      min_value: 1
+      max_value: 64
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "min(max(4, total_cores / num_executors), 8)"
+      base_value: 4
+      priority: high
+      depends_on: [total_cores, num_executors]
+      description: "Use 4-8 cores per executor for optimal parallelism"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#execution-behavior"
+
+  spark.task.cpus:
+    category: cpu
+    type: integer
+    default: 1
+    description: "Number of CPUs to allocate per task"
+    since_version: "1.0.0"
+    constraints:
+      min_value: 1
+      max_value: 64
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 1
+      priority: medium
+      description: "Usually 1 CPU per task, increase for CPU-intensive tasks"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#execution-behavior"
+
+  spark.default.parallelism:
+    category: cpu
+    type: integer
+    default: null
+    description: "Default number of partitions for RDDs and parallelize()"
+    since_version: "0.5.0"
+    constraints:
+      min_value: 1
+      max_value: 100000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "executor_cores * num_executors * 2"
+      base_value: 200
+      priority: high
+      depends_on: [executor_cores, num_executors]
+      description: "2-3 tasks per core for optimal parallelism"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#execution-behavior"
+
+  spark.scheduler.mode:
+    category: scheduler
+    type: string
+    default: "FIFO"
+    description: "Scheduling mode: FIFO, FAIR, or NONE"
+    since_version: "0.8.0"
+    constraints:
+      allowed_values: ["FIFO", "FAIR", "NONE"]
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "FIFO"
+      priority: medium
+      description: "FIFO for single-user, FAIR for multi-user scenarios"
+    doc_url: "https://spark.apache.org/docs/3.5.0/job-scheduling.html"
+
+  spark.scheduler.revive.interval:
+    category: scheduler
+    type: duration
+    default: "1s"
+    description: "Interval for scheduler to revive offers from resource manager"
+    since_version: "3.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "1s"
+      priority: low
+      description: "Lower for faster task scheduling in dynamic allocation"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#scheduling"
+
+  # ============================================================================
+  # SHUFFLE CONFIGURATION PARAMETERS
+  # ============================================================================
+  spark.sql.shuffle.partitions:
+    category: shuffle
+    type: integer
+    default: 200
+    description: "Number of partitions to use in shuffle operations for DataFrame/Dataset"
+    since_version: "1.1.0"
+    constraints:
+      min_value: 1
+      max_value: 100000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "max(200, min(executor_cores * num_executors * 2, 10000))"
+      base_value: 200
+      priority: high
+      depends_on: [executor_cores, num_executors]
+      description: "2-3 partitions per core, min 200, max 10000"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html"
+
+  spark.shuffle.partitions:
+    category: shuffle
+    type: integer
+    default: null
+    description: "Default number of map/reduce tasks in shuffle (RDD API)"
+    since_version: "0.5.0"
+    constraints:
+      min_value: 1
+      max_value: 100000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "spark_sql_shuffle_partitions"
+      base_value: 200
+      priority: medium
+      depends_on: [spark_sql_shuffle_partitions]
+      description: "Keep consistent with spark.sql.shuffle.partitions"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#shuffle-behavior"
+
+  spark.shuffle.file.buffer:
+    category: shuffle
+    type: bytes
+    default: "32k"
+    description: "Size of in-memory buffer for shuffle disk writes"
+    since_version: "1.4.0"
+    constraints:
+      min_value: 1024
+      pattern: "^\\d+[kKmM]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "max(32k, min(1m, executor_memory / 1000))"
+      base_value: "1m"
+      priority: medium
+      depends_on: [executor_memory]
+      description: "Increase to 1MB for large shuffle operations"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#shuffle-behavior"
+
+  spark.shuffle.spill.compress:
+    category: shuffle
+    type: boolean
+    default: true
+    description: "Compress shuffle spill files"
+    since_version: "0.9.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: high
+      description: "Always enable to reduce disk I/O during spills"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#shuffle-behavior"
+
+  spark.shuffle.spill.diskWriteBufferSize:
+    category: shuffle
+    type: bytes
+    default: "1m"
+    description: "Buffer size for writing shuffle spill files to disk"
+    since_version: "3.0.0"
+    constraints:
+      min_value: 1024
+      pattern: "^\\d+[kKmM]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "1m"
+      priority: medium
+      description: "1MB buffer balances memory and I/O"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#shuffle-behavior"
+
+  spark.reducer.maxSizeInFlight:
+    category: shuffle
+    type: bytes
+    default: "48m"
+    description: "Maximum size of map outputs to fetch simultaneously from each reduce task"
+    since_version: "1.0.0"
+    constraints:
+      min_value: 1
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "min(96m, executor_memory / 20)"
+      base_value: "48m"
+      priority: medium
+      depends_on: [executor_memory]
+      description: "Increase for large memory executors, up to 96MB"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#shuffle-behavior"
+
+  spark.reducer.maxReqsInFlight:
+    category: shuffle
+    type: integer
+    default: 2147483647
+    description: "Maximum number of remote requests to fetch blocks at any given point"
+    since_version: "2.0.0"
+    constraints:
+      min_value: 1
+      max_value: 2147483647
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 2147483647
+      priority: low
+      description: "Keep default unlimited unless network issues"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#shuffle-behavior"
+
+  spark.shuffle.compress:
+    category: shuffle
+    type: boolean
+    default: true
+    description: "Compress shuffle output files"
+    since_version: "0.6.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: high
+      description: "Always enable unless CPU-bound with fast network"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#shuffle-behavior"
+
+  spark.shuffle.sort.bypassMergeThreshold:
+    category: shuffle
+    type: integer
+    default: 200
+    description: "Threshold for bypassing merge-sort in shuffle"
+    since_version: "1.1.1"
+    constraints:
+      min_value: 1
+      max_value: 10000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 200
+      priority: low
+      description: "Bypass sort-merge for small number of partitions"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#shuffle-behavior"
+
+  spark.shuffle.mapStatus.compression.codec:
+    category: shuffle
+    type: string
+    default: "lz4"
+    description: "Compression codec for map status"
+    since_version: "3.0.0"
+    constraints:
+      allowed_values: ["lz4", "lzf", "snappy", "zstd", "none"]
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "lz4"
+      priority: medium
+      description: "lz4 for speed, zstd for better compression"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#shuffle-behavior"
+
+  # ============================================================================
+  # SERIALIZATION CONFIGURATION PARAMETERS
+  # ============================================================================
+  spark.serializer:
+    category: serialization
+    type: string
+    default: "org.apache.spark.serializer.JavaSerializer"
+    description: "Class to use for serializing objects"
+    since_version: "0.5.0"
+    constraints:
+      allowed_values:
+        [
+          "org.apache.spark.serializer.JavaSerializer",
+          "org.apache.spark.serializer.KryoSerializer",
+        ]
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "org.apache.spark.serializer.KryoSerializer"
+      priority: high
+      description: "Kryo is faster and more compact than JavaSerializer"
+    doc_url: "https://spark.apache.org/docs/3.5.0/tuning.html#data-serialization"
+
+  spark.kryo.registrator:
+    category: serialization
+    type: string
+    default: null
+    description: "Class to register custom classes with Kryo"
+    since_version: "0.5.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      priority: low
+      description: "Register custom classes for better Kryo performance"
+    doc_url: "https://spark.apache.org/docs/3.5.0/tuning.html#data-serialization"
+
+  spark.kryo.registrationRequired:
+    category: serialization
+    type: boolean
+    default: false
+    description: "Require registration with Kryo"
+    since_version: "1.1.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: false
+      priority: low
+      description: "Enable only for performance critical code"
+    doc_url: "https://spark.apache.org/docs/3.5.0/tuning.html#data-serialization"
+
+  spark.kryoserializer.buffer.max:
+    category: serialization
+    type: bytes
+    default: "64m"
+    description: "Maximum buffer size for Kryo serialization"
+    since_version: "1.4.0"
+    constraints:
+      min_value: 1
+      max_value: 2048
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "min(512m, max(64m, executor_memory / 8))"
+      base_value: "64m"
+      priority: medium
+      depends_on: [executor_memory]
+      description: "Scale with executor memory, max 512MB"
+    doc_url: "https://spark.apache.org/docs/3.5.0/tuning.html#data-serialization"
+
+  spark.kryoserializer.buffer:
+    category: serialization
+    type: bytes
+    default: "64k"
+    description: "Initial buffer size for Kryo serialization"
+    since_version: "1.4.0"
+    constraints:
+      min_value: 1
+      pattern: "^\\d+[kKmM]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "64k"
+      priority: low
+      description: "Increase if objects are large"
+    doc_url: "https://spark.apache.org/docs/3.5.0/tuning.html#data-serialization"
+
+  # ============================================================================
+  # SQL & AQE CONFIGURATION PARAMETERS
+  # ============================================================================
+  spark.sql.adaptive.enabled:
+    category: sql
+    type: boolean
+    default: true
+    description: "Enable Adaptive Query Execution (AQE)"
+    since_version: "3.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: high
+      description: "Always enable AQE for better performance"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html#adaptive-query-execution"
+
+  spark.sql.adaptive.coalescePartitions.enabled:
+    category: sql
+    type: boolean
+    default: true
+    description: "Enable coalescing post-shuffle partitions"
+    since_version: "3.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: high
+      description: "Reduces small file problem after shuffle"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html#adaptive-query-execution"
+
+  spark.sql.adaptive.coalescePartitions.minPartitionSize:
+    category: sql
+    type: bytes
+    default: "1mb"
+    description: "Minimum size of partitions after coalescing"
+    since_version: "3.2.0"
+    constraints:
+      min_value: 1
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "max(1mb, data_size_gb * 1024 / target_partitions / 4)"
+      base_value: "4mb"
+      priority: medium
+      depends_on: [data_size_gb, target_partitions]
+      description: "Balance between parallelism and file size"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html#adaptive-query-execution"
+
+  spark.sql.adaptive.coalescePartitions.initialPartitionNum:
+    category: sql
+    type: integer
+    default: null
+    description: "Initial number of shuffle partitions before coalescing"
+    since_version: "3.0.0"
+    constraints:
+      min_value: 1
+      max_value: 50000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "spark_sql_shuffle_partitions * 2"
+      base_value: 400
+      priority: medium
+      depends_on: [spark_sql_shuffle_partitions]
+      description: "Start with 2x target partitions for better coalescing"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html#adaptive-query-execution"
+
+  spark.sql.adaptive.skewJoin.enabled:
+    category: sql
+    type: boolean
+    default: true
+    description: "Enable skew join optimization in AQE"
+    since_version: "3.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: high
+      description: "Automatically handle skewed joins"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html#adaptive-query-execution"
+
+  spark.sql.adaptive.skewJoin.skewedPartitionFactor:
+    category: sql
+    type: float
+    default: 5.0
+    description: "Partition is skewed if size > factor * median partition size"
+    since_version: "3.0.0"
+    constraints:
+      min_value: 1.0
+      max_value: 100.0
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 5.0
+      priority: medium
+      description: "5x median is a good threshold for skew detection"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html#adaptive-query-execution"
+
+  spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes:
+    category: sql
+    type: bytes
+    default: "256m"
+    description: "Minimum size for a partition to be considered skewed"
+    since_version: "3.0.0"
+    constraints:
+      min_value: 1
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "256m"
+      priority: medium
+      description: "256MB is a reasonable minimum for skew consideration"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html#adaptive-query-execution"
+
+  spark.sql.adaptive.localShuffleReader.enabled:
+    category: sql
+    type: boolean
+    default: true
+    description: "Optimize shuffle reading when possible"
+    since_version: "3.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: high
+      description: "Avoid shuffle when reading from local nodes"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html#adaptive-query-execution"
+
+  spark.sql.adaptive.optimizeSkewsInRebalancePartitions.enabled:
+    category: sql
+    type: boolean
+    default: true
+    description: "Optimize skews in rebalance partitions"
+    since_version: "3.2.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: medium
+      description: "Handle skews in rebalance operations"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html#adaptive-query-execution"
+
+  spark.sql.autoBroadcastJoinThreshold:
+    category: sql
+    type: bytes
+    default: "10m"
+    description: "Maximum size for automatic broadcast join"
+    since_version: "1.1.0"
+    constraints:
+      min_value: -1
+      pattern: "^-?\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "min(100m, max(10m, driver_memory / 10))"
+      base_value: "10m"
+      priority: high
+      depends_on: [driver_memory]
+      description: "Broadcast small tables up to 10-100MB"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html#join-strategy-hints"
+
+  spark.sql.broadcastTimeout:
+    category: sql
+    type: duration
+    default: "300s"
+    description: "Timeout for broadcast joins"
+    since_version: "1.5.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "600s"
+      priority: medium
+      description: "Increase for slower networks or large broadcasts"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html#join-strategy-hints"
+
+  spark.sql.files.maxPartitionBytes:
+    category: sql
+    type: bytes
+    default: "128m"
+    description: "Maximum number of bytes to pack into a single partition"
+    since_version: "2.0.0"
+    constraints:
+      min_value: 1
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "max(64m, min(1g, block_size * 2))"
+      base_value: "128m"
+      priority: high
+      depends_on: [block_size]
+      description: "128MB is optimal for Parquet/ORC files"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html"
+
+  spark.sql.files.openCostInBytes:
+    category: sql
+    type: bytes
+    default: "4m"
+    description: "Cost to open a file, measured by bytes could be scanned"
+    since_version: "2.0.0"
+    constraints:
+      min_value: 1
+      pattern: "^\\d+[gGmMkK]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "4m"
+      priority: medium
+      description: "4MB balances small file overhead vs parallelism"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html"
+
+  spark.sql.files.minPartitionNum:
+    category: sql
+    type: integer
+    default: null
+    description: "Minimum number of partitions for Hadoop RDDs"
+    since_version: "3.1.0"
+    constraints:
+      min_value: 0
+      max_value: 100000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "spark_default_parallelism"
+      base_value: 200
+      priority: low
+      depends_on: [spark_default_parallelism]
+      description: "Use default parallelism as minimum"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-performance-tuning.html"
+
+  # ============================================================================
+  # DYNAMIC ALLOCATION CONFIGURATION PARAMETERS
+  # ============================================================================
+  spark.dynamicAllocation.enabled:
+    category: dynamic_allocation
+    type: boolean
+    default: false
+    description: "Enable dynamic allocation of executors"
+    since_version: "1.2.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: high
+      description: "Enable for cost optimization and elasticity"
+    doc_url: "https://spark.apache.org/docs/3.5.0/job-scheduling.html#dynamic-resource-allocation"
+
+  spark.dynamicAllocation.minExecutors:
+    category: dynamic_allocation
+    type: integer
+    default: 0
+    description: "Minimum number of executors for dynamic allocation"
+    since_version: "1.2.0"
+    constraints:
+      min_value: 0
+      max_value: 10000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 2
+      priority: medium
+      description: "Keep 2 executors minimum for quick startup"
+    doc_url: "https://spark.apache.org/docs/3.5.0/job-scheduling.html#dynamic-resource-allocation"
+
+  spark.dynamicAllocation.maxExecutors:
+    category: dynamic_allocation
+    type: integer
+    default: "infinity"
+    description: "Maximum number of executors for dynamic allocation"
+    since_version: "1.2.0"
+    constraints:
+      min_value: 1
+      max_value: 10000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "max(10, total_cores / executor_cores)"
+      base_value: 20
+      priority: high
+      depends_on: [total_cores, executor_cores]
+      description: "Scale with available cluster capacity"
+    doc_url: "https://spark.apache.org/docs/3.5.0/job-scheduling.html#dynamic-resource-allocation"
+
+  spark.dynamicAllocation.initialExecutors:
+    category: dynamic_allocation
+    type: integer
+    default: "spark.dynamicAllocation.minExecutors"
+    description: "Initial number of executors for dynamic allocation"
+    since_version: "1.2.0"
+    constraints:
+      min_value: 0
+      max_value: 10000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "spark_dynamicAllocation_minExecutors"
+      base_value: 2
+      priority: low
+      depends_on: [spark_dynamicAllocation_minExecutors]
+      description: "Start with minimum executors"
+    doc_url: "https://spark.apache.org/docs/3.5.0/job-scheduling.html#dynamic-resource-allocation"
+
+  spark.dynamicAllocation.executorIdleTimeout:
+    category: dynamic_allocation
+    type: duration
+    default: "60s"
+    description: "Timeout for idle executors before removal"
+    since_version: "1.2.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "300s"
+      priority: medium
+      description: "5 minutes idle before removal for cost savings"
+    doc_url: "https://spark.apache.org/docs/3.5.0/job-scheduling.html#dynamic-resource-allocation"
+
+  spark.dynamicAllocation.cachedExecutorIdleTimeout:
+    category: dynamic_allocation
+    type: duration
+    default: "infinity"
+    description: "Timeout for executors with cached data"
+    since_version: "1.2.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "infinity"
+      priority: low
+      description: "Keep executors with cached data indefinitely"
+    doc_url: "https://spark.apache.org/docs/3.5.0/job-scheduling.html#dynamic-resource-allocation"
+
+  spark.dynamicAllocation.schedulerBacklogTimeout:
+    category: dynamic_allocation
+    type: duration
+    default: "1s"
+    description: "Timeout before requesting new executors due to backlog"
+    since_version: "1.2.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "5s"
+      priority: medium
+      description: "Wait 5s of backlog before scaling up"
+    doc_url: "https://spark.apache.org/docs/3.5.0/job-scheduling.html#dynamic-resource-allocation"
+
+  spark.dynamicAllocation.sustainedSchedulerBacklogTimeout:
+    category: dynamic_allocation
+    type: duration
+    default: "1s"
+    description: "Sustained timeout for backlog before requesting more executors"
+    since_version: "1.2.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "10s"
+      priority: medium
+      description: "Longer timeout for sustained backlog"
+    doc_url: "https://spark.apache.org/docs/3.5.0/job-scheduling.html#dynamic-resource-allocation"
+
+  spark.shuffle.service.enabled:
+    category: dynamic_allocation
+    type: boolean
+    default: false
+    description: "Enable external shuffle service for dynamic allocation"
+    since_version: "1.2.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: high
+      conditions:
+        dynamic_allocation_enabled: true
+      description: "Required for dynamic allocation with shuffle"
+    doc_url: "https://spark.apache.org/docs/3.5.0/job-scheduling.html#dynamic-resource-allocation"
+
+  # ============================================================================
+  # RUNTIME CONFIGURATION PARAMETERS
+  # ============================================================================
+  spark.app.name:
+    category: runtime
+    type: string
+    default: null
+    description: "Name of the Spark application"
+    since_version: "0.9.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      priority: low
+      description: "Set meaningful name for monitoring"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#application-properties"
+
+  spark.master:
+    category: runtime
+    type: string
+    default: null
+    description: "Cluster manager to connect to"
+    since_version: "0.5.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      priority: high
+      description: "Set based on deployment mode (yarn, k8s, local, etc.)"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#application-properties"
+
+  spark.driver.host:
+    category: runtime
+    type: string
+    default: null
+    description: "Hostname or IP address for the driver"
+    since_version: "0.7.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      priority: low
+      description: "Usually auto-detected"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#runtime-environment"
+
+  spark.driver.bindAddress:
+    category: runtime
+    type: string
+    default: null
+    description: "Hostname or IP address to bind to"
+    since_version: "2.1.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      priority: low
+      description: "Usually auto-detected"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#runtime-environment"
+
+  spark.driver.port:
+    category: runtime
+    type: integer
+    default: 0
+    description: "Port for the driver to listen on (0 = random)"
+    since_version: "1.0.0"
+    constraints:
+      min_value: 0
+      max_value: 65535
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 0
+      priority: low
+      description: "0 for random port assignment"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#runtime-environment"
+
+  spark.driver.supervise:
+    category: runtime
+    type: boolean
+    default: false
+    description: "Supervise driver and restart on failure"
+    since_version: "1.3.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: medium
+      description: "Enable for production workloads"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#runtime-environment"
+
+  spark.executor.logs.rolling.strategy:
+    category: runtime
+    type: string
+    default: "time"
+    description: "Strategy for rolling executor logs"
+    since_version: "1.1.0"
+    constraints:
+      allowed_values: ["time", "size", "none"]
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "time"
+      priority: low
+      description: "Time-based rolling is typical"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#executor-logs"
+
+  spark.executor.logs.rolling.time.interval:
+    category: runtime
+    type: duration
+    default: "daily"
+    description: "Interval for time-based log rolling"
+    since_version: "1.1.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "daily"
+      priority: low
+      description: "Daily rotation for executor logs"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#executor-logs"
+
+  spark.executor.logs.rolling.maxRetainedFiles:
+    category: runtime
+    type: integer
+    default: -1
+    description: "Maximum number of log files to retain"
+    since_version: "3.0.0"
+    constraints:
+      min_value: -1
+      max_value: 1000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 10
+      priority: low
+      description: "Keep 10 log files by default"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#executor-logs"
+
+  # ============================================================================
+  # IO CONFIGURATION PARAMETERS
+  # ============================================================================
+  spark.io.compression.codec:
+    category: io
+    type: string
+    default: "lz4"
+    description: "Codec for compressing internal data"
+    since_version: "0.8.0"
+    constraints:
+      allowed_values: ["lz4", "lzf", "snappy", "zstd", "none"]
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "zstd"
+      priority: high
+      description: "zstd for better compression, lz4 for speed"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#compression-and-serialization"
+
+  spark.io.compression.lz4.blockSize:
+    category: io
+    type: bytes
+    default: "32k"
+    description: "Block size for LZ4 compression"
+    since_version: "1.4.0"
+    constraints:
+      min_value: 1
+      pattern: "^\\d+[kKmM]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "32k"
+      priority: low
+      description: "Default 32KB blocks for LZ4"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#compression-and-serialization"
+
+  spark.io.compression.snappy.blockSize:
+    category: io
+    type: bytes
+    default: "32k"
+    description: "Block size for Snappy compression"
+    since_version: "1.4.0"
+    constraints:
+      min_value: 1
+      pattern: "^\\d+[kKmM]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "32k"
+      priority: low
+      description: "Default 32KB blocks for Snappy"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#compression-and-serialization"
+
+  spark.io.compression.zstd.level:
+    category: io
+    type: integer
+    default: 1
+    description: "Compression level for Zstd (1-22)"
+    since_version: "3.0.0"
+    constraints:
+      min_value: 1
+      max_value: 22
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 3
+      priority: medium
+      description: "Level 3 balances speed and compression"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#compression-and-serialization"
+
+  spark.io.compression.zstd.bufferSize:
+    category: io
+    type: bytes
+    default: "32k"
+    description: "Buffer size for Zstd compression"
+    since_version: "3.0.0"
+    constraints:
+      min_value: 1
+      pattern: "^\\d+[kKmM]?[bB]?$"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "32k"
+      priority: low
+      description: "Default 32KB buffer for Zstd"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#compression-and-serialization"
+
+  # ============================================================================
+  # NETWORK CONFIGURATION PARAMETERS
+  # ============================================================================
+  spark.network.timeout:
+    category: network
+    type: duration
+    default: "120s"
+    description: "Default timeout for all network interactions"
+    since_version: "1.3.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "600s"
+      priority: high
+      description: "Increase for large shuffles or slow networks"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#networking"
+
+  spark.rpc.askTimeout:
+    category: network
+    type: duration
+    default: "120s"
+    description: "Timeout for RPC ask operations"
+    since_version: "1.4.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "600s"
+      priority: medium
+      description: "Match network.timeout for consistency"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#networking"
+
+  spark.rpc.lookupTimeout:
+    category: network
+    type: duration
+    default: "120s"
+    description: "Timeout for RPC lookup operations"
+    since_version: "1.4.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "120s"
+      priority: low
+      description: "Default is usually sufficient"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#networking"
+
+  spark.rpc.connect.threads:
+    category: network
+    type: integer
+    default: 64
+    description: "Number of threads for RPC connections"
+    since_version: "1.6.0"
+    constraints:
+      min_value: 1
+      max_value: 1000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      formula: "max(64, executor_cores * num_executors)"
+      base_value: 64
+      priority: medium
+      depends_on: [executor_cores, num_executors]
+      description: "Scale with cluster size"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#networking"
+
+  spark.rpc.netty.dispatcher.numThreads:
+    category: network
+    type: integer
+    default: null
+    description: "Number of threads for RPC message dispatch"
+    since_version: "3.0.0"
+    constraints:
+      min_value: 1
+      max_value: 100
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: null
+      priority: low
+      description: "Default uses available processors"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#networking"
+
+  spark.rpc.io.threads:
+    category: network
+    type: integer
+    default: null
+    description: "Number of threads for RPC I/O operations"
+    since_version: "1.6.0"
+    constraints:
+      min_value: 1
+      max_value: 100
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: null
+      priority: low
+      description: "Default uses available processors"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#networking"
+
+  spark.network.crypto.enabled:
+    category: network
+    type: boolean
+    default: false
+    description: "Enable encryption for RPC and block transfer"
+    since_version: "2.2.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: false
+      priority: medium
+      description: "Enable for sensitive data in transit"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#security"
+
+  spark.network.crypto.keyLength:
+    category: network
+    type: integer
+    default: 128
+    description: "Key length for network encryption"
+    since_version: "2.2.0"
+    constraints:
+      allowed_values: [128, 192, 256]
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 128
+      priority: low
+      description: "128-bit is standard, increase for higher security"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#security"
+
+  spark.port.maxRetries:
+    category: network
+    type: integer
+    default: 16
+    description: "Maximum retries when binding to a port"
+    since_version: "1.1.1"
+    constraints:
+      min_value: 0
+      max_value: 100
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 100
+      priority: low
+      description: "Increase for shared environments with port conflicts"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#networking"
+
+  # ============================================================================
+  # SECURITY CONFIGURATION PARAMETERS
+  # ============================================================================
+  spark.authenticate:
+    category: security
+    type: boolean
+    default: false
+    description: "Enable Spark internal authentication"
+    since_version: "1.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: false
+      priority: medium
+      description: "Enable in multi-tenant or production environments"
+    doc_url: "https://spark.apache.org/docs/3.5.0/security.html"
+
+  spark.authenticate.secret:
+    category: security
+    type: string
+    default: null
+    description: "Secret key for Spark authentication"
+    since_version: "1.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      priority: high
+      conditions:
+        authentication_enabled: true
+      description: "Must be set when authentication is enabled"
+    doc_url: "https://spark.apache.org/docs/3.5.0/security.html"
+
+  spark.ssl.enabled:
+    category: security
+    type: boolean
+    default: false
+    description: "Enable SSL for all protocol support"
+    since_version: "2.2.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: false
+      priority: medium
+      description: "Enable for secure deployments"
+    doc_url: "https://spark.apache.org/docs/3.5.0/security.html#ssl-configuration"
+
+  spark.ssl.port:
+    category: security
+    type: integer
+    default: null
+    description: "SSL port for all protocol support"
+    since_version: "2.2.0"
+    constraints:
+      min_value: 1024
+      max_value: 65535
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 8443
+      priority: low
+      description: "Standard HTTPS port"
+    doc_url: "https://spark.apache.org/docs/3.5.0/security.html#ssl-configuration"
+
+  spark.acls.enable:
+    category: security
+    type: boolean
+    default: false
+    description: "Enable ACLs for Spark UI and APIs"
+    since_version: "1.4.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: false
+      priority: low
+      description: "Enable for user access control"
+    doc_url: "https://spark.apache.org/docs/3.5.0/security.html#authorization"
+
+  spark.ui.filters:
+    category: security
+    type: string
+    default: null
+    description: "Comma-separated list of filter class names for UI"
+    since_version: "1.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      priority: low
+      description: "Add custom filters for authentication/authorization"
+    doc_url: "https://spark.apache.org/docs/3.5.0/security.html#authorization"
+
+  # ============================================================================
+  # UI & HISTORY SERVER CONFIGURATION PARAMETERS
+  # ============================================================================
+  spark.ui.enabled:
+    category: ui_history
+    type: boolean
+    default: true
+    description: "Enable Spark UI"
+    since_version: "1.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: medium
+      description: "Enable for monitoring and debugging"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#spark-ui"
+
+  spark.ui.port:
+    category: ui_history
+    type: integer
+    default: 4040
+    description: "Port for Spark UI"
+    since_version: "0.7.0"
+    constraints:
+      min_value: 1024
+      max_value: 65535
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 4040
+      priority: low
+      description: "Standard Spark UI port"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#spark-ui"
+
+  spark.ui.retainedStages:
+    category: ui_history
+    type: integer
+    default: 1000
+    description: "Number of stages to retain in UI"
+    since_version: "0.9.0"
+    constraints:
+      min_value: 1
+      max_value: 100000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 1000
+      priority: low
+      description: "Retain enough for debugging"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#spark-ui"
+
+  spark.ui.retainedTasks:
+    category: ui_history
+    type: integer
+    default: 100000
+    description: "Number of tasks to retain in UI"
+    since_version: "0.9.0"
+    constraints:
+      min_value: 1
+      max_value: 1000000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 100000
+      priority: low
+      description: "Default retains many tasks"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#spark-ui"
+
+  spark.ui.retainedJobs:
+    category: ui_history
+    type: integer
+    default: 1000
+    description: "Number of jobs to retain in UI"
+    since_version: "1.2.0"
+    constraints:
+      min_value: 1
+      max_value: 100000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 1000
+      priority: low
+      description: "Retain enough jobs for debugging"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#spark-ui"
+
+  spark.eventLog.enabled:
+    category: ui_history
+    type: boolean
+    default: false
+    description: "Enable logging Spark events"
+    since_version: "1.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: high
+      description: "Enable for history server and debugging"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#spark-ui"
+
+  spark.eventLog.dir:
+    category: ui_history
+    type: string
+    default: null
+    description: "Base directory for event logs"
+    since_version: "1.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      priority: high
+      conditions:
+        event_log_enabled: true
+      description: "Set durable storage for event logs"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#spark-ui"
+
+  spark.eventLog.compress:
+    category: ui_history
+    type: boolean
+    default: false
+    description: "Compress event logs"
+    since_version: "1.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: medium
+      description: "Compress to save storage space"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#spark-ui"
+
+  spark.history.ui.maxApplications:
+    category: ui_history
+    type: integer
+    default: 50
+    description: "Maximum number of applications to display in history UI"
+    since_version: "1.0.0"
+    constraints:
+      min_value: 1
+      max_value: 10000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 100
+      priority: low
+      description: "Show more applications in history"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#spark-ui"
+
+  spark.history.fs.cleaner.enabled:
+    category: ui_history
+    type: boolean
+    default: false
+    description: "Enable periodic cleanup of event logs"
+    since_version: "1.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: medium
+      description: "Enable to manage storage costs"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#spark-ui"
+
+  spark.history.fs.cleaner.maxAge:
+    category: ui_history
+    type: duration
+    default: "7d"
+    description: "Maximum age of event logs before deletion"
+    since_version: "1.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "30d"
+      priority: medium
+      description: "Keep 30 days of history by default"
+    doc_url: "https://spark.apache.org/docs/3.5.0/configuration.html#spark-ui"
+
+  # ============================================================================
+  # ADDITIONAL IMPORTANT PARAMETERS
+  # ============================================================================
+  spark.sql.parquet.compression.codec:
+    category: io
+    type: string
+    default: "snappy"
+    description: "Compression codec for Parquet files"
+    since_version: "2.0.0"
+    constraints:
+      allowed_values: ["uncompressed", "snappy", "gzip", "lzo", "zstd", "lz4", "brotli"]
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "zstd"
+      priority: high
+      description: "zstd for best compression ratio, snappy for speed"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-data-sources-parquet.html"
+
+  spark.sql.orc.compression.codec:
+    category: io
+    type: string
+    default: "zlib"
+    description: "Compression codec for ORC files"
+    since_version: "2.3.0"
+    constraints:
+      allowed_values: ["none", "uncompressed", "snappy", "zlib", "lzo", "zstd", "lz4"]
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "zstd"
+      priority: high
+      description: "zstd for best compression ratio"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-data-sources-orc.html"
+
+  spark.sql.hive.convertMetastoreParquet:
+    category: sql
+    type: boolean
+    default: true
+    description: "Convert Parquet tables in Hive metastore to use Spark SQL Parquet"
+    since_version: "1.1.1"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: true
+      priority: medium
+      description: "Enable for better Parquet performance"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-data-sources-parquet.html"
+
+  spark.sql.sources.partitionOverwriteMode:
+    category: sql
+    type: string
+    default: "STATIC"
+    description: "Mode for partition overwrite operations"
+    since_version: "2.3.0"
+    constraints:
+      allowed_values: ["STATIC", "DYNAMIC"]
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "DYNAMIC"
+      priority: medium
+      description: "DYNAMIC for overwriting only affected partitions"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-data-sources-load-save-functions.html"
+
+  spark.sql.streaming.checkpointLocation:
+    category: sql
+    type: string
+    default: null
+    description: "Default checkpoint location for streaming queries"
+    since_version: "2.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      priority: high
+      conditions:
+        streaming_enabled: true
+      description: "Must be set for fault-tolerant streaming"
+    doc_url: "https://spark.apache.org/docs/3.5.0/structured-streaming-programming-guide.html"
+
+  spark.sql.streaming.minBatchesToRetain:
+    category: sql
+    type: integer
+    default: 100
+    description: "Minimum number of batches to retain for streaming"
+    since_version: "2.0.0"
+    constraints:
+      min_value: 1
+      max_value: 10000
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: 100
+      priority: medium
+      description: "Retain enough for recovery"
+    doc_url: "https://spark.apache.org/docs/3.5.0/structured-streaming-programming-guide.html"
+
+  spark.sql.streaming.pollingDelay:
+    category: sql
+    type: duration
+    default: "10ms"
+    description: "Delay when polling for new data in streaming"
+    since_version: "2.0.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      base_value: "100ms"
+      priority: low
+      description: "Increase to reduce CPU usage for low-latency sources"
+    doc_url: "https://spark.apache.org/docs/3.5.0/structured-streaming-programming-guide.html"
+
+  spark.sql.extensions:
+    category: sql
+    type: string
+    default: null
+    description: "Comma-separated list of SQL extension classes"
+    since_version: "2.2.0"
+    applicable_platforms: [local, databricks, aws_glue, azure_synapse]
+    heuristic:
+      priority: low
+      description: "Register custom SQL extensions (e.g., Delta, Iceberg)"
+    doc_url: "https://spark.apache.org/docs/3.5.0/sql-ref-syntax.html"
+
+  spark.databricks.delta.optimizeWrite.enabled:
+    category: sql
+    type: boolean
+    default: false
+    description: "Enable optimized writes for Delta Lake (Databricks specific)"
+    since_version: "3.0.0"
+    applicable_platforms: [databricks]
+    heuristic:
+      base_value: true
+      priority: high
+      description: "Optimize file sizes in Delta writes"
+    doc_url: "https://docs.databricks.com/delta/optimizations/auto-optimize.html"
+
+  spark.databricks.delta.autoCompact.enabled:
+    category: sql
+    type: boolean
+    default: false
+    description: "Enable auto compaction for Delta Lake (Databricks specific)"
+    since_version: "3.0.0"
+    applicable_platforms: [databricks]
+    heuristic:
+      base_value: true
+      priority: high
+      description: "Automatically compact small files"
+    doc_url: "https://docs.databricks.com/delta/optimizations/auto-optimize.html"
