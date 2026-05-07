@@ -215,6 +215,11 @@ poetry run spark-optima export \
 poetry run spark-optima export \
   --result-file result.json \
   --format spark-submit
+
+# Export to Azure Synapse Spark pool config
+poetry run spark-optima export \
+  --result-file result.json \
+  --format azure-synapse
 ```
 
 ---
@@ -301,7 +306,7 @@ for suggestion in result.code_suggestions:
 | **Local/Standalone** | ✅ Ready | Full support with Docker |
 | **AWS Glue** | ✅ Ready | Including Glue 3.0/4.0 |
 | **Databricks** | ✅ Ready | DBR 10.x - 14.x |
-| **Azure Synapse** | 🚧 In Progress | Coming in v0.2 |
+| **Azure Synapse** | ✅ Ready | Node sizes: Small to XXLarge |
 
 ---
 
