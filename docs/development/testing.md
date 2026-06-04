@@ -56,14 +56,11 @@ tests/
 ### Run All Tests
 
 ```bash
-# Using Poetry
-poetry run pytest
+# Using uv
+uv run pytest
 
 # Using Make
 make test
-
-# Using pytest directly (in poetry shell)
-pytest
 ```
 
 ### Run Specific Test Categories
@@ -422,14 +419,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       
-      - name: Install Poetry
-        run: pip install poetry
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
       
       - name: Install dependencies
-        run: poetry install --all-extras
+        run: uv sync --frozen
       
       - name: Run tests
-        run: poetry run pytest -m unit --cov=src/spark_optima --cov-report=xml
+        run: uv run pytest -m unit --cov=src/spark_optima --cov-fail-under=80 --cov-report=xml
       
       - name: Upload coverage
         uses: codecov/codecov-action@v3
@@ -490,11 +490,11 @@ pytest --maxfail=3
 
 **Solution:**
 ```bash
-# Install all extras
-poetry install --all-extras
+# Install all dependencies
+uv sync
 
-# Or install specific extras
-poetry install --extras "aws databricks"
+# Or add optional packages explicitly
+uv add boto3 scikit-learn
 ```
 
 ### Issue: Coverage is incomplete

@@ -10,6 +10,8 @@ autoscale configurations.
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Any
 
 from spark_optima.platforms.base import Platform
@@ -21,6 +23,8 @@ from spark_optima.platforms.models import (
     ResourceSpec,
     WorkerType,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AzureSynapsePlatform(Platform):

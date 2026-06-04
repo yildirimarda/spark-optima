@@ -50,7 +50,7 @@ The heuristics engine applies rule-based optimizations.
       show_root_heading: true
       show_source: true
 
-::: spark_optima.core.heuristics.context.HeuristicContext
+::: spark_optima.core.heuristics.context.EvaluationContext
     handler: python
     options:
       show_root_heading: true
@@ -106,19 +106,19 @@ The Bayesian optimizer fine-tunes configurations using Optuna.
 
 ## Analysis Models
 
-::: spark_optima.analysis.models.CodeAnalysis
+::: spark_optima.analysis.models.AnalysisResult
     handler: python
     options:
       show_root_heading: true
       show_source: true
 
-::: spark_optima.analysis.models.Smell
+::: spark_optima.analysis.models.CodeSmell
     handler: python
     options:
       show_root_heading: true
       show_source: true
 
-::: spark_optima.analysis.models.Recommendation
+::: spark_optima.analysis.models.CodeRecommendation
     handler: python
     options:
       show_root_heading: true

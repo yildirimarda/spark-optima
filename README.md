@@ -28,24 +28,24 @@ Spark Optima is a professional, production-ready tool that automatically finds t
 ### Prerequisites
 
 - Python 3.10+
-- Poetry (for development)
+- uv (for dependency management)
 - Docker (required for execution mode - secure code isolation)
 - Java 17 (for local Spark execution)
 
 ### Installation
 
-#### Option 1: Using Poetry (Recommended for development)
+#### Option 1: Using uv (Recommended for development)
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/spark-optima.git
+git clone https://github.com/yildirimarda/spark-optima.git
 cd spark-optima
 
-# Install with Poetry (uses .venv in project directory)
-poetry install --all-extras
+# Install with uv
+uv sync
 
 # Verify installation
-poetry run spark-optima --version
+uv run python -c "import spark_optima; print(spark_optima.__version__)"
 ```
 
 #### Option 2: Using pip (Simple installation)
@@ -58,7 +58,7 @@ pip install spark-optima
 
 ```bash
 # Install PySpark in your environment
-poetry add pyspark  # If using Poetry
+uv add pyspark  # If using uv
 # OR
 pip install pyspark  # If using pip
 ```
@@ -73,14 +73,14 @@ Simulation mode works out-of-the-box without Docker or Spark installation. It us
 
 ```bash
 # Basic usage with your Spark code
-poetry run spark-optima optimize \
+uv run spark-optima optimize \
   --code-path /tmp/simple_spark_job.py \
   --platform local \
   --data-size 10 \
   --max-memory 16
 
 # With JSON output (save for later export)
-poetry run spark-optima optimize \
+uv run spark-optima optimize \
   --code-path /tmp/simple_spark_job.py \
   --platform local \
   --data-size 5 \
@@ -130,7 +130,7 @@ Execution mode runs your actual Spark code with different configurations in isol
 docker build -f docker/Dockerfile -t spark-optima:latest .
 
 # Run optimization with execution mode
-poetry run spark-optima optimize \
+uv run spark-optima optimize \
   --code-path /tmp/simple_spark_job.py \
   --platform local \
   --data-size 1 \
@@ -138,7 +138,7 @@ poetry run spark-optima optimize \
   --mode execution
 
 # Quick test with minimal trials
-poetry run python /tmp/test_execution.py
+uv run python /tmp/test_execution.py
 ```
 
 **Note:** Execution mode requires Docker for security isolation. Your Spark code runs in an isolated container.
@@ -148,7 +148,7 @@ poetry run python /tmp/test_execution.py
 Let Spark Optima guide you through the optimization process step by step:
 
 ```bash
-poetry run spark-optima wizard
+uv run spark-optima wizard
 ```
 
 ### 4. Code Analysis
@@ -156,10 +156,10 @@ poetry run spark-optima wizard
 Analyze your Spark code for optimization opportunities without running optimization:
 
 ```bash
-poetry run spark-optima analyze --code-path /tmp/simple_spark_job.py
+uv run spark-optima analyze --code-path /tmp/simple_spark_job.py
 
 # JSON output
-poetry run spark-optima analyze --code-path /tmp/simple_spark_job.py --output json
+uv run spark-optima analyze --code-path /tmp/simple_spark_job.py --output json
 ```
 
 **Example Output:**
@@ -186,7 +186,7 @@ Code Smells
 List all supported platforms:
 
 ```bash
-poetry run spark-optima platforms list
+uv run spark-optima platforms list
 ```
 
 ### 6. Export Configuration
@@ -195,29 +195,29 @@ Export your optimization results to various platform-specific formats:
 
 ```bash
 # Export to Databricks cluster JSON
-poetry run spark-optima export \
+uv run spark-optima export \
   --result-file result.json \
   --format databricks-json \
   --output cluster.json
 
 # Export to AWS Glue
-poetry run spark-optima export \
+uv run spark-optima export \
   --result-file result.json \
   --format aws-glue
 
 # Export as environment variables
-poetry run spark-optima export \
+uv run spark-optima export \
   --result-file result.json \
   --format env \
   --output spark_env.sh
 
 # Export as spark-submit command
-poetry run spark-optima export \
+uv run spark-optima export \
   --result-file result.json \
   --format spark-submit
 
 # Export to Azure Synapse Spark pool config
-poetry run spark-optima export \
+uv run spark-optima export \
   --result-file result.json \
   --format azure-synapse
 ```
@@ -341,34 +341,31 @@ spark-optima/
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/spark-optima.git
+git clone https://github.com/yildirimarda/spark-optima.git
 cd spark-optima
 
-# Install dependencies with Poetry
-poetry install --all-extras
-
-# Activate virtual environment (optional, poetry run prefix works too)
-poetry shell
+# Install dependencies with uv
+uv sync
 
 # Install pre-commit hooks
-poetry run pre-commit install
+uv run pre-commit install
 ```
 
 ### Running Tests
 
 ```bash
 # Run all tests (takes a while, be patient)
-poetry run python -m pytest
+uv run pytest
 
 # Run with coverage
-poetry run python -m pytest --cov=src/spark_optima --cov-report=html
+uv run pytest --cov=src/spark_optima --cov-report=html
 
 # Run specific test categories
-poetry run python -m pytest -m unit -v          # Unit tests only
-poetry run python -m pytest -m integration -v   # Integration tests only
+uv run pytest -m unit -v          # Unit tests only
+uv run pytest -m integration -v   # Integration tests only
 
 # Run a specific test file
-poetry run python -m pytest tests/unit/test_optimizer.py -v
+uv run pytest tests/unit/test_optimizer.py -v
 ```
 
 **Note:** Do not run the full test suite more than once concurrently. Test execution takes time. For specific tests, you can run them in parallel.
@@ -377,28 +374,32 @@ poetry run python -m pytest tests/unit/test_optimizer.py -v
 
 ```bash
 # Linting
-poetry run ruff check .
-poetry run ruff check . --fix  # Auto-fix issues
+uv run ruff check .
+uv run ruff check . --fix  # Auto-fix issues
 
 # Formatting
-poetry run ruff format .
+uv run ruff format .
 
 # Type checking
-poetry run mypy src/spark_optima
+uv run mypy src/spark_optima
 
 # Security scan
-poetry run bandit -r src/spark_optima
+uv run bandit -r src/spark_optima
 ```
 
 ---
 
 ## 📖 Documentation
 
-Full documentation is available at [https://your-project.readthedocs.io](https://your-project.readthedocs.io)
+Serve documentation locally with:
 
-- [User Guide](docs/user-guide.md)
-- [API Reference](docs/api-reference.md)
-- [Configuration Guide](docs/configuration.md)
+```bash
+uv run mkdocs serve
+```
+
+- [Getting Started](docs/user-guide/getting-started.md)
+- [CLI Usage](docs/user-guide/cli.md)
+- [API Reference](docs/api/optimizer.md)
 - [Platform Guides](docs/platforms/)
 - [Contributing](CONTRIBUTING.md)
 

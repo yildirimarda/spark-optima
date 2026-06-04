@@ -50,17 +50,14 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 
 ```bash
 # Clone your fork
-git clone https://github.com/your-username/spark-optima.git
+git clone https://github.com/yildirimarda/spark-optima.git
 cd spark-optima
 
-# Install dependencies
-poetry install --all-extras
-
-# Activate virtual environment
-poetry shell
+# Install all dependencies (including dev)
+uv sync
 
 # Install pre-commit hooks
-pre-commit install
+uv run pre-commit install
 
 # Run tests to ensure everything is working
 make test

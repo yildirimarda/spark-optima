@@ -142,7 +142,10 @@
       "Bash(.venv/bin/poetry --version)",
       "Bash(.venv/bin/pytest tests/ -x -v --tb=short)",
       "Bash(.venv/bin/ruff check *)",
-      "Bash(.venv/bin/mypy src/ --ignore-missing-imports)"
+      "Bash(.venv/bin/mypy src/ --ignore-missing-imports)",
+      "Bash(uv run *)",
+      "Bash(uv export *)",
+      "Bash(uv sync *)"
     ]
   }
 }

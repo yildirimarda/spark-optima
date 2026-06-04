@@ -528,6 +528,11 @@ class TestAWSGluePlatformJobProperties:
 class TestAWSGlueBoto3Methods:
     """Test cases for boto3/real execution methods."""
 
+    pytestmark = pytest.mark.skipif(
+        __import__("importlib").util.find_spec("boto3") is None,
+        reason="boto3 not installed",
+    )
+
     def test_submit_job_no_boto3(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test submit_job raises RuntimeError when boto3 missing."""
         platform = AWSGluePlatform()

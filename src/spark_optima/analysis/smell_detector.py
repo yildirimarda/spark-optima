@@ -9,6 +9,7 @@ to detect various performance anti-patterns and code smells.
 
 from __future__ import annotations
 
+import ast
 import logging
 from typing import TYPE_CHECKING
 
@@ -62,6 +63,7 @@ class SmellDetector:
             self._detect_repartition_issues,
             self._detect_small_file_problems,
             self._detect_serialization_issues,
+            self._detect_large_collect,
         ]
 
     def analyze_file(self, file_path: str) -> AnalysisResult:
@@ -373,25 +375,32 @@ class SmellDetector:
         ]
 
         for op in skew_sensitive_ops:
+            # Skip if there are no join arguments — empty args indicate a syntax
+            # issue in the source, not a skew risk worth flagging.
+            if not op.arguments:
+                continue
+
             # Check if arguments suggest potential skew
             args_str = " ".join(op.arguments).lower()
 
-            # Common high-cardinality columns that often cause skew
-            skew_indicators = [
+            # Common high-cardinality / frequently-skewed column names
+            skew_column_indicators = [
                 "user_id",
-                "id",
-                "key",
                 "customer_id",
                 "null",
                 "none",
-                "",
                 "0",
             ]
 
-            has_skew_indicator = any(indicator in args_str for indicator in skew_indicators)
+            has_skew_column = any(indicator in args_str for indicator in skew_column_indicators)
 
-            if has_skew_indicator or not op.arguments:
-                # No explicit hint for handling skew
+            # Retrieve the data size if available in the operation metadata
+            data_size_gb = getattr(op, "data_size_gb", None) or 0
+            is_large_dataset = data_size_gb > 1
+
+            # Only flag when there is a concrete skew signal:
+            # either a known high-skew column name, or the dataset is large.
+            if has_skew_column or is_large_dataset:
                 smell = CodeSmell(
                     smell_type="data_skew_potential",
                     description=(
@@ -538,6 +547,58 @@ class SmellDetector:
                 ),
             )
             smells.append(smell)
+
+        return smells
+
+    def _detect_large_collect(self, parse_result: ParseResult) -> list[CodeSmell]:  # noqa: ARG002
+        """Detect .collect() calls without a preceding .limit() that could OOM the driver.
+
+        Args:
+            parse_result: Parse result to analyze (unused; AST is read from the parser).
+
+        Returns:
+            List of detected smells.
+
+        """
+        smells = []
+
+        tree = self.parser.ast_tree
+        if tree is None:
+            return smells
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "collect":
+                    # Walk up the call chain (up to 5 levels) looking for .limit()
+                    has_limit = False
+                    current = node.func.value
+                    for _ in range(5):
+                        if isinstance(current, ast.Call) and isinstance(
+                            current.func, ast.Attribute
+                        ):
+                            if current.func.attr == "limit":
+                                has_limit = True
+                                break
+                            current = current.func.value
+                        else:
+                            break
+
+                    if not has_limit:
+                        smells.append(
+                            CodeSmell(
+                                smell_type="large_collect",
+                                description=(
+                                    "collect() without limit() can cause driver OOM "
+                                    "on large datasets"
+                                ),
+                                severity=SeverityLevel.MEDIUM,
+                                location=None,
+                                affected_operation=None,
+                                impact=(
+                                    "Calling collect() pulls all data into driver memory. "
+                                    "Use .limit(N).collect() or write to storage instead."
+                                ),
+                            )
+                        )
 
         return smells
 

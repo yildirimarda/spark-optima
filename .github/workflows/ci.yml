@@ -12,7 +12,6 @@ on:
 
 env:
   PYTHON_VERSION: "3.12"
-  POETRY_VERSION: "1.7.1"
 
 jobs:
   # =============================================================================
@@ -30,32 +29,39 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          version: ${{ env.POETRY_VERSION }}
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Load cached venv
-        id: cached-poetry-dependencies
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
-        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-        run: poetry install --no-interaction --no-root --only dev
+        run: uv sync --frozen --only-group dev
 
       - name: Run Ruff linter
-        run: .venv/bin/python -m ruff check .
+        run: uv run ruff check .
 
       - name: Run Ruff formatter check
-        run: .venv/bin/python -m ruff format --check .
+        run: uv run ruff format --check .
 
       - name: Run MyPy type checker
-        run: .venv/bin/python -m mypy src/spark_optima
+        run: uv run mypy src/spark_optima
+
+  # =============================================================================
+  # Lockfile Check
+  # =============================================================================
+  lockfile-check:
+    name: Lockfile up to date
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Check lockfile
+        run: uv lock --check
 
   # =============================================================================
   # Security Scanning
@@ -72,16 +78,17 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          version: ${{ env.POETRY_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
-        run: poetry install --no-interaction --no-root --only dev
+        run: uv sync --frozen
 
       - name: Run Bandit security scan
-        run: .venv/bin/python -m bandit -r src/spark_optima -f json -o bandit-report.json || true
+        run: uv run bandit -r src/spark_optima -f json -o bandit-report.json --severity-level medium
 
       - name: Upload Bandit report
         uses: actions/upload-artifact@v4
@@ -91,7 +98,7 @@ jobs:
           path: bandit-report.json
 
       - name: Run Safety check
-        run: .venv/bin/python -m safety check --json --output safety-report.json || true
+        run: uv run safety check --json --output safety-report.json || true
 
       - name: Upload Safety report
         uses: actions/upload-artifact@v4
@@ -108,7 +115,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -118,26 +125,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          version: ${{ env.POETRY_VERSION }}
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Load cached venv
-        id: cached-poetry-dependencies
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
-        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-        run: poetry install --no-interaction --no-root --all-extras
+        run: uv sync --frozen
 
       - name: Run unit tests
-        run: .venv/bin/python -m pytest -v --tb=short
+        run: uv run pytest -v --tb=short --cov=src/spark_optima --cov-fail-under=80 --cov-report=xml
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -164,26 +162,17 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          version: ${{ env.POETRY_VERSION }}
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Load cached venv
-        id: cached-poetry-dependencies
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
-        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-        run: poetry install --no-interaction --no-root --all-extras
+        run: uv sync --frozen
 
       - name: Run integration tests
-        run: .venv/bin/python -m pytest -m integration -v --tb=short
+        run: uv run pytest -m integration -v --tb=short
 
   # =============================================================================
   # Docker Build
@@ -242,26 +231,17 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          version: ${{ env.POETRY_VERSION }}
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Load cached venv
-        id: cached-poetry-dependencies
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
-        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-        run: poetry install --no-interaction --no-root --with dev
+        run: uv sync --frozen
 
       - name: Build documentation
-        run: .venv/bin/python -m mkdocs build
+        run: uv run mkdocs build
 
       - name: Upload documentation artifact
         uses: actions/upload-artifact@v4
@@ -286,16 +266,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: ${{ env.POETRY_VERSION }}
-
-      - name: Configure Poetry
-        run: poetry config pypi-token.pypi ${{ secrets.PYPI_TOKEN }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Build package
-        run: poetry build
+        run: uv build
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
@@ -306,7 +281,9 @@ jobs:
           generate_release_notes: true
 
       - name: Publish to PyPI
-        run: poetry publish
+        run: uv publish
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
 
   # =============================================================================
   # Deploy to TestPyPI (on develop branch)
@@ -326,18 +303,14 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: ${{ env.POETRY_VERSION }}
-
-      - name: Configure Poetry for TestPyPI
-        run: |
-          poetry config repositories.testpypi https://test.pypi.org/legacy/
-          poetry config pypi-token.testpypi ${{ secrets.TEST_PYPI_TOKEN }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Build package
-        run: poetry build
+        run: uv build
 
       - name: Publish to TestPyPI
-        run: poetry publish -r testpypi --skip-existing
+        run: uv publish --index testpypi
+        env:
+          UV_PUBLISH_INDEX_TESTPYPI_TOKEN: ${{ secrets.TEST_PYPI_TOKEN }}
+          UV_PUBLISH_INDEX_TESTPYPI_URL: "https://test.pypi.org/legacy/"

@@ -4,11 +4,11 @@
 site_name: Spark Optima
 site_description: Intelligent Apache Spark Configuration Optimization Tool
 site_author: Spark Optima Contributors
-site_url: https://your-project.readthedocs.io
+site_url: https://yildirimarda.github.io/spark-optima
 
 # Repository
 repo_name: spark-optima/spark-optima
-repo_url: https://github.com/yourusername/spark-optima
+repo_url: https://github.com/yildirimarda/spark-optima
 edit_uri: edit/main/docs/
 
 # Copyright
@@ -82,7 +82,7 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/yourusername/spark-optima
+      link: https://github.com/yildirimarda/spark-optima
 
 # Navigation
 nav:
