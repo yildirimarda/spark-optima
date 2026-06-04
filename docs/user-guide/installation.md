@@ -43,23 +43,20 @@ pip install spark-optima[databricks]
 pip install spark-optima[all]
 ```
 
-### Method 2: Poetry (Recommended for Development)
+### Method 2: uv (Recommended for Development)
 
 If you're contributing to Spark Optima or need the development tools:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/spark-optima.git
+git clone https://github.com/yildirimarda/spark-optima.git
 cd spark-optima
 
-# Install Poetry (if not already installed)
-curl -sSL https://install.python-poetry.org | python3 -
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Install dependencies
-poetry install --all-extras
-
-# Activate virtual environment
-poetry shell
+uv sync --all-extras
 ```
 
 ### Method 3: Docker
@@ -287,12 +284,12 @@ curl http://localhost:8000/health
 **Solution**: Ensure you're in the correct virtual environment:
 
 ```bash
-# With Poetry
-poetry shell
-
-# With venv
+# With uv (activates the managed venv)
 source .venv/bin/activate  # Linux/macOS
 .venv\Scripts\activate     # Windows
+
+# Or run commands directly via uv
+uv run spark-optima --help
 ```
 
 #### Issue: `ImportError: cannot import name 'Optimizer'`
@@ -331,8 +328,8 @@ sudo usermod -aG docker $USER
 
 If you encounter issues not covered here:
 
-1. Check the [Troubleshooting Guide](../troubleshooting.md)
-2. Search [GitHub Issues](https://github.com/yourusername/spark-optima/issues)
+1. Check the [Troubleshooting Guide](../user-guide/getting-started.md)
+2. Search [GitHub Issues](https://github.com/yildirimarda/spark-optima/issues)
 3. Join our [Discord community](https://discord.gg/spark-optima)
 4. Create a new issue with details about your problem
 
@@ -342,23 +339,23 @@ For contributing to Spark Optima:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/spark-optima.git
+git clone https://github.com/yildirimarda/spark-optima.git
 cd spark-optima
 
 # Install with all dev dependencies
-poetry install --all-extras
+uv sync --all-extras
 
 # Install pre-commit hooks
-poetry run pre-commit install
+uv run pre-commit install
 
 # Run tests to verify setup
-poetry run pytest -m unit
+uv run pytest -m unit
 
 # Run all checks
 make check-all
 ```
 
-See [Contributing Guide](../../CONTRIBUTING.md) for more details.
+See [Contributing Guide](../development/contributing.md) for more details.
 
 ## Next Steps
 

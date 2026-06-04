@@ -57,9 +57,9 @@ spark-optima optimize -c ./my_spark_job.py -p databricks -d 100
 
 ## Support
 
-- GitHub Issues: [github.com/spark-optima/spark-optima/issues](https://github.com/yourusername/spark-optima/issues)
-- Documentation: [spark-optima.readthedocs.io](https://your-project.readthedocs.io)
+- GitHub Issues: [github.com/yildirimarda/spark-optima/issues](https://github.com/yildirimarda/spark-optima/issues)
+- Documentation: [yildirimarda.github.io/spark-optima](https://yildirimarda.github.io/spark-optima)
 
 ## License
 
-Spark Optima is licensed under the Apache License 2.0. See [LICENSE](https://github.com/yourusername/spark-optima/blob/main/LICENSE) for details.
+Spark Optima is licensed under the Apache License 2.0. See [LICENSE](https://github.com/yildirimarda/spark-optima/blob/main/LICENSE) for details.

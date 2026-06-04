@@ -17,12 +17,14 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from spark_optima.platforms.models import CostModel, ResourceSpec
+
+    from spark_optima.platforms.models import CostModel
 
 from spark_optima.core.bayesian.models import TrialMetrics, TrialResult, TrialStatus
 from spark_optima.core.execution.metrics_collector import ExecutionMetrics, MetricsCollector
 from spark_optima.core.execution.monitor import ExecutionMonitor, MonitoringConfig
 from spark_optima.core.execution.spark_runner import SparkRunner
+from spark_optima.platforms.models import ResourceSpec
 
 logger = logging.getLogger(__name__)
 

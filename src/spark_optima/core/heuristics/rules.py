@@ -129,6 +129,8 @@ class RuleRegistry:
         """Register all default heuristic rules."""
         # Memory rules
         self._register_memory_rules()
+        # GC tuning rules
+        self._register_gc_tuning_rules()
         # CPU rules
         self._register_cpu_rules()
         # Shuffle rules
@@ -201,6 +203,15 @@ class RuleRegistry:
                 description="Default 10% overhead, increase for Python/PySpark workloads",
             ),
             HeuristicRuleDef(
+                param_name="spark.executor.memoryOverheadFactor",
+                category=ParameterCategory.MEMORY,
+                formula="0.25",
+                base_value=0.25,
+                priority="high",
+                conditions={"is_pyspark": True},
+                description="PySpark workloads need 25% overhead for Python process memory",
+            ),
+            HeuristicRuleDef(
                 param_name="spark.executor.pyspark.memory",
                 category=ParameterCategory.MEMORY,
                 formula="executor_memory_gb * 0.2",
@@ -246,6 +257,30 @@ class RuleRegistry:
                 depends_on=["executor_memory_gb"],
                 conditions={"off_heap_enabled": True},
                 description="Allocate 30% of executor memory for off-heap",
+            ),
+        ]
+        self._rules.extend(rules)
+
+    def _register_gc_tuning_rules(self) -> None:
+        """Register GC tuning heuristic rules."""
+        rules = [
+            HeuristicRuleDef(
+                param_name="spark.executor.extraJavaOptions",
+                category=ParameterCategory.RUNTIME,
+                formula="'-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35 -XX:G1HeapRegionSize=16M'",
+                base_value="-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35 -XX:G1HeapRegionSize=16M",
+                priority="medium",
+                conditions={"executor_memory_gb": ">8"},
+                description="G1GC reduces GC pause times for large heaps (>8GB executor memory)",
+            ),
+            HeuristicRuleDef(
+                param_name="spark.driver.extraJavaOptions",
+                category=ParameterCategory.RUNTIME,
+                formula="'-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35'",
+                base_value="-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35",
+                priority="medium",
+                conditions={"driver_memory_gb": ">8"},
+                description="G1GC for driver process when driver memory exceeds 8GB",
             ),
         ]
         self._rules.extend(rules)
@@ -368,6 +403,22 @@ class RuleRegistry:
                 base_value="lz4",
                 priority="medium",
                 description="lz4 for speed, zstd for better compression",
+            ),
+            HeuristicRuleDef(
+                param_name="spark.shuffle.spill",
+                category=ParameterCategory.SHUFFLE,
+                formula="'true'",
+                base_value="true",
+                priority="high",
+                description="Always enable shuffle spill to prevent OOM on large shuffles",
+            ),
+            HeuristicRuleDef(
+                param_name="spark.shuffle.spill.numElementsForceSpillThreshold",
+                category=ParameterCategory.SHUFFLE,
+                formula="'1000000'",
+                base_value=1000000,
+                priority="low",
+                description="Force spill after 1M elements to bound memory usage",
             ),
         ]
         self._rules.extend(rules)

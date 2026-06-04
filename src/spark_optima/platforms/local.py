@@ -189,10 +189,10 @@ class LocalPlatform(LocalPlatformBase):
         config = {
             # Local mode configuration
             "spark.master": f"local[{usable.cpu_cores}]",
-            "spark.driver.memory": f"{int(usable.memory_gb)}g",
+            "spark.driver.memory": f"{int(usable.memory_gb * 0.8)}g",
             "spark.driver.cores": usable.cpu_cores,
             # Executor configuration (for local cluster mode)
-            "spark.executor.memory": f"{int(usable.memory_gb * 0.8)}g",
+            "spark.executor.memory": f"{int(usable.memory_gb * 0.8)}g",  # same as driver in local mode
             "spark.executor.cores": usable.cpu_cores,
             # Disable dynamic allocation for local
             "spark.dynamicAllocation.enabled": "false",

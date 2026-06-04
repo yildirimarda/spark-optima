@@ -7,9 +7,7 @@
 .DEFAULT_GOAL := help
 
 # Variables
-PYTHON := .venv/bin/python
-POETRY := poetry  # Installed via Homebrew, available in PATH
-VENV_BIN := .venv/bin
+UV := uv
 PACKAGE_NAME := spark_optima
 SRC_DIR := src/$(PACKAGE_NAME)
 TEST_DIR := tests
@@ -26,57 +24,57 @@ help: ## Show this help message
 # Installation
 # =============================================================================
 install: ## Install production dependencies
-	$(POETRY) install --no-dev
+	uv sync --no-dev
 
 install-dev: ## Install development dependencies
-	$(POETRY) install --all-extras
-	$(VENV_BIN)/pre-commit install
+	uv sync
+	uv run pre-commit install
 
 install-docs: ## Install documentation dependencies
-	$(POETRY) install --only dev
+	uv sync --only-group dev
 
 # =============================================================================
 # Testing
 # =============================================================================
 test: ## Run all tests
-	$(PYTHON) -m pytest
+	uv run pytest
 
 test-unit: ## Run unit tests only
-	$(PYTHON) -m pytest -m unit -v
+	uv run pytest -m unit -v
 
 test-integration: ## Run integration tests only
-	$(PYTHON) -m pytest -m integration -v
+	uv run pytest -m integration -v
 
 test-coverage: ## Run tests with coverage report
-	$(PYTHON) -m pytest --cov=$(SRC_DIR) --cov-report=html --cov-report=term
+	uv run pytest --cov=$(SRC_DIR) --cov-report=html --cov-report=term
 
 test-coverage-xml: ## Run tests with XML coverage report
-	$(PYTHON) -m pytest --cov=$(SRC_DIR) --cov-report=xml
+	uv run pytest --cov=$(SRC_DIR) --cov-report=xml
 
 test-fast: ## Run tests in parallel (faster)
-	$(PYTHON) -m pytest -x -n auto
+	uv run pytest -x -n auto
 
 # =============================================================================
 # Code Quality
 # =============================================================================
 lint: ## Run Ruff linter
-	$(PYTHON) -m ruff check .
+	uv run ruff check .
 
 lint-fix: ## Run Ruff linter with auto-fix
-	$(PYTHON) -m ruff check . --fix
+	uv run ruff check . --fix
 
 format: ## Run Ruff formatter
-	$(PYTHON) -m ruff format .
+	uv run ruff format .
 
 format-check: ## Check formatting without modifying files
-	$(PYTHON) -m ruff format . --check
+	uv run ruff format . --check
 
 type-check: ## Run MyPy type checker
-	$(PYTHON) -m mypy $(SRC_DIR)
+	uv run mypy $(SRC_DIR)
 
 security: ## Run security scans (Bandit, Safety)
-	$(PYTHON) -m bandit -r $(SRC_DIR)
-	$(PYTHON) -m safety check
+	uv run bandit -r $(SRC_DIR)
+	uv run safety check
 
 check-all: lint format-check type-check security ## Run all checks
 
@@ -84,28 +82,28 @@ check-all: lint format-check type-check security ## Run all checks
 # Pre-commit
 # =============================================================================
 pre-commit: ## Run pre-commit hooks on all files
-	$(VENV_BIN)/pre-commit run --all-files
+	uv run pre-commit run --all-files
 
 pre-commit-install: ## Install pre-commit hooks
-	$(VENV_BIN)/pre-commit install
+	uv run pre-commit install
 
 # =============================================================================
 # Documentation
 # =============================================================================
 docs: ## Build documentation
-	$(PYTHON) -m mkdocs build
+	uv run mkdocs build
 
 docs-serve: ## Serve documentation locally
-	$(PYTHON) -m mkdocs serve
+	uv run mkdocs serve
 
 docs-deploy: ## Deploy documentation to GitHub Pages
-	$(PYTHON) -m mkdocs gh-deploy
+	uv run mkdocs gh-deploy
 
 # =============================================================================
 # Building & Packaging
 # =============================================================================
 build: ## Build package
-	$(POETRY) build
+	uv build
 
 clean: ## Clean build artifacts
 	rm -rf build/
@@ -146,44 +144,43 @@ docker-compose-logs: ## View Docker Compose logs
 # Development Server
 # =============================================================================
 run-api: ## Run FastAPI development server
-	$(PYTHON) -m uvicorn spark_optima.api.main:app --reload --host 0.0.0.0 --port 8000
+	uv run uvicorn spark_optima.api.main:app --reload --host 0.0.0.0 --port 8000
 
 run-cli: ## Run CLI in interactive mode
-	$(PYTHON) -m spark_optima.cli.main
+	uv run python -m spark_optima.cli.main
 
 # =============================================================================
 # Release
 # =============================================================================
-version-patch: ## Bump patch version
-	$(POETRY) version patch
+version-patch: ## Bump patch version (edit version in pyproject.toml manually)
+	# UV does not have a built-in version bump command; edit [project] version in pyproject.toml manually.
 
-version-minor: ## Bump minor version
-	$(POETRY) version minor
+version-minor: ## Bump minor version (edit version in pyproject.toml manually)
+	# UV does not have a built-in version bump command; edit [project] version in pyproject.toml manually.
 
-version-major: ## Bump major version
-	$(POETRY) version major
+version-major: ## Bump major version (edit version in pyproject.toml manually)
+	# UV does not have a built-in version bump command; edit [project] version in pyproject.toml manually.
 
 publish-test: ## Publish to TestPyPI
-	$(POETRY) config repositories.testpypi https://test.pypi.org/legacy/
-	$(POETRY) publish -r testpypi --build
+	uv publish --index testpypi
 
 publish: ## Publish to PyPI
-	$(POETRY) publish --build
+	uv publish
 
 # =============================================================================
 # Utilities
 # =============================================================================
-shell: ## Open Poetry shell
-	$(POETRY) shell
+shell: ## Open an interactive shell in the project environment
+	uv run bash
 
 update: ## Update dependencies
-	$(POETRY) update
+	uv lock --upgrade
 
-lock: ## Update poetry.lock
-	$(POETRY) lock
+lock: ## Update uv.lock
+	uv lock
 
-requirements: ## Export requirements.txt
-	$(POETRY) export -f requirements.txt --output requirements.txt --without-hashes
+requirements: ## Export requirements.txt (no editable project entry)
+	uv export --no-hashes --no-dev --no-emit-project -o requirements.txt
 
-requirements-dev: ## Export requirements-dev.txt
-	$(POETRY) export -f requirements.txt --output requirements-dev.txt --with dev --without-hashes
+requirements-dev: ## Export requirements-dev.txt (no editable project entry)
+	uv export --no-hashes --no-emit-project -o requirements-dev.txt

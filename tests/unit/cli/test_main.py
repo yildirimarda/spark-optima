@@ -43,7 +43,7 @@ class TestCLIMain:
         """Test that running CLI without args shows help."""
         result = runner.invoke(app)
 
-        assert result.exit_code == 0
+        assert result.exit_code in (0, 2)  # Typer returns 2 with no_args_is_help=True
         assert "Spark Optima" in result.output or "Usage:" in result.output
 
     def test_cli_help_flag(self, runner: CliRunner) -> None:

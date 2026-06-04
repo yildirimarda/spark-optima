@@ -435,5 +435,5 @@ optimizer.register_objective("custom", custom_objective)
 ## See Also
 
 - [Testing Guide](testing.md) - Testing architecture
-- [Contributing Guide](../../CONTRIBUTING.md) - Development guidelines
+- [Contributing Guide](../development/contributing.md) - Development guidelines
 - [Configuration Guide](../user-guide/configuration.md) - Configuration options
