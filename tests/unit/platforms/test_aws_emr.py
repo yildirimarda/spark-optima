@@ -809,3 +809,103 @@ class TestAWSEMRPlatformRegionalPricing:
 
         assert unknown_cost["breakdown"]["region_multiplier"] == 1.0
         assert unknown_cost["total_cost"] == pytest.approx(baseline_cost["total_cost"])
+
+
+class TestAWSEMRPlatformLivePricing:
+    """Test cases for the opt-in live pricing wiring in estimate_cost."""
+
+    def _get_cluster_config(self) -> ClusterConfig:
+        """Build a deterministic config: 2 x m5.2xlarge core + m5.xlarge master."""
+        platform = AWSEMRPlatform()
+        worker = platform.get_worker_type("m5.2xlarge")
+        master = platform.get_worker_type("m5.xlarge")
+        assert worker is not None and master is not None
+        return ClusterConfig(
+            worker_type=worker,
+            worker_count=2,
+            driver_type=master,
+            driver_count=1,
+            spark_version="3.5.0",
+        )
+
+    def test_default_off_reports_static_and_keeps_existing_math(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that the default-off path is the unchanged static estimate."""
+        monkeypatch.delenv("SPARK_OPTIMA_LIVE_PRICING", raising=False)
+        cluster_config = self._get_cluster_config()
+        platform = AWSEMRPlatform(region="eu-west-1")
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=2.0)
+
+        multiplier = REGION_MULTIPLIERS["aws_emr"]["eu-west-1"]
+        # (2 x $0.384 + 1 x $0.192) x 1.25 EMR surcharge x 2h x multiplier
+        expected = (2 * 0.384 + 1 * 0.192) * 1.25 * 2.0 * multiplier
+        assert cost["pricing_source"] == "static"
+        assert cost["total_cost"] == pytest.approx(expected)
+        assert cost["breakdown"]["region_multiplier"] == multiplier
+
+    def test_live_rates_replace_static_math(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that live per-instance-type EC2 rates are used (plus surcharge)."""
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        live_rates = {"m5.2xlarge": 0.4, "m5.xlarge": 0.2}
+        monkeypatch.setattr(
+            "spark_optima.platforms.aws_emr.get_live_hourly_rate",
+            lambda platform, *, region, instance_type=None: live_rates[instance_type],
+        )
+        cluster_config = self._get_cluster_config()
+        platform = AWSEMRPlatform(region="eu-west-1")
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=2.0)
+
+        # Workers: 2 x $0.40 x 1.25 x 2h = $2.00; master: 1 x $0.20 x 1.25 x 2h = $0.50
+        assert cost["pricing_source"] == "live"
+        assert cost["breakdown"]["worker_cost"] == pytest.approx(2.0)
+        assert cost["breakdown"]["master_cost"] == pytest.approx(0.5)
+        assert cost["total_cost"] == pytest.approx(2.5)
+        assert cost["breakdown"]["region_multiplier"] == 1.0
+        # EC2/surcharge split stays consistent: total / 1.25 is the EC2 part
+        assert cost["breakdown"]["ec2_cost"] == pytest.approx(2.0)
+        assert cost["breakdown"]["emr_surcharge"] == pytest.approx(0.5)
+
+    def test_partial_live_failure_falls_back_to_static(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that a missing master rate makes the whole estimate static."""
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        live_rates: dict[str, float | None] = {"m5.2xlarge": 0.4, "m5.xlarge": None}
+        monkeypatch.setattr(
+            "spark_optima.platforms.aws_emr.get_live_hourly_rate",
+            lambda platform, *, region, instance_type=None: live_rates[instance_type],
+        )
+        cluster_config = self._get_cluster_config()
+        platform = AWSEMRPlatform(region="eu-west-1")
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=2.0)
+
+        multiplier = REGION_MULTIPLIERS["aws_emr"]["eu-west-1"]
+        expected = (2 * 0.384 + 1 * 0.192) * 1.25 * 2.0 * multiplier
+        assert cost["pricing_source"] == "static"
+        assert cost["total_cost"] == pytest.approx(expected)
+
+    def test_same_instance_type_fetches_rate_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that identical worker/master types reuse one live lookup."""
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        calls: list[str] = []
+
+        def fake_rate(platform: str, *, region: str, instance_type: str | None = None) -> float:
+            calls.append(instance_type or "")
+            return 0.4
+
+        monkeypatch.setattr("spark_optima.platforms.aws_emr.get_live_hourly_rate", fake_rate)
+        platform = AWSEMRPlatform()
+        worker = platform.get_worker_type("m5.2xlarge")
+        assert worker is not None
+        cluster_config = ClusterConfig(
+            worker_type=worker,
+            worker_count=2,
+            driver_type=worker,
+            driver_count=1,
+            spark_version="3.5.0",
+        )
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=2.0)
+
+        assert cost["pricing_source"] == "live"
+        assert calls == ["m5.2xlarge"]

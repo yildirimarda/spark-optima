@@ -751,3 +751,64 @@ class TestAWSGluePlatformRegionalPricing:
 
         assert unknown_cost["breakdown"]["region_multiplier"] == 1.0
         assert unknown_cost["total_cost"] == pytest.approx(baseline_cost["total_cost"])
+
+
+class TestAWSGluePlatformLivePricing:
+    """Test cases for the opt-in live pricing wiring in estimate_cost."""
+
+    def _get_cluster_config(self) -> ClusterConfig:
+        """Build a deterministic cluster config: 4 x G.2X (2 DPU each)."""
+        platform = AWSGluePlatform()
+        worker = platform.get_worker_type("G.2X")
+        assert worker is not None
+        return ClusterConfig(worker_type=worker, worker_count=4, spark_version="3.5.0")
+
+    def test_default_off_reports_static_and_keeps_existing_math(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that the default-off path is the unchanged static estimate."""
+        monkeypatch.delenv("SPARK_OPTIMA_LIVE_PRICING", raising=False)
+        cluster_config = self._get_cluster_config()
+        platform = AWSGluePlatform(region="eu-west-1")
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=2.0)
+
+        multiplier = REGION_MULTIPLIERS["aws_glue"]["eu-west-1"]
+        # 4 workers x 2 DPU x $0.44/DPU-hour x 2h x regional multiplier
+        assert cost["pricing_source"] == "static"
+        assert cost["total_cost"] == pytest.approx(4 * 2 * 0.44 * 2.0 * multiplier)
+        assert cost["breakdown"]["dpu_rate_per_hour"] == platform.dpu_cost_per_hour
+        assert cost["breakdown"]["region_multiplier"] == multiplier
+
+    def test_live_rate_replaces_static_math(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that a live DPU rate is used instead of baseline x multiplier."""
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        monkeypatch.setattr(
+            "spark_optima.platforms.aws_glue.get_live_hourly_rate",
+            lambda platform, *, region, instance_type=None: 0.55,
+        )
+        cluster_config = self._get_cluster_config()
+        platform = AWSGluePlatform(region="eu-west-1")
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=2.0)
+
+        # 4 workers x 2 DPU x $0.55/DPU-hour x 2h — no regional multiplier
+        assert cost["pricing_source"] == "live"
+        assert cost["total_cost"] == pytest.approx(4 * 2 * 0.55 * 2.0)
+        assert cost["breakdown"]["dpu_rate_per_hour"] == 0.55
+        assert cost["breakdown"]["region_multiplier"] == 1.0
+        assert "live" in cost["notes"]
+
+    def test_live_lookup_failure_falls_back_to_static(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that a None from the facade falls back to the static estimate."""
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        monkeypatch.setattr(
+            "spark_optima.platforms.aws_glue.get_live_hourly_rate",
+            lambda platform, *, region, instance_type=None: None,
+        )
+        cluster_config = self._get_cluster_config()
+        platform = AWSGluePlatform(region="eu-west-1")
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=2.0)
+
+        multiplier = REGION_MULTIPLIERS["aws_glue"]["eu-west-1"]
+        assert cost["pricing_source"] == "static"
+        assert cost["total_cost"] == pytest.approx(4 * 2 * 0.44 * 2.0 * multiplier)

@@ -33,7 +33,7 @@ import json
 import os
 import sqlite3
 import time
-from contextlib import closing
+from contextlib import closing, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -42,6 +42,8 @@ from spark_optima.api.jobs import DEFAULT_JOB_TTL_HOURS, BaseJobStore, Job, _utc
 
 if TYPE_CHECKING:
     from concurrent.futures import Executor
+
+    from spark_optima.api.jobs import WebhookStatus
 
 JOB_DB_ENV_VAR = "SPARK_OPTIMA_JOB_DB"
 
@@ -67,6 +69,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     spark_version TEXT NOT NULL,
     result_json TEXT,
     error TEXT,
+    webhook_status TEXT,
     submitted_ts REAL NOT NULL DEFAULT 0.0,
     finished_ts REAL
 )
@@ -106,6 +109,7 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         finished_at=row["finished_at"],
         result=json.loads(result_json) if result_json else None,
         error=row["error"],
+        webhook_status=row["webhook_status"],
         submitted_ts=float(row["submitted_ts"]),
         finished_ts=row["finished_ts"],
     )
@@ -162,6 +166,10 @@ class SQLiteJobStore(BaseJobStore):
             # which is what makes multi-worker single-node setups safe.
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(_CREATE_TABLE_SQL)
+            # Migration for databases created before v1.4 (no-op when the
+            # column already exists).
+            with suppress(sqlite3.OperationalError):
+                conn.execute("ALTER TABLE jobs ADD COLUMN webhook_status TEXT")
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -221,8 +229,8 @@ class SQLiteJobStore(BaseJobStore):
             conn.execute(
                 "INSERT INTO jobs "
                 "(job_id, status, submitted_at, started_at, finished_at, platform, "
-                "spark_version, result_json, error, submitted_ts, finished_ts) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "spark_version, result_json, error, webhook_status, submitted_ts, finished_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job.job_id,
                     job.status,
@@ -233,6 +241,7 @@ class SQLiteJobStore(BaseJobStore):
                     job.spark_version,
                     json.dumps(job.result) if job.result is not None else None,
                     job.error,
+                    job.webhook_status,
                     job.submitted_ts,
                     job.finished_ts,
                 ),
@@ -278,6 +287,20 @@ class SQLiteJobStore(BaseJobStore):
             conn.execute(
                 "UPDATE jobs SET status = 'failed', error = ?, finished_at = ?, finished_ts = ? WHERE job_id = ?",
                 (error, _utc_now_iso(), time.time(), job_id),
+            )
+            conn.commit()
+
+    def set_webhook_status(self, job_id: str, webhook_status: WebhookStatus) -> None:
+        """Record the webhook delivery outcome on a finished job.
+
+        Args:
+            job_id: Identifier of the job to update.
+            webhook_status: "delivered" or "failed".
+        """
+        with closing(self._connect()) as conn:
+            conn.execute(
+                "UPDATE jobs SET webhook_status = ? WHERE job_id = ?",
+                (webhook_status, job_id),
             )
             conn.commit()
 

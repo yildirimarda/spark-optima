@@ -14,6 +14,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from spark_optima.api.webhooks import validate_webhook_url
+
 
 class Platform(str, Enum):
     """Supported Spark platforms."""
@@ -115,6 +117,8 @@ class OptimizationRequest(BaseModel):
         use_bayesian: Whether to use Bayesian optimization.
         bayesian_trials: Number of Bayesian optimization trials.
         objectives: Optimization objectives (e.g., minimize_time).
+        webhook_url: Optional callback URL notified when an async job
+            finishes. Only honored by ``POST /optimize/async``.
     """
 
     code: str = Field(..., min_length=10, description="Spark application code")
@@ -126,6 +130,14 @@ class OptimizationRequest(BaseModel):
     use_bayesian: bool = Field(True, description="Use Bayesian optimization")
     bayesian_trials: int = Field(50, ge=1, le=500, description="Number of trials")
     objectives: list[str] = Field(["minimize_time"], description="Optimization objectives")
+    webhook_url: str | None = Field(
+        None,
+        description=(
+            "Optional http(s) URL that receives a POST notification when an asynchronous "
+            "job finishes (completed or failed). Only used by POST /optimize/async. "
+            "Obvious internal targets (localhost, loopback/link-local addresses, *.internal) are rejected."
+        ),
+    )
 
     @field_validator("objectives")
     @classmethod
@@ -136,6 +148,14 @@ class OptimizationRequest(BaseModel):
             if obj not in valid_objectives:
                 raise ValueError(f"Invalid objective: {obj}. Must be one of: {valid_objectives}")
         return v
+
+    @field_validator("webhook_url")
+    @classmethod
+    def validate_webhook_url_field(cls, v: str | None) -> str | None:
+        """Validate the webhook URL scheme and apply the SSRF guard."""
+        if v is None:
+            return v
+        return validate_webhook_url(v)
 
 
 class CodeSuggestionResponse(BaseModel):
@@ -348,10 +368,13 @@ class JobDetailResponse(JobSummaryResponse):
     Attributes:
         result: Optimization result payload when the job completed.
         error: Failure message when the job failed.
+        webhook_status: Webhook delivery outcome ("delivered" or "failed"),
+            null when no webhook was requested or delivery is still pending.
     """
 
     result: dict[str, Any] | None = Field(None, description="Optimization result when completed")
     error: str | None = Field(None, description="Error message when failed")
+    webhook_status: str | None = Field(None, description="Webhook delivery status (delivered/failed)")
 
 
 class JobListResponse(BaseModel):

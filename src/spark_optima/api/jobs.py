@@ -17,6 +17,10 @@ environment variable, read once when the global store is created:
   are not shared across workers.
 - ``sqlite`` — persistent single-node store; see
   :mod:`spark_optima.api.job_store_sqlite`.
+- ``redis`` — shared multi-replica store; see
+  :mod:`spark_optima.api.job_store_redis`. Requires the optional ``redis``
+  package; when it is missing or the server is unreachable at startup, a
+  warning is logged and the in-memory store is used instead.
 
 Any other value logs a warning and falls back to the in-memory store.
 Finished jobs are evicted opportunistically once they are older than the
@@ -43,14 +47,17 @@ logger = logging.getLogger(__name__)
 
 JobStatus = Literal["pending", "running", "completed", "failed"]
 
+WebhookStatus = Literal["delivered", "failed"]
+
 #: Default time-to-live for finished (completed/failed) jobs, in hours.
 DEFAULT_JOB_TTL_HOURS = 6.0
 
-#: Environment variable selecting the job store backend ("memory" | "sqlite").
+#: Environment variable selecting the job store backend
+#: ("memory" | "sqlite" | "redis").
 JOB_STORE_ENV_VAR = "SPARK_OPTIMA_JOB_STORE"
 
 #: Supported job store backend names.
-VALID_JOB_STORE_BACKENDS = ("memory", "sqlite")
+VALID_JOB_STORE_BACKENDS = ("memory", "sqlite", "redis")
 
 #: Shared worker pool for job execution. Optimization is synchronous
 #: CPU-bound work, so a small dedicated pool keeps the API responsive
@@ -81,6 +88,8 @@ class Job:
         finished_at: UTC ISO timestamp when execution ended, if finished.
         result: Optimization result payload when status is "completed".
         error: Error message when status is "failed".
+        webhook_status: Webhook delivery outcome ("delivered" or "failed"),
+            None when no webhook was requested or delivery has not finished.
         submitted_ts: Monotonic-ish epoch seconds used for ordering.
         finished_ts: Epoch seconds when the job finished, used for TTL eviction.
     """
@@ -94,6 +103,7 @@ class Job:
     finished_at: str | None = None
     result: dict[str, Any] | None = None
     error: str | None = None
+    webhook_status: WebhookStatus | None = None
     submitted_ts: float = field(default=0.0, repr=False)
     finished_ts: float | None = field(default=None, repr=False)
 
@@ -109,6 +119,8 @@ class BaseJobStore(ABC):
     Attributes:
         _ttl_seconds: TTL for finished jobs, in seconds.
         _executor: Optional executor override (used in tests).
+        _on_finished: In-process completion callbacks keyed by job id.
+        _callback_lock: Lock guarding the callback mapping.
     """
 
     def __init__(self, ttl_hours: float = DEFAULT_JOB_TTL_HOURS, executor: Executor | None = None) -> None:
@@ -121,8 +133,16 @@ class BaseJobStore(ABC):
         """
         self._ttl_seconds = ttl_hours * 3600.0
         self._executor = executor
+        self._on_finished: dict[str, Callable[[Job], None]] = {}
+        self._callback_lock = threading.Lock()
 
-    def submit(self, work: Callable[[], dict[str, Any]], platform: str, spark_version: str) -> str:
+    def submit(
+        self,
+        work: Callable[[], dict[str, Any]],
+        platform: str,
+        spark_version: str,
+        on_finished: Callable[[Job], None] | None = None,
+    ) -> str:
         """Register a new job and schedule it for execution.
 
         Args:
@@ -131,6 +151,12 @@ class BaseJobStore(ABC):
                 the job as failed with the exception message.
             platform: Target platform (stored as request summary).
             spark_version: Spark version (stored as request summary).
+            on_finished: Optional callback invoked on the worker thread with
+                the final job record once the job completed or failed (used
+                for webhook delivery). Callbacks are process-local: they are
+                never persisted and run only in the process that accepted
+                the job. Exceptions they raise are logged and never affect
+                job state.
 
         Returns:
             The job identifier for status polling.
@@ -144,6 +170,9 @@ class BaseJobStore(ABC):
             submitted_ts=time.time(),
         )
         self._add_job(job)
+        if on_finished is not None:
+            with self._callback_lock:
+                self._on_finished[job_id] = on_finished
 
         executor = self._executor if self._executor is not None else _EXECUTOR
         executor.submit(self._run, job_id, work)
@@ -206,6 +235,15 @@ class BaseJobStore(ABC):
             error: Human-readable failure message.
         """
 
+    @abstractmethod
+    def set_webhook_status(self, job_id: str, webhook_status: WebhookStatus) -> None:
+        """Record the webhook delivery outcome on a finished job.
+
+        Args:
+            job_id: Identifier of the job to update.
+            webhook_status: "delivered" or "failed".
+        """
+
     def _run(self, job_id: str, work: Callable[[], dict[str, Any]]) -> None:
         """Execute a job on the worker pool and record its outcome.
 
@@ -221,6 +259,29 @@ class BaseJobStore(ABC):
             self._mark_failed(job_id, str(exc))
         else:
             self._mark_completed(job_id, result)
+        self._notify_finished(job_id)
+
+    def _notify_finished(self, job_id: str) -> None:
+        """Invoke the registered completion callback for a finished job.
+
+        Runs on the worker thread after the final state has been persisted,
+        so callback failures (e.g. webhook delivery problems) can never
+        affect the job outcome.
+
+        Args:
+            job_id: Identifier of the job that just finished.
+        """
+        with self._callback_lock:
+            callback = self._on_finished.pop(job_id, None)
+        if callback is None:
+            return
+        job = self.get(job_id)
+        if job is None:  # pragma: no cover — evicted between finish and notify
+            return
+        try:
+            callback(job)
+        except Exception:  # noqa: BLE001 — callbacks must never crash the worker pool
+            logger.exception(f"Completion callback for job {job_id} raised; job state is unaffected")
 
 
 class JobStore(BaseJobStore):
@@ -329,6 +390,18 @@ class JobStore(BaseJobStore):
                 job.finished_at = _utc_now_iso()
                 job.finished_ts = time.time()
 
+    def set_webhook_status(self, job_id: str, webhook_status: WebhookStatus) -> None:
+        """Record the webhook delivery outcome on a finished job.
+
+        Args:
+            job_id: Identifier of the job to update.
+            webhook_status: "delivered" or "failed".
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is not None:
+                job.webhook_status = webhook_status
+
     def _cleanup_locked(self) -> None:
         """Evict finished jobs older than the TTL.
 
@@ -350,9 +423,12 @@ class JobStore(BaseJobStore):
 def create_job_store() -> BaseJobStore:
     """Create a job store based on the ``SPARK_OPTIMA_JOB_STORE`` env variable.
 
-    Supported values are "memory" (default) and "sqlite". Any other value
-    logs a warning and falls back to the in-memory store so the API keeps
-    working with a misconfigured environment.
+    Supported values are "memory" (default), "sqlite", and "redis". Any
+    other value logs a warning and falls back to the in-memory store so
+    the API keeps working with a misconfigured environment. The redis
+    backend also falls back to memory (with a warning, never a crash)
+    when the optional ``redis`` package is missing or the server is
+    unreachable at startup.
 
     Returns:
         A freshly constructed job store for the selected backend.
@@ -366,6 +442,25 @@ def create_job_store() -> BaseJobStore:
         store = SQLiteJobStore()
         logger.info(f"Using SQLite job store at {store.db_path}")
         return store
+    if backend == "redis":
+        # Imported lazily for the same circular-import reason as sqlite.
+        from spark_optima.api import job_store_redis
+
+        if not job_store_redis.REDIS_AVAILABLE:
+            logger.warning(
+                f"{JOB_STORE_ENV_VAR}=redis requires the optional 'redis' package "
+                "(install with `uv add redis`); falling back to the in-memory job store"
+            )
+            return JobStore()
+        try:
+            redis_store = job_store_redis.RedisJobStore()
+        except Exception as exc:  # noqa: BLE001 — startup must never crash on a bad redis config
+            logger.warning(
+                f"Could not connect to Redis for the job store ({exc}); falling back to the in-memory job store"
+            )
+            return JobStore()
+        logger.info(f"Using Redis job store at {redis_store.url}")
+        return redis_store
     if backend != "memory":
         logger.warning(
             f"Invalid {JOB_STORE_ENV_VAR}={backend!r} (expected one of {VALID_JOB_STORE_BACKENDS}); "

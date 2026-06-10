@@ -425,12 +425,45 @@ Parse a Spark event log (plain or `.gz`) and report real run metrics — GC time
 spark-optima analyze-log -l /path/to/eventlog          # summary tables
 spark-optima analyze-log -l eventlog.gz -o json        # pipe-safe JSON
 spark-optima analyze-log -l eventlog --top-stages 20
+
+# Or fetch the same metrics from a running Spark History Server
+spark-optima analyze-log --history-server http://localhost:18080            # list applications
+spark-optima analyze-log --history-server http://localhost:18080 --app-id app-1234
 ```
 
 You can also feed a log directly into optimization — data size, skew, and shuffle pressure are inferred from the real run:
 
 ```bash
 spark-optima optimize -c job.py -p databricks --event-log /path/to/eventlog
+```
+
+### `validate` - Validate an Existing Config
+
+Check a `spark-defaults.conf` or JSON config against the Spark parameter database, platform constraints, and a curated anti-pattern list (unknown/deprecated params, invalid values, driver > executor memory, broken dynamic-allocation bounds, and more). Errors exit 1.
+
+```bash
+spark-optima validate -c spark-defaults.conf
+spark-optima validate -c config.json -p databricks -s 3.5.0
+spark-optima validate -c config.json --output json
+```
+
+### `import` - Diff Your Config Against the Recommendation
+
+Import an existing config, run a normal optimization for your job, and see a parameter-by-parameter diff (changed / only-in-current / only-in-recommended).
+
+```bash
+spark-optima import -c spark-defaults.conf --code job.py -p aws_emr -d 100
+spark-optima import -c config.json --code job.py --output json
+```
+
+### `templates` - Workload Config Templates
+
+Curated starting points for common workload shapes: `etl-batch`, `streaming`, `ml-training`, `interactive`. Each parameter carries a one-line rationale.
+
+```bash
+spark-optima templates                  # list templates
+spark-optima templates --show etl-batch # params + why
+spark-optima templates --output json
 ```
 
 ## Troubleshooting CLI Issues
@@ -494,6 +527,9 @@ spark-optima history --help
 spark-optima compare --help
 spark-optima explain --help
 spark-optima analyze-log --help
+spark-optima validate --help
+spark-optima import --help
+spark-optima templates --help
 ```
 
 ### Examples

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (v1.4)
+- **Live pricing (opt-in)**: `SPARK_OPTIMA_LIVE_PRICING=1` fetches real hourly rates — Azure Retail Prices API (public) for Synapse, AWS Pricing API (optional boto3) for EMR/Glue — with a 24h JSON cache and silent fallback to the static tables on any failure. Cost breakdowns now carry `pricing_source: live|static`.
+- **Redis job store**: `SPARK_OPTIMA_JOB_STORE=redis` (+ `SPARK_OPTIMA_REDIS_URL`) — the real multi-replica answer for async jobs; guarded optional `redis` import, startup fallback to memory on connection failure.
+- **Webhooks**: optional `webhook_url` on `POST /optimize/async` — result POSTed on completion/failure (10s timeout, 3 attempts with backoff, best-effort SSRF guard, `webhook_status` surfaced on the job).
+- **New CLI commands**: `validate` (config vs parameter DB + platform constraints + anti-patterns), `import` (current vs recommended config diff), `templates` (curated etl-batch / streaming / ml-training / interactive baselines with per-param rationale).
+- **Spark History Server client**: `analyze-log --history-server URL [--app-id ID]` produces the same metrics + tuning hints as event-log files, straight from a running History Server.
+- **Wizard refresh**: objectives multi-select (Pareto), optional event-log enrichment with inferred data size/hints, current export format catalogue (7 steps now).
+
+### Fixed (v1.4)
+- `httpx` was a dev-only dependency while being imported at runtime by the Databricks/Synapse adapters — promoted to a runtime dependency.
+- The wizard never passed the selected objectives through to the optimizer.
+
 ### Added (v1.3)
 - **ML surrogate predictor wired end-to-end**: the simulation engine now learns online from trials (RandomForest, R²-gated blending of analytical + ML predictions, 20-sample minimum), persists models via joblib (`SPARK_OPTIMA_MODEL_DIR`), and execution-mode trials feed real measured runtimes into the surrogate. scikit-learn stays optional — everything degrades silently to pure-analytical without it.
 - **Performance model physics**: GC overhead modeled from memory pressure (with G1GC relief), shuffle transfer bounded by network bandwidth (10 Gbit/node) in addition to disk, and a straggler/wave-based skew model replacing the flat penalty (AQE skew mitigation caps effective skew).

@@ -9,16 +9,21 @@ autoscale configurations.
 
 Cost estimates apply a curated regional price multiplier (relative to the
 eastus baseline) based on the configured region; see
-:mod:`spark_optima.platforms.pricing`.
+:mod:`spark_optima.platforms.pricing`. When live pricing is opted in
+(``SPARK_OPTIMA_LIVE_PRICING=1``), the live regional vCore-hour rate from
+the public Azure Retail Prices API replaces the static baseline x
+multiplier; see :mod:`spark_optima.platforms.live_pricing`.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from spark_optima.platforms.base import Platform
+from spark_optima.platforms.live_pricing import get_live_hourly_rate
 from spark_optima.platforms.models import (
     ClusterConfig,
     CostModel,
@@ -335,7 +340,11 @@ class AzureSynapsePlatform(Platform):
         """Estimate cost for Azure Synapse Spark pool.
 
         The vCore cost is scaled by a curated regional price multiplier
-        (relative to the eastus baseline) for the configured region.
+        (relative to the eastus baseline) for the configured region. When
+        live pricing is opted in (``SPARK_OPTIMA_LIVE_PRICING=1``) and a live
+        regional vCore rate is available from the Azure Retail Prices API,
+        it replaces the static baseline rate x multiplier and the result is
+        labeled ``pricing_source: live``.
         """
         worker = cluster_config.worker_type
         spec = self.NODE_SIZES.get(worker.name, {})
@@ -344,10 +353,23 @@ class AzureSynapsePlatform(Platform):
         total_vcores = vcores * cluster_config.worker_count
         vcore_hours = total_vcores * duration_hours
 
-        # Calculate cost; the regional multiplier scales the baseline
-        # (eastus) vCore rate
-        region_multiplier = get_region_multiplier(self.name, self.region)
-        cost = worker.cost.calculate(duration_hours, cluster_config.worker_count) * region_multiplier
+        # Opt-in live pricing replaces the static baseline x regional
+        # multiplier with the live regional vCore rate (returns None unless
+        # explicitly enabled)
+        live_vcore_rate = get_live_hourly_rate(self.name, region=self.region)
+        if live_vcore_rate is not None:
+            pricing_source = "live"
+            vcore_rate_per_hour = live_vcore_rate
+            region_multiplier = 1.0  # Live rates are already region-specific
+            live_cost_model = replace(worker.cost, unit_cost_per_hour=live_vcore_rate * vcores)
+            cost = live_cost_model.calculate(duration_hours, cluster_config.worker_count)
+        else:
+            # Static path: the regional multiplier scales the baseline
+            # (eastus) vCore rate
+            pricing_source = "static"
+            vcore_rate_per_hour = self.vcore_cost_per_hour
+            region_multiplier = get_region_multiplier(self.name, self.region)
+            cost = worker.cost.calculate(duration_hours, cluster_config.worker_count) * region_multiplier
 
         return {
             "platform": self.name,
@@ -355,16 +377,21 @@ class AzureSynapsePlatform(Platform):
             "region": self.region,
             "duration_hours": duration_hours,
             "total_cost": cost,
+            "pricing_source": pricing_source,
             "breakdown": {
                 "vcore_hours": vcore_hours,
-                "vcore_rate_per_hour": self.vcore_cost_per_hour,
+                "vcore_rate_per_hour": vcore_rate_per_hour,
                 "node_count": cluster_config.worker_count,
                 "node_size": worker.name,
                 "vcores_per_node": vcores,
                 "region": self.region,
                 "region_multiplier": region_multiplier,
             },
-            "notes": "Cost estimate based on vCore-hour pricing (Pay-as-you-go) with a curated regional multiplier",
+            "notes": (
+                "Cost estimate based on live vCore-hour pricing (Azure Retail Prices API)"
+                if pricing_source == "live"
+                else "Cost estimate based on vCore-hour pricing (Pay-as-you-go) with a curated regional multiplier"
+            ),
         }
 
     def get_spark_pool_properties(

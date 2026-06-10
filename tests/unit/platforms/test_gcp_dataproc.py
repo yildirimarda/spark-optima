@@ -679,3 +679,24 @@ class TestGCPDataprocRegionalPricing:
         """Test an unknown region falls back to multiplier 1.0 without raising."""
         cost = self._cost_for_region("mars-north-1")
         assert cost["breakdown"]["region_multiplier"] == 1.0
+
+
+class TestGCPDataprocPlatformLivePricing:
+    """Test cases for live pricing behavior (always static for Dataproc)."""
+
+    def test_pricing_source_is_always_static(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that Dataproc reports static pricing even when opted in.
+
+        The GCP Cloud Billing Catalog API requires an API key, so live
+        pricing for Dataproc is deferred (see PLAN.md backlog).
+        """
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        platform = GCPDataprocPlatform()
+        cluster_config = platform.recommend_config(
+            resources=ResourceSpec(cpu_cores=16, memory_gb=64.0),
+            spark_version="3.5.0",
+        )
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=2.0)
+
+        assert cost["pricing_source"] == "static"

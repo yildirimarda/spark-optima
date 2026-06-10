@@ -51,7 +51,8 @@ Both mechanisms are **opt-in and disabled by default** — a freshly started ser
 |----------|---------|-------------|
 | `SPARK_OPTIMA_API_KEYS` | unset (auth disabled) | Comma-separated list of accepted API keys. When set, every `/api/v1/*` request must carry a matching `X-API-Key` header. |
 | `SPARK_OPTIMA_RATE_LIMIT` | unset (limiting disabled) | Allowed requests per minute (fixed 60-second window). Unset, empty, or `0` disables rate limiting. |
-| `SPARK_OPTIMA_JOB_STORE` | `memory` | Backend for the asynchronous job store: `memory` (default, process-local) or `sqlite` (persists jobs on local disk). |
+| `SPARK_OPTIMA_JOB_STORE` | `memory` | Backend for the asynchronous job store: `memory` (default, process-local), `sqlite` (persists jobs on local disk), or `redis` (shared across replicas; requires the optional `redis` package — `uv add redis`). When the redis backend is selected but the package is missing or the server is unreachable at startup, a warning is logged and the API falls back to the in-memory store. |
+| `SPARK_OPTIMA_REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL used when `SPARK_OPTIMA_JOB_STORE=redis`. Jobs are stored as JSON strings under `spark_optima:job:<job_id>`; finished jobs expire natively via Redis `EXPIRE`. |
 
 ### API keys
 
@@ -307,7 +308,13 @@ curl -s -X POST http://localhost:8000/api/v1/analyze \
 
 ### POST /api/v1/optimize/async
 
-Submit an optimization as a background job. The request body is identical to `POST /api/v1/optimize`. The request is validated upfront (an unsupported Spark version fails fast with `400`), queued on a small worker pool, and the response returns immediately with a job id to poll.
+Submit an optimization as a background job. The request body is identical to `POST /api/v1/optimize`, plus one optional field. The request is validated upfront (an unsupported Spark version fails fast with `400`), queued on a small worker pool, and the response returns immediately with a job id to poll.
+
+**Additional request field**
+
+| Field | Type | Required | Constraints | Description |
+|-------|------|----------|-------------|-------------|
+| `webhook_url` | string | no | http(s) only; internal targets rejected | Callback URL that receives a POST notification when the job finishes (completed **or** failed) |
 
 **Status codes**
 
@@ -315,7 +322,7 @@ Submit an optimization as a background job. The request body is identical to `PO
 |------|---------|
 | `202` | Job accepted; body contains the job id and polling URL |
 | `400` | Unsupported Spark version |
-| `422` | Request body failed validation |
+| `422` | Request body failed validation (including a rejected `webhook_url`) |
 
 **Response body** (`202`)
 
@@ -324,6 +331,41 @@ Submit an optimization as a background job. The request body is identical to `PO
 | `job_id` | string | Unique job identifier |
 | `status` | string | Job status at submission time (usually `pending`) |
 | `status_url` | string | Relative URL to poll (`/api/v1/jobs/{job_id}`) |
+
+#### Webhook callbacks
+
+When `webhook_url` is provided, the API POSTs a JSON notification to that URL once the job finishes — on completion *and* on failure:
+
+```json
+{
+  "job_id": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+  "status": "completed",
+  "submitted_at": "2026-06-10T10:00:00+00:00",
+  "finished_at": "2026-06-10T10:04:30+00:00",
+  "result": {"optimization_id": "opt-1a2b3c4d5e6f", "configuration": {"spark.executor.memory": "8g"}}
+}
+```
+
+`result` is present only when the job completed (same shape as the synchronous optimize response); for failed jobs it is replaced by an `error` string:
+
+```json
+{
+  "job_id": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+  "status": "failed",
+  "submitted_at": "2026-06-10T10:00:00+00:00",
+  "finished_at": "2026-06-10T10:00:12+00:00",
+  "error": "Optimization failed: ..."
+}
+```
+
+Delivery semantics:
+
+- Any **2xx** response from your endpoint counts as delivered.
+- Each attempt has a **10-second timeout**; up to **3 attempts** are made with exponential backoff (1s, then 2s).
+- Delivery failures are logged and **never affect the job state** — the outcome is recorded as `webhook_status` (`delivered` or `failed`) on the job record, visible via `GET /api/v1/jobs/{job_id}`.
+
+!!! warning "SSRF guard is best-effort"
+    `webhook_url` must use the `http` or `https` scheme, and obvious internal targets are rejected with `422`: `localhost`, loopback addresses (`127.0.0.0/8`, `::1`), link-local addresses (including the cloud metadata endpoint `169.254.169.254`), the unspecified address `0.0.0.0`, and `*.internal` / `*.localhost` hostnames. This check operates on the URL hostname only — it does **not** resolve DNS, so a public hostname pointing at an internal address is not caught. If the API runs inside a sensitive network, enforce egress restrictions at the network level as well.
 
 ### GET /api/v1/jobs/{job_id}
 
@@ -349,6 +391,7 @@ Poll the status and result of a job submitted via `POST /api/v1/optimize/async`.
 | `spark_version` | string | Requested Spark version |
 | `result` | object or null | Full optimization result (same shape as the synchronous response) when `status` is `completed` |
 | `error` | string or null | Failure message when `status` is `failed` |
+| `webhook_status` | string or null | Webhook delivery outcome (`delivered` or `failed`); `null` when no `webhook_url` was given or delivery has not finished yet |
 
 ### GET /api/v1/jobs
 
@@ -363,7 +406,7 @@ List recently submitted jobs, newest first.
 **Response body** (`200`): `{"jobs": [...]}` where each entry is a job summary (the detail fields above without `result` and `error`).
 
 !!! note "Job retention"
-    Finished jobs (completed or failed) are retained for a limited time (6 hours by default) and evicted afterwards, so older jobs may return `404` or disappear from the list. The job store backend is selected via `SPARK_OPTIMA_JOB_STORE` (`memory` default, `sqlite` for on-disk persistence).
+    Finished jobs (completed or failed) are retained for a limited time (6 hours by default) and evicted afterwards, so older jobs may return `404` or disappear from the list. The job store backend is selected via `SPARK_OPTIMA_JOB_STORE` (`memory` default, `sqlite` for on-disk persistence, `redis` for a store shared across replicas — see the environment variable table above).
 
 ### Full async flow example
 
@@ -492,7 +535,7 @@ All platforms support heuristic optimization, Bayesian optimization, code analys
 ## Deployment notes
 
 !!! warning "Async jobs and multiple replicas"
-    The default asynchronous job store is **process-local**: jobs are tracked in the memory of the API process that accepted them. When running multiple API replicas behind a load balancer, `GET /api/v1/jobs/{job_id}` requests may randomly hit a replica that does not know the job and return `404`. Either run a single API replica, enable sticky sessions on the ingress, or use the synchronous `POST /api/v1/optimize` endpoint when scaling out. A `sqlite`-backed store (`SPARK_OPTIMA_JOB_STORE=sqlite`) persists jobs across restarts and worker processes on a single node, but multi-node deployments still need stickiness or the synchronous endpoint. See the "API Security & Async Jobs" section in [kubernetes/PRODUCTION.md](https://github.com/yildirimarda/spark-optima/blob/main/kubernetes/PRODUCTION.md) for the full production deployment guide.
+    The default asynchronous job store is **process-local**: jobs are tracked in the memory of the API process that accepted them. When running multiple API replicas behind a load balancer, `GET /api/v1/jobs/{job_id}` requests may randomly hit a replica that does not know the job and return `404`. A `sqlite`-backed store (`SPARK_OPTIMA_JOB_STORE=sqlite`) persists jobs across restarts and worker processes on a single node, but does not help across nodes. For multi-replica deployments, use the Redis-backed store (`SPARK_OPTIMA_JOB_STORE=redis` plus `SPARK_OPTIMA_REDIS_URL`) so every replica shares the same job state — sticky sessions are then unnecessary for job polling. Without Redis, either run a single API replica, enable sticky sessions on the ingress, or use the synchronous `POST /api/v1/optimize` endpoint when scaling out. See the "API Security & Async Jobs" section in [kubernetes/PRODUCTION.md](https://github.com/yildirimarda/spark-optima/blob/main/kubernetes/PRODUCTION.md) for the full production deployment guide.
 
 ---
 

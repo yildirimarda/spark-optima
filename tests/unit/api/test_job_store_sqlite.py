@@ -367,13 +367,13 @@ class TestJobStoreFactory:
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """An unknown backend value logs a warning and uses the memory store."""
-        monkeypatch.setenv(JOB_STORE_ENV_VAR, "redis")
+        monkeypatch.setenv(JOB_STORE_ENV_VAR, "postgres")
 
         with caplog.at_level(logging.WARNING, logger="spark_optima.api.jobs"):
             store = create_job_store()
 
         assert type(store) is JobStore
-        assert any("redis" in record.message and JOB_STORE_ENV_VAR in record.message for record in caplog.records)
+        assert any("postgres" in record.message and JOB_STORE_ENV_VAR in record.message for record in caplog.records)
 
     def test_get_job_store_uses_env_at_creation(self, db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The global accessor builds the backend selected by the environment."""

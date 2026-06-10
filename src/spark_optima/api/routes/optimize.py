@@ -14,13 +14,14 @@ import logging
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, status
 
 from spark_optima.analysis import RecommendationEngine
+from spark_optima.api import webhooks
 from spark_optima.api.dependencies import get_optimization_service
-from spark_optima.api.jobs import get_job_store
+from spark_optima.api.jobs import BaseJobStore, Job, get_job_store
 from spark_optima.api.models import (
     AnalysisRequest,
     AnalysisResponse,
@@ -33,6 +34,9 @@ from spark_optima.api.models import (
 )
 from spark_optima.core.result import CodeSuggestion
 from spark_optima.platforms.models import ResourceSpec
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +257,33 @@ async def optimize(request: OptimizationRequest) -> OptimizationResponse:
     return _execute_optimization(request, optimization_id)
 
 
+def _build_webhook_callback(webhook_url: str | None, store: BaseJobStore) -> Callable[[Job], None] | None:
+    """Build the job completion callback delivering a webhook notification.
+
+    The callback runs on the job worker thread after the final state has
+    been persisted. It POSTs the notification payload (with retries) and
+    records the delivery outcome as ``webhook_status`` on the job record.
+    Delivery failures are logged and never affect the job state.
+
+    Args:
+        webhook_url: Validated webhook URL from the request, or None.
+        store: The job store holding the job record.
+
+    Returns:
+        The callback to pass to ``store.submit()``, or None when no
+        webhook was requested.
+    """
+    if webhook_url is None:
+        return None
+
+    def _deliver(job: Job) -> None:
+        """Deliver the webhook and record the outcome on the job."""
+        delivered = webhooks.deliver_webhook(webhook_url, webhooks.build_webhook_payload(job))
+        store.set_webhook_status(job.job_id, "delivered" if delivered else "failed")
+
+    return _deliver
+
+
 @router.post(
     "/optimize/async",
     response_model=JobSubmittedResponse,
@@ -274,7 +305,10 @@ async def optimize_async(request: OptimizationRequest) -> JobSubmittedResponse:
     The request is validated and queued on a small worker pool; the
     response returns immediately with a job id. Poll
     ``GET /api/v1/jobs/{job_id}`` until the job status is "completed"
-    (the full optimization result is included) or "failed".
+    (the full optimization result is included) or "failed". When
+    ``webhook_url`` is provided, the API additionally POSTs a JSON
+    notification to that URL once the job finishes; the delivery outcome
+    is reported as ``webhook_status`` on the job record.
 
     Args:
         request: Optimization request with code, platform, and parameters.
@@ -315,7 +349,13 @@ async def optimize_async(request: OptimizationRequest) -> JobSubmittedResponse:
             raise RuntimeError(str(exc.detail)) from exc
 
     store = get_job_store()
-    job_id = store.submit(_work, platform=request.platform.value, spark_version=request.spark_version)
+    on_finished = _build_webhook_callback(request.webhook_url, store)
+    job_id = store.submit(
+        _work,
+        platform=request.platform.value,
+        spark_version=request.spark_version,
+        on_finished=on_finished,
+    )
     job = store.get(job_id)
     current_status = job.status if job is not None else "pending"
     logger.info(f"Accepted async optimization job {job_id} (optimization {optimization_id})")

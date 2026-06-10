@@ -7,7 +7,10 @@ This module provides curated, static price multipliers per cloud region,
 relative to each platform's baseline region (multiplier 1.0). The values
 are curated approximations of typical regional price differences — they
 are NOT live quotes and may drift from actual cloud provider pricing.
-Live pricing API integration is deliberately deferred (see PLAN.md backlog).
+An opt-in live pricing layer (``SPARK_OPTIMA_LIVE_PRICING=1``) is available
+for aws_emr, aws_glue, and azure_synapse; see
+:mod:`spark_optima.platforms.live_pricing`. These static multipliers remain
+the default and the fallback whenever a live lookup fails.
 
 Platform keys and their baseline regions:
 

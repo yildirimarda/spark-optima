@@ -2215,6 +2215,7 @@ dependencies = [
     { name = "astor" },
     { name = "click" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "importlib-resources" },
     { name = "joblib" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -2237,7 +2238,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "bandit" },
-    { name = "httpx" },
     { name = "mkdocs" },
     { name = "mkdocs-material" },
     { name = "mkdocstrings", extra = ["python"] },
@@ -2259,6 +2259,7 @@ requires-dist = [
     { name = "astor", specifier = ">=0.8.1" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "importlib-resources", specifier = ">=6.5.0" },
     { name = "joblib", specifier = ">=1.4.0" },
     { name = "numpy", specifier = ">=2.0.0" },
@@ -2279,7 +2280,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "bandit", specifier = ">=1.8.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
     { name = "mkdocs", specifier = ">=1.6.0" },
     { name = "mkdocs-material", specifier = ">=9.5.0" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.26.0" },

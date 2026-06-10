@@ -1,0 +1,51 @@
+# Spark Optima workload template: ML training
+name: ml-training
+display_name: ML Training
+description: >-
+  Memory-oriented baseline for iterative machine learning training (MLlib,
+  distributed training, hyperparameter sweeps). Maximizes memory available
+  for cached training data and moves large buffers off-heap to reduce GC
+  pauses.
+
+workload_traits:
+  - Iterative algorithms re-reading the same cached dataset
+  - Large, long-lived objects stress the JVM garbage collector
+  - Executors stay busy for the whole job
+  - Model and feature broadcasts can be large
+
+config:
+  spark.memory.fraction:
+    value: "0.8"
+    comment: Give execution and storage most of the heap; cached training data dominates memory use.
+  spark.memory.storageFraction:
+    value: "0.4"
+    comment: Reserve a larger storage share so cached training data survives shuffles between iterations.
+  spark.memory.offHeap.enabled:
+    value: "true"
+    comment: Off-heap memory keeps large training buffers out of the GC heap.
+  spark.memory.offHeap.size:
+    value: "2g"
+    comment: Starting off-heap budget per executor; raise it alongside executor memory.
+  spark.serializer:
+    value: org.apache.spark.serializer.KryoSerializer
+    comment: Kryo dramatically shrinks serialized feature vectors and model broadcasts.
+  spark.kryoserializer.buffer.max:
+    value: "512m"
+    comment: Large models and feature vectors need a bigger Kryo buffer ceiling than the 64m default.
+  spark.rdd.compress:
+    value: "true"
+    comment: Compressing cached partitions fits more training data in memory at modest CPU cost.
+  spark.dynamicAllocation.enabled:
+    value: "false"
+    comment: Losing an executor evicts its cached partitions and stalls every subsequent iteration.
+  spark.sql.adaptive.enabled:
+    value: "true"
+    comment: Speeds up the SQL-based feature engineering stages that precede training.
+
+recommended_for:
+  - MLlib or distributed training jobs with cached datasets
+  - Feature engineering followed by iterative model fitting
+
+not_recommended_for:
+  - Streaming inference pipelines (use the streaming template)
+  - Short ad-hoc SQL exploration (use the interactive template)

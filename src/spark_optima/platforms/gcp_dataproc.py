@@ -543,6 +543,10 @@ class GCPDataprocPlatform(Platform):
             "region": self.region,
             "duration_hours": duration_hours,
             "total_cost": total_cost,
+            # Always static: GCP's Cloud Billing Catalog API requires an API
+            # key, so anonymous live pricing is not possible — deferred to
+            # the v1.5+ backlog (see spark_optima.platforms.live_pricing)
+            "pricing_source": "static",
             "breakdown": {
                 "master_machine_type": master.name,
                 "master_count": cluster_config.driver_count,

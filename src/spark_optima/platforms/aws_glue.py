@@ -9,15 +9,20 @@ Glue 2.0/3.0/4.0/5.0 versions.
 
 Cost estimates apply a curated regional price multiplier (relative to the
 us-east-1 baseline) based on the configured region; see
-:mod:`spark_optima.platforms.pricing`.
+:mod:`spark_optima.platforms.pricing`. When live pricing is opted in
+(``SPARK_OPTIMA_LIVE_PRICING=1``), the live regional DPU-hour rate from the
+AWS Pricing API replaces the static baseline x multiplier; see
+:mod:`spark_optima.platforms.live_pricing`.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from spark_optima.platforms.base import Platform
+from spark_optima.platforms.live_pricing import get_live_hourly_rate
 from spark_optima.platforms.models import (
     ClusterConfig,
     CostModel,
@@ -426,6 +431,9 @@ class AWSGluePlatform(Platform):
 
         The DPU cost is scaled by a curated regional price multiplier
         (relative to the us-east-1 baseline) for the configured region.
+        When live pricing is opted in (``SPARK_OPTIMA_LIVE_PRICING=1``) and a
+        live regional DPU rate is available, it replaces the static baseline
+        rate x multiplier and the result is labeled ``pricing_source: live``.
 
         Args:
             cluster_config: Cluster configuration.
@@ -442,10 +450,23 @@ class AWSGluePlatform(Platform):
         total_dpus = dpu_per_worker * cluster_config.worker_count
         dpu_hours = total_dpus * duration_hours
 
-        # AWS Glue bills per second with 1-minute minimum;
-        # the regional multiplier scales the baseline (us-east-1) DPU rate
-        region_multiplier = get_region_multiplier(self.name, self.region)
-        cost = worker.cost.calculate(duration_hours, cluster_config.worker_count) * region_multiplier
+        # AWS Glue bills per second with 1-minute minimum. Opt-in live
+        # pricing replaces the static baseline x regional multiplier with the
+        # live regional DPU rate (returns None unless explicitly enabled).
+        live_dpu_rate = get_live_hourly_rate(self.name, region=self.region)
+        if live_dpu_rate is not None:
+            pricing_source = "live"
+            dpu_rate_per_hour = live_dpu_rate
+            region_multiplier = 1.0  # Live rates are already region-specific
+            live_cost_model = replace(worker.cost, unit_cost_per_hour=live_dpu_rate * dpu_per_worker)
+            cost = live_cost_model.calculate(duration_hours, cluster_config.worker_count)
+        else:
+            # Static path: the regional multiplier scales the baseline
+            # (us-east-1) DPU rate
+            pricing_source = "static"
+            dpu_rate_per_hour = self.dpu_cost_per_hour
+            region_multiplier = get_region_multiplier(self.name, self.region)
+            cost = worker.cost.calculate(duration_hours, cluster_config.worker_count) * region_multiplier
 
         return {
             "platform": self.name,
@@ -453,16 +474,21 @@ class AWSGluePlatform(Platform):
             "region": self.region,
             "duration_hours": duration_hours,
             "total_cost": cost,
+            "pricing_source": pricing_source,
             "breakdown": {
                 "dpu_hours": dpu_hours,
-                "dpu_rate_per_hour": self.dpu_cost_per_hour,
+                "dpu_rate_per_hour": dpu_rate_per_hour,
                 "worker_count": cluster_config.worker_count,
                 "worker_type": worker.name,
                 "dpu_per_worker": dpu_per_worker,
                 "region": self.region,
                 "region_multiplier": region_multiplier,
             },
-            "notes": "Cost estimate based on DPU-hour pricing with a curated regional multiplier",
+            "notes": (
+                "Cost estimate based on DPU-hour pricing with a live regional rate (AWS Pricing API)"
+                if pricing_source == "live"
+                else "Cost estimate based on DPU-hour pricing with a curated regional multiplier"
+            ),
         }
 
     def get_glue_job_properties(
