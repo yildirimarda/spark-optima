@@ -434,6 +434,10 @@ class DatabricksPlatform(Platform):
             "region": self.region,
             "duration_hours": duration_hours,
             "total_cost": total_cost,
+            # Always static: DBU rates are Databricks-proprietary list prices
+            # with no public pricing API, so live pricing cannot apply here
+            # (see spark_optima.platforms.live_pricing)
+            "pricing_source": "static",
             "breakdown": {
                 "total_dbu": total_dbu,
                 "dbu_rate_per_hour": self.dbu_cost_per_hour,

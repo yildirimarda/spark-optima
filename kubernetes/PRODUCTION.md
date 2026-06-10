@@ -227,12 +227,21 @@ The API supports opt-in security via environment variables (set them in the Depl
 
 For **single-node persistence** (v1.3), switch to the SQLite backend:
 
-- `SPARK_OPTIMA_JOB_STORE` — `memory` (default) or `sqlite`. Any other value logs a warning and falls back to `memory`.
+- `SPARK_OPTIMA_JOB_STORE` — `memory` (default), `sqlite`, or `redis`. Any other value logs a warning and falls back to `memory`.
 - `SPARK_OPTIMA_JOB_DB` — SQLite database file path (default `~/.spark_optima/jobs.db`). In Kubernetes, point this at a **PVC-backed path** (e.g. mount a PersistentVolumeClaim at `/data` and set `SPARK_OPTIMA_JOB_DB=/data/jobs.db`), otherwise the database disappears with the pod filesystem.
 
 With the SQLite store, job state survives API restarts and multiple uvicorn workers on the *same node* (same DB file, WAL mode) can see each other's jobs. Note the optimization itself still runs in-process: if the process executing a job dies mid-run, the job is reported as **failed with a "worker lost" error** once it has been unfinished for longer than the staleness window (2 hours).
 
-**Multi-replica deployments:** the SQLite store does **not** make the async API safe across replicas — each pod has its own filesystem (or would contend on a shared file over network storage). With multiple replicas, either enable sticky sessions on the ingress, run a single API replica, or keep using the synchronous `POST /api/v1/optimize` endpoint; a true external job store (e.g. Redis/database-backed) remains future work.
+**Multi-replica deployments (v1.4):** the Redis-backed store is the real answer for scaling out — every replica shares the same job state, so `GET /api/v1/jobs/{id}` works no matter which pod accepted the job and sticky sessions are no longer needed for job polling:
+
+- `SPARK_OPTIMA_JOB_STORE=redis` — requires the optional `redis` Python package in the image (`uv add redis`). If the package is missing or Redis is unreachable at startup, the API logs a warning and falls back to the in-memory store instead of crashing.
+- `SPARK_OPTIMA_REDIS_URL` — connection URL (default `redis://localhost:6379/0`). In Kubernetes, point this at your Redis Service, e.g. `redis://redis.spark-optima.svc.cluster.local:6379/0`.
+
+Jobs are stored as JSON values under `spark_optima:job:<job_id>`; finished jobs expire natively via Redis `EXPIRE` (6-hour TTL by default), and the same 2-hour "worker lost" staleness rule applies. The optimization still executes in the pod that accepted the job — Redis shares job *state*, it is not a work queue.
+
+The SQLite store does **not** make the async API safe across replicas — each pod has its own filesystem (or would contend on a shared file over network storage). Without Redis, either enable sticky sessions on the ingress, run a single API replica, or keep using the synchronous `POST /api/v1/optimize` endpoint.
+
+**Webhook callbacks (v1.4):** async submissions may include a `webhook_url`; the API POSTs a JSON notification (job id, status, timestamps, result or error) when the job finishes, with a 10s timeout and up to 3 attempts (1s/2s backoff). URLs targeting `localhost`, loopback/link-local addresses (including `169.254.169.254`), `0.0.0.0`, or `*.internal` hosts are rejected at request time — but the guard is hostname-based and best-effort, so also enforce egress NetworkPolicies if the cluster can reach sensitive internal endpoints. Delivery outcome is exposed as `webhook_status` on `GET /api/v1/jobs/{id}`.
 
 ## 📞 Support
 

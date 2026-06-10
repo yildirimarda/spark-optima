@@ -10,7 +10,10 @@ Spark configuration translation, and an EC2 + EMR surcharge cost model.
 
 Cost estimates apply a curated regional price multiplier (relative to the
 us-east-1 baseline) based on the configured region; see
-:mod:`spark_optima.platforms.pricing`.
+:mod:`spark_optima.platforms.pricing`. When live pricing is opted in
+(``SPARK_OPTIMA_LIVE_PRICING=1``), live per-instance-type EC2 on-demand rates
+from the AWS Pricing API replace the static baseline x multiplier; see
+:mod:`spark_optima.platforms.live_pricing`.
 
 EMR release to Spark version mapping used by this adapter:
 
@@ -25,9 +28,11 @@ EMR release to Spark version mapping used by this adapter:
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from spark_optima.platforms.base import Platform
+from spark_optima.platforms.live_pricing import get_live_hourly_rate
 from spark_optima.platforms.models import (
     ClusterConfig,
     CostModel,
@@ -486,7 +491,11 @@ class AWSEMRPlatform(Platform):
 
         Total cost is (master + workers) x (EC2 price + EMR surcharge) x hours,
         scaled by a curated regional price multiplier (relative to the
-        us-east-1 baseline) for the configured region.
+        us-east-1 baseline) for the configured region. When live pricing is
+        opted in (``SPARK_OPTIMA_LIVE_PRICING=1``) and live EC2 on-demand
+        rates are available for both instance types, they replace the static
+        baseline rates x multiplier (the EMR surcharge still applies) and the
+        result is labeled ``pricing_source: live``.
 
         Args:
             cluster_config: Cluster configuration.
@@ -499,11 +508,39 @@ class AWSEMRPlatform(Platform):
         worker = cluster_config.worker_type
         master = cluster_config.driver_type or self.get_worker_type(self.DEFAULT_MASTER_INSTANCE_TYPE) or worker
 
-        # Per-node costs already include the EMR surcharge;
-        # the regional multiplier scales the baseline (us-east-1) prices
-        region_multiplier = get_region_multiplier(self.name, self.region)
-        worker_cost = worker.cost.calculate(duration_hours, cluster_config.worker_count) * region_multiplier
-        master_cost = master.cost.calculate(duration_hours, cluster_config.driver_count) * region_multiplier
+        # Opt-in live pricing: per-instance-type EC2 on-demand rates from the
+        # AWS Pricing API (returns None unless explicitly enabled). Both node
+        # types must resolve, otherwise the estimate falls back to static
+        # pricing entirely so the breakdown stays internally consistent.
+        live_worker_ec2_rate = get_live_hourly_rate(self.name, region=self.region, instance_type=worker.name)
+        live_master_ec2_rate = (
+            live_worker_ec2_rate
+            if master.name == worker.name
+            else get_live_hourly_rate(self.name, region=self.region, instance_type=master.name)
+        )
+
+        if live_worker_ec2_rate is not None and live_master_ec2_rate is not None:
+            pricing_source = "live"
+            region_multiplier = 1.0  # Live rates are already region-specific
+            # The EMR surcharge applies on top of the live EC2 price, exactly
+            # as it does for the static baseline prices
+            live_worker_cost = replace(
+                worker.cost,
+                unit_cost_per_hour=live_worker_ec2_rate * (1.0 + self.emr_surcharge_rate),
+            )
+            live_master_cost = replace(
+                master.cost,
+                unit_cost_per_hour=live_master_ec2_rate * (1.0 + self.emr_surcharge_rate),
+            )
+            worker_cost = live_worker_cost.calculate(duration_hours, cluster_config.worker_count)
+            master_cost = live_master_cost.calculate(duration_hours, cluster_config.driver_count)
+        else:
+            # Static path: per-node costs already include the EMR surcharge;
+            # the regional multiplier scales the baseline (us-east-1) prices
+            pricing_source = "static"
+            region_multiplier = get_region_multiplier(self.name, self.region)
+            worker_cost = worker.cost.calculate(duration_hours, cluster_config.worker_count) * region_multiplier
+            master_cost = master.cost.calculate(duration_hours, cluster_config.driver_count) * region_multiplier
         total_cost = worker_cost + master_cost
 
         # Split the total into EC2 and EMR surcharge portions
@@ -516,6 +553,7 @@ class AWSEMRPlatform(Platform):
             "region": self.region,
             "duration_hours": duration_hours,
             "total_cost": total_cost,
+            "pricing_source": pricing_source,
             "breakdown": {
                 "master_instance_type": master.name,
                 "master_count": cluster_config.driver_count,
@@ -529,8 +567,12 @@ class AWSEMRPlatform(Platform):
                 "region": self.region,
                 "region_multiplier": region_multiplier,
             },
-            "notes": "Cost estimate based on on-demand EC2 pricing plus the EMR surcharge, "
-            "with a curated regional multiplier",
+            "notes": (
+                "Cost estimate based on live on-demand EC2 pricing (AWS Pricing API) plus the EMR surcharge"
+                if pricing_source == "live"
+                else "Cost estimate based on on-demand EC2 pricing plus the EMR surcharge, "
+                "with a curated regional multiplier"
+            ),
         }
 
     def get_emr_cluster_config(

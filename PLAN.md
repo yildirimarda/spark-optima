@@ -26,7 +26,7 @@ The tool collects the user's Spark code, target platform, resource constraints, 
 | — | UV Migration (Poetry → UV) | ✅ Done |
 | 12 | v1.1 Improvements (EMR, history, new smells, exports, warm-start) | ✅ Done |
 
-**Active:** v1.3 implementation (see "Backlog" at the bottom).
+**Active:** v1.4 implementation (see "Backlog" at the bottom).
 
 ---
 
@@ -415,7 +415,57 @@ Scope drawn from the v1.2 backlog. Five parallel workstreams.
 | P1 | SQLite-backed JobStore | `SPARK_OPTIMA_JOB_STORE=memory|sqlite` (+ path env); jobs survive restarts and work across multi-process workers on one node | ✅ Done |
 | P2 | Store selection + docs note | Factory keeps in-memory default; PRODUCTION.md note updated | ✅ Done |
 
-### Backlog (v1.4+) — identified but deliberately deferred
+## v1.4 Improvement Plan (2026-06-10)
 
-- **Live pricing APIs** — v1.2 ships static regional multipliers; live AWS/Azure/GCP pricing API integration with caching remains deferred
-- **Distributed job store (multi-node)** — v1.3 ships a SQLite store for single-node persistence/multi-process; true multi-replica deployments still need Redis/DB-backed jobs or sticky sessions
+Scope: the two remaining backlog items plus the highest-value gaps left from the v1.1 audits (missing CLI commands, stale wizard, History Server integration). Five parallel workstreams.
+
+### Workstream Q — Live Pricing (opt-in, cached, fallback)
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| Q1 | `platforms/live_pricing.py` | Azure Retail Prices API (public, no auth) + AWS Pricing API (guarded boto3); GCP stays static (API key required — documented) | ✅ Done |
+| Q2 | Cache + fallback | `~/.spark_optima/pricing_cache.json`, 24h TTL; any failure → static tables, never raises | ✅ Done |
+| Q3 | Opt-in wiring | `SPARK_OPTIMA_LIVE_PRICING=1` (default off); live rate replaces static baseline×multiplier in `estimate_cost`, breakdown labels the source | ✅ Done |
+
+### Workstream R — Redis Job Store + Webhooks
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| R1 | `RedisJobStore` | `SPARK_OPTIMA_JOB_STORE=redis` + `SPARK_OPTIMA_REDIS_URL`; guarded `redis` import (no new hard deps); same BaseJobStore contract | ✅ Done |
+| R2 | Webhooks | optional `webhook_url` on `POST /optimize/async` → POST result on completion/failure (httpx, retries, SSRF guard) | ✅ Done |
+
+### Workstream S — Config Validate / Import / Templates
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| S1 | `spark-optima validate` | Validate a spark-defaults.conf / JSON config against the parameter DB + platform constraints + anti-pattern checks | ✅ Done |
+| S2 | `spark-optima import` | Import an existing config, run optimization, diff current vs recommended | ✅ Done |
+| S3 | Workload templates | Curated baselines (etl-batch, streaming, ml-training, interactive) in `data/templates/*.yaml` + `spark-optima templates list/show` | ✅ Done |
+
+### Workstream U — Spark History Server Client
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| U1 | `core/execution/history_server.py` | httpx client for the History Server REST API (`/api/v1/applications/...`) producing the same summary + tuning hints as the v1.2 event-log parser | ✅ Done |
+| U2 | CLI wiring | `analyze-log --history-server URL --app-id ID` (wired at integration) | ✅ Done |
+
+### Workstream W — Wizard Refresh
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| W1 | Wizard catch-up | Surface v1.1–v1.3 features: optimization objectives step, optional event-log path, current export formats; platforms stay dynamic | ✅ Done |
+
+### Integration & Cleanup (v1.4)
+
+| # | Item | Status |
+|---|------|--------|
+| I8 | history-server option into analyze-log; docs (cli.md/rest-api.md) updates | ✅ Done |
+| I9 | Quality gates + end-to-end smoke + CHANGELOG | ✅ Done |
+
+### Backlog (v1.5+) — identified but deliberately deferred
+
+- **Scala/Java code analysis** — analysis module is Python-only (planned since v1.0)
+- **GCP live pricing** — Cloud Billing Catalog API requires an API key; v1.4 live pricing covers Azure (public) + AWS (boto3)
+- **Streaming progress (SSE)** — live Bayesian trial progress over the API
+- **Config DB byte-unit cleanup** — some byte params express `max_value` in mixed units (e.g. `spark.kryoserializer.buffer.max: 2048` meaning MB) while the validator compares parsed bytes; `validate` skips numeric range checks for BYTES/DURATION params until the DB is normalized
+

@@ -1,0 +1,50 @@
+# Spark Optima workload template: interactive analytics
+name: interactive
+display_name: Interactive Analytics
+description: >-
+  Latency-oriented baseline for notebooks, BI dashboards, and ad-hoc SQL
+  sessions. Favors broadcast joins, modest parallelism, and warm executors
+  so individual queries return quickly.
+
+workload_traits:
+  - Many short queries over mostly small-to-medium results
+  - Latency per query matters more than aggregate throughput
+  - Idle periods between user actions
+  - Joins against dimension tables that fit in memory
+
+config:
+  spark.sql.adaptive.enabled:
+    value: "true"
+    comment: AQE converts sort-merge joins to broadcast joins at runtime when one side turns out small.
+  spark.sql.autoBroadcastJoinThreshold:
+    value: "100m"
+    comment: Broadcast dimension tables up to 100MB to skip shuffles entirely in star-schema queries.
+  spark.sql.shuffle.partitions:
+    value: "64"
+    comment: Interactive result sets are small; fewer partitions mean less task launch latency.
+  spark.dynamicAllocation.enabled:
+    value: "true"
+    comment: Release executors during think time, grab them back when a query arrives.
+  spark.dynamicAllocation.shuffleTracking.enabled:
+    value: "true"
+    comment: Allows dynamic allocation without deploying an external shuffle service.
+  spark.dynamicAllocation.minExecutors:
+    value: "1"
+    comment: Keep one warm executor so the first query after idle does not pay cold-start cost.
+  spark.dynamicAllocation.executorIdleTimeout:
+    value: "120s"
+    comment: Hold idle executors a couple of minutes; users usually issue follow-up queries.
+  spark.scheduler.mode:
+    value: FAIR
+    comment: Fair scheduling stops one heavy notebook cell from starving everyone else's queries.
+  spark.sql.inMemoryColumnarStorage.compressed:
+    value: "true"
+    comment: Compressed cached tables let more hot datasets stay resident for repeat queries.
+
+recommended_for:
+  - Notebooks and ad-hoc SQL exploration
+  - BI dashboards issuing many small queries
+
+not_recommended_for:
+  - Multi-terabyte batch transformations (use the etl-batch template)
+  - Continuous streaming jobs (use the streaming template)

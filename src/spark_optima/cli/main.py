@@ -9,6 +9,7 @@ allowing users to run configuration optimization from the terminal.
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +22,9 @@ from spark_optima import __version__
 from spark_optima.core.optimizer import Optimizer
 
 if TYPE_CHECKING:
+    from spark_optima.core.config_engine.loader import VersionLoader
+    from spark_optima.core.config_engine.models import ConfigSet, ParameterType
+    from spark_optima.core.config_engine.validator import ConfigValidator
     from spark_optima.core.execution.event_log import EventLogSummary
 
 logger = logging.getLogger(__name__)
@@ -43,6 +47,19 @@ _OBJECTIVE_OPTION = typer.Option(
         "--objective minimize_time --objective minimize_cost (default: minimize_time)"
     ),
 )
+
+
+def _silence_optuna_logs() -> None:
+    """Keep machine-readable stdout free of Optuna per-trial log lines."""
+    import logging as _logging
+
+    try:
+        import optuna
+
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+    except ImportError:  # pragma: no cover - optuna is a hard dependency
+        pass
+    _logging.getLogger("optuna").setLevel(_logging.WARNING)
 
 
 def version_callback(value: bool) -> None:
@@ -258,6 +275,8 @@ def optimize(
         console.print(f"[dim]Inferred from event log: {', '.join(notes)}[/dim]\n")
 
     # Run optimization
+    if output_format in ("json", "yaml"):
+        _silence_optuna_logs()
     with console.status("[bold green]Running optimization..."):
         try:
             result = optimizer.optimize(
@@ -466,10 +485,20 @@ def _build_tuning_advice(summary: "EventLogSummary", hints: dict[str, Any]) -> l
 @app.command("analyze-log")
 def analyze_log(
     log_path: str = typer.Option(
-        ...,
+        "",
         "--log-path",
         "-l",
         help="Path to a Spark event log file (plain JSON lines or .gz)",
+    ),
+    history_server: str = typer.Option(
+        "",
+        "--history-server",
+        help="Spark History Server base URL (e.g. http://localhost:18080)",
+    ),
+    app_id: str = typer.Option(
+        "",
+        "--app-id",
+        help="Application id on the History Server (omit to list recent applications)",
     ),
     output_format: str = typer.Option(
         "table",
@@ -484,29 +513,81 @@ def analyze_log(
         help="Number of slowest stages to display in table mode",
     ),
 ) -> None:
-    """Analyze a Spark event log from a past run and derive tuning hints.
+    """Analyze a Spark run from an event log file or a History Server.
 
-    Parses the event log (JSON lines, optionally gzip-compressed) and reports
+    Parses the event log (JSON lines, optionally gzip-compressed) or fetches
+    the same metrics from a running Spark History Server, and reports
     application, stage, GC, shuffle, spill, and skew metrics, together with
     plain-language tuning advice.
 
     Example:
         $ spark-optima analyze-log -l ./application_1234_eventlog
         $ spark-optima analyze-log -l ./eventlog.gz --output json
+        $ spark-optima analyze-log --history-server http://localhost:18080
+        $ spark-optima analyze-log --history-server http://localhost:18080 --app-id app-1234
 
     """
     from spark_optima.core.execution.event_log import EventLogParser
 
-    log_path_obj = Path(log_path)
-    if not log_path_obj.is_file():
-        console.print(f"[bold red]Error:[/bold red] event log not found: {log_path_obj}")
-        raise typer.Exit(1)
+    if history_server:
+        from spark_optima.core.execution.history_server import HistoryServerClient, HistoryServerError
 
-    try:
-        summary = EventLogParser(log_path_obj).parse()
-    except (OSError, ValueError) as e:
-        console.print(f"[bold red]Error parsing event log:[/bold red] {e}")
-        raise typer.Exit(1) from e
+        try:
+            with HistoryServerClient(history_server) as client:
+                if not app_id:
+                    apps = client.list_applications()
+                    if output_format == "json":
+                        typer.echo(
+                            json.dumps(
+                                [
+                                    {
+                                        "app_id": a.app_id,
+                                        "name": a.name,
+                                        "duration_seconds": a.duration_seconds,
+                                        "completed": a.completed,
+                                        "spark_user": a.spark_user,
+                                    }
+                                    for a in apps
+                                ],
+                                indent=2,
+                            ),
+                        )
+                        return
+                    apps_table = Table(title="History Server Applications")
+                    apps_table.add_column("App ID", style="cyan")
+                    apps_table.add_column("Name", style="green")
+                    apps_table.add_column("Duration", style="yellow")
+                    apps_table.add_column("Completed", style="magenta")
+                    for a in apps:
+                        apps_table.add_row(
+                            a.app_id,
+                            a.name,
+                            f"{a.duration_seconds:.0f}s",
+                            "yes" if a.completed else "no",
+                        )
+                    console.print(apps_table)
+                    console.print(
+                        "[dim]Analyze one with: spark-optima analyze-log --history-server ... --app-id <id>[/dim]",
+                    )
+                    return
+                summary = client.fetch_summary(app_id)
+        except HistoryServerError as e:
+            console.print(f"[bold red]History Server error:[/bold red] {e}")
+            raise typer.Exit(1) from e
+    elif log_path:
+        log_path_obj = Path(log_path)
+        if not log_path_obj.is_file():
+            console.print(f"[bold red]Error:[/bold red] event log not found: {log_path_obj}")
+            raise typer.Exit(1)
+
+        try:
+            summary = EventLogParser(log_path_obj).parse()
+        except (OSError, ValueError) as e:
+            console.print(f"[bold red]Error parsing event log:[/bold red] {e}")
+            raise typer.Exit(1) from e
+    else:
+        console.print("[bold red]Error:[/bold red] provide --log-path or --history-server")
+        raise typer.Exit(1)
 
     hints = summary.to_tuning_hints()
 
@@ -519,7 +600,8 @@ def analyze_log(
     # Table mode
     console.print(
         Panel.fit(
-            f"[bold blue]📊 Spark Event Log Analysis[/bold blue]\n[dim]{summary.app_name or log_path_obj.name}[/dim]",
+            f"[bold blue]📊 Spark Event Log Analysis[/bold blue]\n"
+            f"[dim]{summary.app_name or app_id or Path(log_path).name}[/dim]",
             border_style="blue",
         ),
     )
@@ -713,6 +795,7 @@ def wizard() -> None:
                 resource_constraints=constraints if constraints else None,
                 use_bayesian=config.get("use_bayesian", True),
                 bayesian_trials=config.get("bayesian_trials", 50),
+                objectives=config.get("objectives"),
             )
         except (RuntimeError, ValueError, KeyError, AttributeError, TypeError) as e:
             console.print(f"[bold red]Optimization failed:[/bold red] {e}")
@@ -1440,6 +1523,817 @@ def explain(
             rationale = "Tuned by Bayesian optimization"
         table.add_row(param, str(value), source, rationale)
     console.print(table)
+
+
+# =============================================================================
+# v1.4 — validate / import / templates (Workstream S)
+# =============================================================================
+
+# Matches "key value", "key=value", and "key = value" properties lines
+_PROPERTIES_LINE_RE = re.compile(r"^(\S+?)(?:\s*=\s*|\s+)(.+)$")
+
+
+def _parse_config_file(config_path: Path) -> dict[str, Any]:
+    """Parse a Spark configuration file in properties or JSON format.
+
+    Supports the spark-defaults.conf properties format ("key value" or
+    "key=value" lines with # comments) and JSON dictionaries. The format is
+    detected from the file extension and content.
+
+    Args:
+        config_path: Path to the configuration file.
+
+    Returns:
+        Dictionary of parameter names to raw values.
+
+    Raises:
+        typer.Exit: If the file cannot be read or parsed.
+
+    """
+    try:
+        content = config_path.read_text(encoding="utf-8")
+    except OSError as e:
+        console.print(f"[bold red]Error reading config file:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    if config_path.suffix.lower() == ".json" or content.lstrip().startswith("{"):
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as e:
+            console.print(f"[bold red]Error parsing JSON config:[/bold red] {e}")
+            raise typer.Exit(1) from e
+        if not isinstance(data, dict):
+            console.print(f"[bold red]Error:[/bold red] {config_path} must contain a JSON object")
+            raise typer.Exit(1)
+        return {str(key): value for key, value in data.items()}
+
+    config: dict[str, Any] = {}
+    for line_number, raw_line in enumerate(content.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _PROPERTIES_LINE_RE.match(line)
+        if match is None:
+            console.print(
+                f"[bold red]Error:[/bold red] cannot parse line {line_number} of {config_path}: {raw_line!r}",
+            )
+            raise typer.Exit(1)
+        config[match.group(1)] = match.group(2).strip()
+    return config
+
+
+def _validation_issue(severity: str, param: str, message: str, check: str) -> dict[str, str]:
+    """Build a single validation issue record.
+
+    Args:
+        severity: Issue severity ("error" or "warning").
+        param: Parameter name the issue refers to.
+        message: Human-readable issue description.
+        check: Machine-readable name of the check that produced the issue.
+
+    Returns:
+        Issue dictionary.
+
+    """
+    return {"severity": severity, "param": param, "message": message, "check": check}
+
+
+def _config_bool(value: Any) -> bool | None:
+    """Interpret a raw config value as a boolean.
+
+    Args:
+        value: Raw value (bool or "true"/"false" string).
+
+    Returns:
+        Boolean value, or None when the value is not a recognizable boolean.
+
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+    return None
+
+
+def _config_int(value: Any) -> int | None:
+    """Interpret a raw config value as an integer.
+
+    Args:
+        value: Raw value (int or numeric string).
+
+    Returns:
+        Integer value, or None when the value is not a valid integer.
+
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _memory_to_gb(value: Any, validator: "ConfigValidator") -> float | None:
+    """Convert a Spark byte-size value (e.g. "4g") to gigabytes.
+
+    Args:
+        value: Raw memory value from a config file.
+        validator: Validator used to parse byte strings.
+
+    Returns:
+        Size in GB, or None when the value cannot be parsed.
+
+    """
+    from spark_optima.core.config_engine.models import ParameterType
+
+    if value is None:
+        return None
+    try:
+        bytes_value = validator.normalize_value(str(value).strip(), ParameterType.BYTES)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(bytes_value, int) or bytes_value <= 0:
+        return None
+    return bytes_value / float(1024**3)
+
+
+def _coerce_typed_value(
+    value: Any,
+    param_type: "ParameterType",
+    validator: "ConfigValidator",
+) -> tuple[Any, str | None]:
+    """Coerce a raw config value (usually a string) into the parameter's type.
+
+    Args:
+        value: Raw value from the parsed config file.
+        param_type: Expected parameter type from the database.
+        validator: Validator used for byte/duration format checks.
+
+    Returns:
+        Tuple of (coerced value, error message or None when the value is valid).
+
+    """
+    from spark_optima.core.config_engine.models import ParameterType
+
+    if not isinstance(value, str):
+        # JSON configs may carry natively typed values; the validator checks them
+        return value, None
+
+    text = value.strip()
+    if param_type == ParameterType.BOOLEAN:
+        boolean = _config_bool(text)
+        if boolean is None:
+            return value, f"expected a boolean (true/false), got '{value}'"
+        return boolean, None
+    if param_type == ParameterType.INTEGER:
+        try:
+            return int(text), None
+        except ValueError:
+            return value, f"expected an integer, got '{value}'"
+    if param_type == ParameterType.FLOAT:
+        try:
+            return float(text), None
+        except ValueError:
+            return value, f"expected a number, got '{value}'"
+    if param_type == ParameterType.BYTES and not validator.is_valid_bytes(text):
+        return value, f"expected a byte size like '4g' or '512m', got '{value}'"
+    if param_type == ParameterType.DURATION and not validator.is_valid_duration(text):
+        return value, f"expected a duration like '60s' or '5m', got '{value}'"
+    return text, None
+
+
+def _collect_db_issues(
+    config: dict[str, Any],
+    config_set: "ConfigSet",
+    validator: "ConfigValidator",
+) -> list[dict[str, str]]:
+    """Check a config against the Spark parameter database.
+
+    Flags unknown parameters, parameters deprecated in the target version,
+    and values that fail type/format or constraint validation.
+
+    Args:
+        config: Parsed user configuration.
+        config_set: Parameter database for the resolved Spark version.
+        validator: Shared validator instance.
+
+    Returns:
+        List of validation issues.
+
+    """
+    from spark_optima.core.config_engine.models import ParameterType
+
+    issues: list[dict[str, str]] = []
+    for param_name in sorted(config):
+        raw_value = config[param_name]
+        db_param = config_set.parameters.get(param_name)
+        if db_param is None:
+            issues.append(
+                _validation_issue(
+                    "warning",
+                    param_name,
+                    f"unknown parameter (not in the Spark {config_set.version} parameter database)",
+                    "unknown_parameter",
+                ),
+            )
+            continue
+
+        if db_param.deprecated_in and db_param.is_deprecated_in(config_set.version):
+            message = f"deprecated since Spark {db_param.deprecated_in}"
+            if db_param.alternatives:
+                message += f"; use {', '.join(db_param.alternatives)} instead"
+            issues.append(_validation_issue("warning", param_name, message, "deprecated_parameter"))
+
+        coerced, type_error = _coerce_typed_value(raw_value, db_param.param_type, validator)
+        if type_error is not None:
+            issues.append(_validation_issue("error", param_name, type_error, "invalid_value"))
+            continue
+
+        if db_param.param_type in (ParameterType.BYTES, ParameterType.DURATION):
+            # The database expresses byte/duration min/max constraints in mixed
+            # units, so numeric range checks would produce false positives.
+            # Format validity was checked during coercion; also apply the
+            # database regex pattern when one exists.
+            pattern = db_param.constraints.pattern
+            if pattern and isinstance(coerced, str) and not re.match(pattern, coerced):
+                issues.append(
+                    _validation_issue(
+                        "error",
+                        param_name,
+                        f"value '{coerced}' does not match pattern '{pattern}'",
+                        "invalid_value",
+                    ),
+                )
+            continue
+
+        if not validator.validate(db_param, coerced):
+            for error in validator.get_errors():
+                issues.append(_validation_issue("error", param_name, str(error), "invalid_value"))
+    return issues
+
+
+def _collect_platform_issues(
+    config: dict[str, Any],
+    platform_name: str,
+    validator: "ConfigValidator",
+) -> list[dict[str, str]]:
+    """Check executor memory/cores against a platform's resource constraints.
+
+    Args:
+        config: Parsed user configuration.
+        platform_name: Platform identifier from PLATFORM_REGISTRY.
+        validator: Shared validator instance (for memory parsing).
+
+    Returns:
+        List of validation issues.
+
+    Raises:
+        typer.Exit: If the platform name is unknown.
+
+    """
+    from spark_optima.platforms import get_platform
+
+    try:
+        platform_obj = get_platform(platform_name)
+    except (ValueError, RuntimeError, ImportError) as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    constraints = platform_obj.constraints
+    issues: list[dict[str, str]] = []
+
+    executor_memory_gb = _memory_to_gb(config.get("spark.executor.memory"), validator)
+    if executor_memory_gb is not None:
+        if executor_memory_gb > constraints.max_memory_gb:
+            issues.append(
+                _validation_issue(
+                    "error",
+                    "spark.executor.memory",
+                    f"{executor_memory_gb:.1f} GB exceeds the {platform_obj.name} maximum of "
+                    f"{constraints.max_memory_gb:.0f} GB per worker",
+                    "platform_constraint",
+                ),
+            )
+        elif executor_memory_gb < constraints.min_memory_gb:
+            issues.append(
+                _validation_issue(
+                    "error",
+                    "spark.executor.memory",
+                    f"{executor_memory_gb:.1f} GB is below the {platform_obj.name} minimum of "
+                    f"{constraints.min_memory_gb:.0f} GB per worker",
+                    "platform_constraint",
+                ),
+            )
+
+    executor_cores = _config_int(config.get("spark.executor.cores"))
+    if executor_cores is not None:
+        if executor_cores > constraints.max_cores:
+            issues.append(
+                _validation_issue(
+                    "error",
+                    "spark.executor.cores",
+                    f"{executor_cores} cores exceeds the {platform_obj.name} maximum of "
+                    f"{constraints.max_cores} cores per worker",
+                    "platform_constraint",
+                ),
+            )
+        elif executor_cores < constraints.min_cores:
+            issues.append(
+                _validation_issue(
+                    "error",
+                    "spark.executor.cores",
+                    f"{executor_cores} cores is below the {platform_obj.name} minimum of "
+                    f"{constraints.min_cores} cores per worker",
+                    "platform_constraint",
+                ),
+            )
+
+    return issues
+
+
+def _collect_anti_pattern_issues(
+    config: dict[str, Any],
+    resolved_version: str,
+    loader: "VersionLoader",
+    validator: "ConfigValidator",
+) -> list[dict[str, str]]:
+    """Check a config against a curated list of Spark anti-patterns.
+
+    Args:
+        config: Parsed user configuration.
+        resolved_version: Spark version resolved from the parameter database.
+        loader: Version loader used for version comparisons.
+        validator: Shared validator instance (for memory parsing).
+
+    Returns:
+        List of validation issues.
+
+    """
+    issues: list[dict[str, str]] = []
+
+    # Driver memory larger than executor memory
+    driver_gb = _memory_to_gb(config.get("spark.driver.memory"), validator)
+    executor_gb = _memory_to_gb(config.get("spark.executor.memory"), validator)
+    if driver_gb is not None and executor_gb is not None and driver_gb > executor_gb:
+        issues.append(
+            _validation_issue(
+                "warning",
+                "spark.driver.memory",
+                f"driver memory ({driver_gb:.1f} GB) is larger than executor memory ({executor_gb:.1f} GB); "
+                "the driver rarely needs more memory than the executors",
+                "driver_memory_exceeds_executor",
+            ),
+        )
+
+    # Dynamic allocation misconfigurations
+    if _config_bool(config.get("spark.dynamicAllocation.enabled")):
+        min_executors = _config_int(config.get("spark.dynamicAllocation.minExecutors"))
+        max_executors = _config_int(config.get("spark.dynamicAllocation.maxExecutors"))
+        if min_executors is not None and max_executors is not None:
+            if max_executors < min_executors:
+                issues.append(
+                    _validation_issue(
+                        "error",
+                        "spark.dynamicAllocation.maxExecutors",
+                        f"maxExecutors ({max_executors}) is less than minExecutors ({min_executors})",
+                        "dynamic_allocation_bounds",
+                    ),
+                )
+            elif max_executors == min_executors:
+                issues.append(
+                    _validation_issue(
+                        "warning",
+                        "spark.dynamicAllocation.maxExecutors",
+                        f"maxExecutors equals minExecutors ({max_executors}); dynamic allocation cannot scale",
+                        "dynamic_allocation_bounds",
+                    ),
+                )
+
+        shuffle_service = _config_bool(config.get("spark.shuffle.service.enabled"))
+        shuffle_tracking = _config_bool(config.get("spark.dynamicAllocation.shuffleTracking.enabled"))
+        if not shuffle_service and not shuffle_tracking:
+            issues.append(
+                _validation_issue(
+                    "warning",
+                    "spark.dynamicAllocation.enabled",
+                    "dynamic allocation needs spark.shuffle.service.enabled=true or "
+                    "spark.dynamicAllocation.shuffleTracking.enabled=true to release executors safely",
+                    "dynamic_allocation_shuffle",
+                ),
+            )
+
+    # Java serializer combined with Kryo-dependent settings
+    serializer = str(config.get("spark.serializer", "") or "").strip()
+    if serializer.endswith("JavaSerializer"):
+        kryo_settings = sorted(name for name in config if name.startswith("spark.kryo"))
+        if kryo_settings:
+            issues.append(
+                _validation_issue(
+                    "warning",
+                    "spark.serializer",
+                    f"Java serializer is configured but Kryo settings are present "
+                    f"({', '.join(kryo_settings)}); they will have no effect",
+                    "serializer_mismatch",
+                ),
+            )
+
+    # AQE disabled on Spark >= 3.2
+    aqe_enabled = _config_bool(config.get("spark.sql.adaptive.enabled"))
+    if aqe_enabled is False and loader.is_at_least(resolved_version, "3.2.0"):
+        issues.append(
+            _validation_issue(
+                "warning",
+                "spark.sql.adaptive.enabled",
+                f"Adaptive Query Execution is disabled; on Spark {resolved_version} (>= 3.2) "
+                "AQE is mature and usually improves performance",
+                "aqe_disabled",
+            ),
+        )
+
+    return issues
+
+
+@app.command()
+def validate(
+    config_file: str = typer.Option(
+        ...,
+        "--config",
+        "-c",
+        help="Path to a Spark configuration file (spark-defaults.conf properties or JSON dict)",
+    ),
+    platform: str = typer.Option(
+        "",
+        "--platform",
+        "-p",
+        help=(
+            "Validate against a platform's resource constraints "
+            "(local, databricks, aws_glue, aws_emr, azure_synapse, gcp_dataproc, kubernetes)"
+        ),
+    ),
+    spark_version: str = typer.Option(
+        "3.5.0",
+        "--spark-version",
+        "-s",
+        help="Spark version whose parameter database is used",
+    ),
+    output_format: str = typer.Option(
+        "table",
+        "--output",
+        "-o",
+        help="Output format (table, json)",
+    ),
+) -> None:
+    """Validate a Spark configuration file against the parameter database.
+
+    Checks for unknown parameters, deprecated parameters, invalid values,
+    platform constraint violations (with --platform), and a curated list of
+    configuration anti-patterns. Exits with code 1 if any error is found;
+    warnings alone exit 0.
+
+    Example:
+        $ spark-optima validate -c spark-defaults.conf
+        $ spark-optima validate -c config.json -p aws_glue -s 3.5.0 --output json
+
+    """
+    from spark_optima.core.config_engine.loader import VersionLoader
+    from spark_optima.core.config_engine.validator import ConfigValidator
+
+    config_path = Path(config_file)
+    if not config_path.is_file():
+        console.print(f"[bold red]Error:[/bold red] config file not found: {config_path}")
+        raise typer.Exit(1)
+
+    config = _parse_config_file(config_path)
+
+    loader = VersionLoader()
+    config_set = loader.load(spark_version)
+    if config_set is None:
+        console.print(f"[bold red]Error:[/bold red] no parameter database available for Spark {spark_version}")
+        raise typer.Exit(1)
+
+    validator = ConfigValidator()
+    issues = _collect_db_issues(config, config_set, validator)
+    if platform:
+        issues.extend(_collect_platform_issues(config, platform, validator))
+    issues.extend(_collect_anti_pattern_issues(config, config_set.version, loader, validator))
+
+    severity_rank = {"error": 0, "warning": 1}
+    issues.sort(key=lambda issue: (severity_rank.get(issue["severity"], 2), issue["param"]))
+    error_issues = [issue for issue in issues if issue["severity"] == "error"]
+    warning_issues = [issue for issue in issues if issue["severity"] == "warning"]
+
+    if output_format == "json":
+        payload = {
+            "config_file": str(config_path),
+            "spark_version": config_set.version,
+            "platform": platform or None,
+            "parameter_count": len(config),
+            "issues": issues,
+            "error_count": len(error_issues),
+            "warning_count": len(warning_issues),
+            "valid": not error_issues,
+        }
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        platform_note = f" — platform {platform}" if platform else ""
+        console.print(
+            Panel.fit(
+                "[bold blue]Configuration Validation[/bold blue]\n"
+                f"[dim]{config_path} — Spark {config_set.version}{platform_note}[/dim]",
+                border_style="blue",
+            ),
+        )
+        if not issues:
+            console.print(f"[green]No issues found in {len(config)} parameter(s).[/green]")
+        else:
+            table = Table(title="Validation Issues")
+            table.add_column("Severity", style="bold", no_wrap=True)
+            table.add_column("Parameter", style="cyan")
+            table.add_column("Message")
+            for issue in issues:
+                style = "red" if issue["severity"] == "error" else "yellow"
+                table.add_row(f"[{style}]{issue['severity']}[/{style}]", issue["param"], issue["message"])
+            console.print(table)
+            console.print(
+                f"\n{len(config)} parameter(s) checked: "
+                f"[red]{len(error_issues)} error(s)[/red], [yellow]{len(warning_issues)} warning(s)[/yellow]",
+            )
+
+    if error_issues:
+        raise typer.Exit(1)
+
+
+def _diff_configs(
+    current: dict[str, Any],
+    recommended: dict[str, Any],
+) -> tuple[list[str], list[str], list[str]]:
+    """Compute the difference between a current and a recommended config.
+
+    Values are compared as trimmed strings so "200" and 200 are equal.
+
+    Args:
+        current: User's existing configuration.
+        recommended: Optimizer-recommended configuration.
+
+    Returns:
+        Tuple of sorted key lists: (changed, only_in_current, only_in_recommended).
+
+    """
+    shared = set(current) & set(recommended)
+    changed = sorted(key for key in shared if str(current[key]).strip() != str(recommended[key]).strip())
+    only_in_current = sorted(set(current) - set(recommended))
+    only_in_recommended = sorted(set(recommended) - set(current))
+    return changed, only_in_current, only_in_recommended
+
+
+@app.command("import")
+def import_config(
+    config_file: str = typer.Option(
+        ...,
+        "--config",
+        "-c",
+        help="Path to your existing Spark configuration (spark-defaults.conf properties or JSON dict)",
+    ),
+    code_path: str = typer.Option(
+        ...,
+        "--code",
+        help="Path to the Spark application code file",
+    ),
+    platform: str = typer.Option(
+        "local",
+        "--platform",
+        "-p",
+        help="Target platform (local, databricks, aws_glue, aws_emr, azure_synapse, gcp_dataproc, kubernetes)",
+    ),
+    spark_version: str = typer.Option(
+        "3.5.0",
+        "--spark-version",
+        "-s",
+        help="Spark version to optimize for",
+    ),
+    data_size_gb: float = typer.Option(
+        0.0,
+        "--data-size",
+        "-d",
+        help="Data size in GB",
+    ),
+    bayesian_trials: int = typer.Option(
+        50,
+        "--bayesian-trials",
+        help="Number of Bayesian optimization trials",
+    ),
+    output_format: str = typer.Option(
+        "table",
+        "--output",
+        "-o",
+        help="Output format (table, json)",
+    ),
+) -> None:
+    """Import an existing Spark config and diff it against an optimized one.
+
+    Parses your current configuration, runs a normal optimization for the
+    given code, and shows what the optimizer would change: parameters with
+    different values, parameters only in your config, and parameters only in
+    the recommendation.
+
+    Example:
+        $ spark-optima import -c spark-defaults.conf --code ./my_job.py -p databricks -d 100
+        $ spark-optima import -c config.json --code ./my_job.py --output json
+
+    """
+    config_path_obj = Path(config_file)
+    if not config_path_obj.is_file():
+        console.print(f"[bold red]Error:[/bold red] config file not found: {config_path_obj}")
+        raise typer.Exit(1)
+
+    current = _parse_config_file(config_path_obj)
+
+    if output_format != "json":
+        console.print(
+            Panel.fit(
+                "[bold blue]Import & Diff Configuration[/bold blue]\n"
+                f"[dim]{config_path_obj} ({len(current)} parameters) vs optimized recommendation[/dim]",
+                border_style="blue",
+            ),
+        )
+
+    try:
+        optimizer = Optimizer(
+            platform=platform,
+            spark_version=spark_version,
+            optimization_mode="simulation",
+        )
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    data_profile = {"size_gb": data_size_gb} if data_size_gb else None
+
+    if output_format == "json":
+        _silence_optuna_logs()
+
+    try:
+        result = optimizer.optimize(
+            code_path=Path(code_path),
+            data_profile=data_profile,
+            use_bayesian=True,
+            bayesian_trials=bayesian_trials,
+        )
+    except (RuntimeError, ValueError, KeyError, AttributeError, TypeError) as e:
+        console.print(f"[bold red]Optimization failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    recommended: dict[str, Any] = result.configuration or {}
+    changed, only_in_current, only_in_recommended = _diff_configs(current, recommended)
+
+    if output_format == "json":
+        payload = {
+            "current": current,
+            "recommended": recommended,
+            "diff": {
+                "changed": {key: {"current": current[key], "recommended": recommended[key]} for key in changed},
+                "only_in_current": {key: current[key] for key in only_in_current},
+                "only_in_recommended": {key: recommended[key] for key in only_in_recommended},
+            },
+            "estimated_time_minutes": result.estimated_time_minutes,
+        }
+        typer.echo(json.dumps(payload, indent=2, default=str))
+        return
+
+    if not changed and not only_in_current and not only_in_recommended:
+        console.print("[green]Your configuration already matches the recommendation.[/green]")
+    else:
+        diff_table = Table(title="Current vs Recommended Configuration")
+        diff_table.add_column("Parameter", style="cyan", no_wrap=True)
+        diff_table.add_column("Current", style="yellow")
+        diff_table.add_column("Recommended", style="green")
+        for key in changed:
+            diff_table.add_row(key, str(current[key]), str(recommended[key]))
+        if only_in_current:
+            diff_table.add_section()
+            diff_table.add_row("[bold dim]Only in current[/bold dim]", "", "")
+            for key in only_in_current:
+                diff_table.add_row(key, str(current[key]), "[dim]-[/dim]")
+        if only_in_recommended:
+            diff_table.add_section()
+            diff_table.add_row("[bold dim]Only in recommended[/bold dim]", "", "")
+            for key in only_in_recommended:
+                diff_table.add_row(key, "[dim]-[/dim]", str(recommended[key]))
+        console.print(diff_table)
+
+        unchanged_count = len(set(current) & set(recommended)) - len(changed)
+        if unchanged_count:
+            console.print(f"[dim]{unchanged_count} parameter(s) already match and are not shown.[/dim]")
+
+    console.print(
+        f"\nEstimated time with recommended configuration: [green]{result.estimated_time_minutes:.1f} min[/green]",
+    )
+    console.print("[dim]Tip: validate your current config with: spark-optima validate -c <file>[/dim]")
+
+
+@app.command()
+def templates(
+    show: str = typer.Option(
+        "",
+        "--show",
+        help="Show full details of one template (e.g. etl-batch)",
+    ),
+    output_format: str = typer.Option(
+        "table",
+        "--output",
+        "-o",
+        help="Output format (table, json)",
+    ),
+) -> None:
+    """List curated workload templates or inspect one in detail.
+
+    Templates are curated baseline Spark configurations for common workload
+    archetypes (batch ETL, streaming, ML training, interactive analytics).
+    Use them as a starting point and layer your own settings on top.
+
+    Example:
+        $ spark-optima templates
+        $ spark-optima templates --show etl-batch
+        $ spark-optima templates --show streaming --output json
+
+    """
+    from spark_optima.core.templates import TemplateRegistry
+
+    registry = TemplateRegistry()
+
+    if show:
+        try:
+            template = registry.get_template(show)
+        except ValueError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            raise typer.Exit(1) from e
+
+        if output_format == "json":
+            typer.echo(json.dumps(template.to_dict(), indent=2))
+            return
+
+        console.print(
+            Panel.fit(
+                f"[bold blue]{template.display_name}[/bold blue]\n[dim]{template.description}[/dim]",
+                border_style="blue",
+            ),
+        )
+
+        if template.workload_traits:
+            console.print("[bold]Workload traits:[/bold]")
+            for trait in template.workload_traits:
+                console.print(f"  - {trait}")
+            console.print()
+
+        config_table = Table(title="Curated Configuration")
+        config_table.add_column("Parameter", style="cyan", no_wrap=True)
+        config_table.add_column("Value", style="green")
+        config_table.add_column("Why", style="dim")
+        for param_name, parameter in template.config.items():
+            config_table.add_row(param_name, str(parameter.value), parameter.comment)
+        console.print(config_table)
+
+        if template.recommended_for:
+            console.print("\n[bold green]Recommended for:[/bold green]")
+            for item in template.recommended_for:
+                console.print(f"  - {item}")
+        if template.not_recommended_for:
+            console.print("\n[bold yellow]Not recommended for:[/bold yellow]")
+            for item in template.not_recommended_for:
+                console.print(f"  - {item}")
+        return
+
+    all_templates = registry.list_templates()
+
+    if output_format == "json":
+        typer.echo(json.dumps([template.to_dict() for template in all_templates], indent=2))
+        return
+
+    console.print(
+        Panel.fit(
+            "[bold blue]Workload Templates[/bold blue]\n[dim]Curated baseline Spark configurations[/dim]",
+            border_style="blue",
+        ),
+    )
+
+    table = Table(title="Available Templates")
+    table.add_column("Name", style="cyan", no_wrap=True)
+    table.add_column("Display Name", style="green")
+    table.add_column("Parameters", justify="right")
+    table.add_column("Description", style="dim")
+    for template in all_templates:
+        table.add_row(template.name, template.display_name, str(len(template.config)), template.description)
+    console.print(table)
+
+    console.print("\n[dim]Tip: inspect one with: spark-optima templates --show <name>[/dim]")
 
 
 if __name__ == "__main__":

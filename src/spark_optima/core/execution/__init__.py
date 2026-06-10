@@ -9,6 +9,7 @@ and collecting detailed performance metrics for optimization trials.
 
 from spark_optima.core.execution.engine import ExecutionEngine
 from spark_optima.core.execution.event_log import EventLogParser, EventLogSummary, StageSummary
+from spark_optima.core.execution.history_server import ApplicationInfo, HistoryServerClient, HistoryServerError
 from spark_optima.core.execution.metrics_collector import MetricsCollector
 from spark_optima.core.execution.monitor import ExecutionMonitor
 from spark_optima.core.execution.spark_runner import SparkRunner
@@ -21,4 +22,7 @@ __all__ = [
     "EventLogParser",
     "EventLogSummary",
     "StageSummary",
+    "ApplicationInfo",
+    "HistoryServerClient",
+    "HistoryServerError",
 ]

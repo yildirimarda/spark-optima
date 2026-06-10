@@ -1,0 +1,54 @@
+# Spark Optima workload template: batch ETL
+name: etl-batch
+display_name: Batch ETL
+description: >-
+  Throughput-oriented baseline for scheduled batch ETL pipelines that scan,
+  transform, and write large datasets. Favors adaptive query execution and
+  elastic resource usage over latency.
+
+workload_traits:
+  - Large sequential reads and writes
+  - Heavy shuffles from wide transformations (joins, aggregations)
+  - Throughput and total cost matter more than latency
+  - Cluster is often shared with other scheduled jobs
+
+config:
+  spark.sql.adaptive.enabled:
+    value: "true"
+    comment: AQE re-plans shuffles at runtime using real statistics, the single biggest win for batch SQL.
+  spark.sql.adaptive.coalescePartitions.enabled:
+    value: "true"
+    comment: Merges small post-shuffle partitions to avoid task scheduling overhead.
+  spark.sql.adaptive.skewJoin.enabled:
+    value: "true"
+    comment: Splits skewed join partitions so a single hot key cannot stall the stage.
+  spark.dynamicAllocation.enabled:
+    value: "true"
+    comment: Batch stages have very different parallelism needs; let Spark scale executors per stage.
+  spark.dynamicAllocation.shuffleTracking.enabled:
+    value: "true"
+    comment: Allows dynamic allocation without deploying an external shuffle service.
+  spark.dynamicAllocation.minExecutors:
+    value: "2"
+    comment: Keep a small floor so stages start without cold allocation latency.
+  spark.dynamicAllocation.maxExecutors:
+    value: "20"
+    comment: Cap elasticity to protect shared-cluster capacity; tune to your cluster size.
+  spark.serializer:
+    value: org.apache.spark.serializer.KryoSerializer
+    comment: Kryo is faster and more compact than Java serialization for shuffle-heavy jobs.
+  spark.sql.shuffle.partitions:
+    value: "200"
+    comment: Reasonable starting parallelism; AQE coalescing fixes over-partitioning at runtime.
+  spark.sql.files.maxPartitionBytes:
+    value: "256m"
+    comment: Larger input splits reduce task count when scanning big files in bulk.
+
+recommended_for:
+  - Nightly or hourly batch pipelines
+  - Large joins and aggregations over files or tables
+  - Jobs where total runtime and cost dominate
+
+not_recommended_for:
+  - Structured Streaming jobs (use the streaming template)
+  - Sub-second interactive queries (use the interactive template)

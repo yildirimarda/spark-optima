@@ -858,3 +858,24 @@ class TestDatabricksDefaultRegionPerCloud:
         """Test an explicit region overrides the per-cloud default."""
         platform = DatabricksPlatform(cloud_provider="azure", region="westeurope")
         assert platform.region == "westeurope"
+
+
+class TestDatabricksPlatformLivePricing:
+    """Test cases for live pricing behavior (always static for Databricks)."""
+
+    def test_pricing_source_is_always_static(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that Databricks reports static pricing even when opted in.
+
+        DBU rates are Databricks-proprietary list prices with no public
+        pricing API, so the live pricing layer never applies here.
+        """
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        platform = DatabricksPlatform()
+        cluster_config = platform.recommend_config(
+            resources=ResourceSpec(cpu_cores=8, memory_gb=32.0),
+            spark_version="3.5.0",
+        )
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=2.0)
+
+        assert cost["pricing_source"] == "static"

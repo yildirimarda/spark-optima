@@ -1,0 +1,47 @@
+# Spark Optima workload template: streaming
+name: streaming
+display_name: Streaming
+description: >-
+  Latency-and-stability oriented baseline for Spark Structured Streaming and
+  DStream jobs processing continuous micro-batches. Keeps a fixed executor
+  footprint and applies backpressure so input rate matches processing rate.
+
+workload_traits:
+  - Continuous micro-batches with small per-batch data volumes
+  - Stable, predictable latency matters more than peak throughput
+  - Long-running driver and executors
+  - Stateful operations need bounded state store memory
+
+config:
+  spark.dynamicAllocation.enabled:
+    value: "false"
+    comment: Executor churn causes micro-batch latency spikes and state recovery; keep a fixed footprint.
+  spark.streaming.backpressure.enabled:
+    value: "true"
+    comment: Adjusts the ingestion rate to the processing rate so batches never queue up unboundedly.
+  spark.streaming.stopGracefullyOnShutdown:
+    value: "true"
+    comment: Finish in-flight batches on shutdown to avoid duplicate or lost records.
+  spark.streaming.kafka.maxRatePerPartition:
+    value: "1000"
+    comment: Caps Kafka ingest per partition so a backlog cannot overwhelm the first batches after restart.
+  spark.sql.shuffle.partitions:
+    value: "64"
+    comment: Micro-batches are small; fewer shuffle partitions cut per-batch task overhead.
+  spark.sql.streaming.stateStore.providerClass:
+    value: org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider
+    comment: RocksDB state store (Spark 3.2+) keeps large state off-heap and bounds GC pressure.
+  spark.serializer:
+    value: org.apache.spark.serializer.KryoSerializer
+    comment: Faster serialization lowers per-batch processing time.
+  spark.sql.adaptive.enabled:
+    value: "false"
+    comment: AQE does not benefit micro-batch plans and adds re-planning overhead per batch.
+
+recommended_for:
+  - Structured Streaming pipelines (Kafka, Kinesis, files)
+  - Near-real-time aggregation and enrichment jobs
+
+not_recommended_for:
+  - Large batch backfills (use the etl-batch template)
+  - Iterative ML training (use the ml-training template)

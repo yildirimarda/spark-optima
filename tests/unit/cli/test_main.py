@@ -1950,3 +1950,677 @@ class TestCLIExportParetoFormats:
 
         assert result.exit_code == 1
         assert "Export error" in result.output
+
+
+# =============================================================================
+# v1.4 — validate / import / templates (Workstream S)
+# =============================================================================
+
+
+def _write_config_file(tmp_path: Path, lines: list[str], name: str = "spark-defaults.conf") -> Path:
+    """Write a properties-format config file for validate/import tests."""
+    path = tmp_path / name
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _issue_checks(payload: dict) -> set[str]:
+    """Collect the set of check names present in a validate JSON payload."""
+    return {issue["check"] for issue in payload["issues"]}
+
+
+def _issues_for_check(payload: dict, check: str) -> list[dict]:
+    """Return the issues produced by a specific check."""
+    return [issue for issue in payload["issues"] if issue["check"] == check]
+
+
+class TestCLIValidateCommand:
+    """Test cases for the validate command (Workstream S)."""
+
+    def test_validate_command_help(self, runner: CliRunner) -> None:
+        """Test validate command help."""
+        result = runner.invoke(app, ["validate", "--help"])
+
+        assert result.exit_code == 0
+        assert "validate" in result.output.lower()
+
+    def test_validate_clean_properties_config(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A clean properties config produces no issues and exits 0."""
+        config = _write_config_file(
+            tmp_path,
+            [
+                "# spark defaults for the nightly job",
+                "",
+                "spark.executor.memory 4g",
+                "spark.executor.cores=4",
+                "spark.sql.adaptive.enabled true",
+            ],
+        )
+
+        result = runner.invoke(app, ["validate", "-c", str(config)])
+
+        assert result.exit_code == 0
+        assert "No issues found" in result.output
+
+    def test_validate_json_config_input(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A JSON dict config with native types parses and validates."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "spark.executor.memory": "4g",
+                    "spark.executor.cores": 4,
+                    "spark.sql.adaptive.enabled": True,
+                },
+            ),
+        )
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["valid"] is True
+        assert payload["parameter_count"] == 3
+        assert payload["error_count"] == 0
+        assert payload["issues"] == []
+
+    def test_validate_unknown_parameter_warns(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Unknown parameters are reported as warnings (exit 0)."""
+        config = _write_config_file(tmp_path, ["spark.executor.memry 4g"])
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["valid"] is True
+        issues = _issues_for_check(payload, "unknown_parameter")
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "warning"
+        assert issues[0]["param"] == "spark.executor.memry"
+
+    def test_validate_deprecated_parameter_warns(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Parameters deprecated in the target version produce warnings."""
+        config = _write_config_file(tmp_path, ["spark.sql.legacy.allowUntypedScalaUDF true"])
+
+        result = runner.invoke(
+            app,
+            ["validate", "-c", str(config), "-s", "4.1.0", "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        issues = _issues_for_check(payload, "deprecated_parameter")
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "warning"
+        assert "deprecated" in issues[0]["message"].lower()
+
+    def test_validate_no_deprecation_for_current_parameter(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Non-deprecated parameters do not trigger the deprecation check."""
+        config = _write_config_file(tmp_path, ["spark.executor.memory 4g"])
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert "deprecated_parameter" not in _issue_checks(payload)
+
+    def test_validate_invalid_integer_value(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A non-integer value for an integer parameter is an error (exit 1)."""
+        config = _write_config_file(tmp_path, ["spark.executor.cores abc"])
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["valid"] is False
+        issues = _issues_for_check(payload, "invalid_value")
+        assert issues and issues[0]["severity"] == "error"
+        assert "integer" in issues[0]["message"]
+
+    def test_validate_invalid_boolean_value(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A non-boolean value for a boolean parameter is an error."""
+        config = _write_config_file(tmp_path, ["spark.sql.adaptive.enabled maybe"])
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        issues = _issues_for_check(payload, "invalid_value")
+        assert issues and "boolean" in issues[0]["message"]
+
+    def test_validate_invalid_memory_format(self, runner: CliRunner, tmp_path: Path) -> None:
+        """An invalid byte-size string is an error."""
+        config = _write_config_file(tmp_path, ["spark.executor.memory 4x"])
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        issues = _issues_for_check(payload, "invalid_value")
+        assert issues and "byte size" in issues[0]["message"]
+
+    def test_validate_constraint_violation(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A value beyond the database max constraint is an error."""
+        config = _write_config_file(tmp_path, ["spark.executor.cores 999"])
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        issues = _issues_for_check(payload, "invalid_value")
+        assert issues and "maximum" in issues[0]["message"]
+
+    def test_validate_platform_constraint_violation(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Executor memory beyond the platform maximum is an error."""
+        config = _write_config_file(tmp_path, ["spark.executor.memory 300g"])
+
+        result = runner.invoke(
+            app,
+            ["validate", "-c", str(config), "-p", "aws_glue", "--output", "json"],
+        )
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        issues = _issues_for_check(payload, "platform_constraint")
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "error"
+        assert "aws_glue" in issues[0]["message"]
+
+    def test_validate_platform_constraint_satisfied(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Executor memory/cores within platform limits produce no issues."""
+        config = _write_config_file(
+            tmp_path,
+            ["spark.executor.memory 8g", "spark.executor.cores 4"],
+        )
+
+        result = runner.invoke(
+            app,
+            ["validate", "-c", str(config), "-p", "aws_glue", "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert "platform_constraint" not in _issue_checks(payload)
+
+    def test_validate_unknown_platform(self, runner: CliRunner, tmp_path: Path) -> None:
+        """An unknown platform name exits 1 with the valid options."""
+        config = _write_config_file(tmp_path, ["spark.executor.memory 4g"])
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "-p", "narnia"])
+
+        assert result.exit_code == 1
+        assert "Unknown platform" in result.output
+
+    def test_validate_antipattern_driver_exceeds_executor(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Driver memory above executor memory is flagged as a warning."""
+        config = _write_config_file(
+            tmp_path,
+            ["spark.driver.memory 8g", "spark.executor.memory 4g"],
+        )
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        issues = _issues_for_check(payload, "driver_memory_exceeds_executor")
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "warning"
+
+    def test_validate_antipattern_driver_below_executor_ok(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Driver memory below executor memory is not flagged."""
+        config = _write_config_file(
+            tmp_path,
+            ["spark.driver.memory 2g", "spark.executor.memory 4g"],
+        )
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert "driver_memory_exceeds_executor" not in _issue_checks(payload)
+
+    def test_validate_antipattern_dynamic_allocation_inverted_bounds(self, runner: CliRunner, tmp_path: Path) -> None:
+        """maxExecutors below minExecutors with dynamic allocation is an error."""
+        config = _write_config_file(
+            tmp_path,
+            [
+                "spark.dynamicAllocation.enabled true",
+                "spark.dynamicAllocation.minExecutors 10",
+                "spark.dynamicAllocation.maxExecutors 5",
+                "spark.shuffle.service.enabled true",
+            ],
+        )
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        issues = _issues_for_check(payload, "dynamic_allocation_bounds")
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "error"
+
+    def test_validate_antipattern_dynamic_allocation_equal_bounds(self, runner: CliRunner, tmp_path: Path) -> None:
+        """maxExecutors equal to minExecutors is only a warning."""
+        config = _write_config_file(
+            tmp_path,
+            [
+                "spark.dynamicAllocation.enabled true",
+                "spark.dynamicAllocation.minExecutors 5",
+                "spark.dynamicAllocation.maxExecutors 5",
+                "spark.shuffle.service.enabled true",
+            ],
+        )
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        issues = _issues_for_check(payload, "dynamic_allocation_bounds")
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "warning"
+
+    def test_validate_antipattern_dynamic_allocation_without_shuffle(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Dynamic allocation without shuffle service or tracking warns."""
+        config = _write_config_file(tmp_path, ["spark.dynamicAllocation.enabled true"])
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        issues = _issues_for_check(payload, "dynamic_allocation_shuffle")
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "warning"
+
+    def test_validate_antipattern_dynamic_allocation_with_shuffle_service(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Dynamic allocation with the shuffle service enabled is not flagged."""
+        config = _write_config_file(
+            tmp_path,
+            [
+                "spark.dynamicAllocation.enabled true",
+                "spark.shuffle.service.enabled true",
+            ],
+        )
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert "dynamic_allocation_shuffle" not in _issue_checks(payload)
+
+    def test_validate_antipattern_java_serializer_with_kryo_settings(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Java serializer combined with Kryo settings is flagged."""
+        config = _write_config_file(
+            tmp_path,
+            [
+                "spark.serializer org.apache.spark.serializer.JavaSerializer",
+                "spark.kryoserializer.buffer.max 512m",
+            ],
+        )
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        issues = _issues_for_check(payload, "serializer_mismatch")
+        assert len(issues) == 1
+        assert "spark.kryoserializer.buffer.max" in issues[0]["message"]
+
+    def test_validate_kryo_serializer_with_kryo_settings_ok(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Kryo serializer with Kryo settings is not flagged."""
+        config = _write_config_file(
+            tmp_path,
+            [
+                "spark.serializer org.apache.spark.serializer.KryoSerializer",
+                "spark.kryoserializer.buffer.max 512m",
+            ],
+        )
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert "serializer_mismatch" not in _issue_checks(payload)
+
+    def test_validate_antipattern_aqe_disabled_on_modern_spark(self, runner: CliRunner, tmp_path: Path) -> None:
+        """AQE disabled on Spark >= 3.2 is flagged as a warning."""
+        config = _write_config_file(tmp_path, ["spark.sql.adaptive.enabled false"])
+
+        result = runner.invoke(
+            app,
+            ["validate", "-c", str(config), "-s", "3.5.0", "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        issues = _issues_for_check(payload, "aqe_disabled")
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "warning"
+
+    def test_validate_aqe_disabled_on_old_spark_ok(self, runner: CliRunner, tmp_path: Path) -> None:
+        """AQE disabled on Spark < 3.2 is not flagged."""
+        config = _write_config_file(tmp_path, ["spark.sql.adaptive.enabled false"])
+
+        result = runner.invoke(
+            app,
+            ["validate", "-c", str(config), "-s", "3.1.0", "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert "aqe_disabled" not in _issue_checks(payload)
+
+    def test_validate_malformed_properties_line(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A properties line without a value exits 1."""
+        config = _write_config_file(tmp_path, ["spark.executor.memory"])
+
+        result = runner.invoke(app, ["validate", "-c", str(config)])
+
+        assert result.exit_code == 1
+        assert "cannot parse line" in result.output
+
+    def test_validate_missing_config_file(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A missing config file exits 1."""
+        result = runner.invoke(app, ["validate", "-c", str(tmp_path / "missing.conf")])
+
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_validate_table_output_groups_by_severity(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Table output shows the issues table and a severity summary."""
+        config = _write_config_file(
+            tmp_path,
+            [
+                "spark.executor.cores abc",
+                "spark.unknown.param 1",
+            ],
+        )
+
+        result = runner.invoke(app, ["validate", "-c", str(config)])
+
+        assert result.exit_code == 1
+        assert "Validation Issues" in result.output
+        assert "error" in result.output
+        assert "warning" in result.output
+        assert "1 error(s)" in result.output
+        assert "1 warning(s)" in result.output
+
+
+class TestCLIImportCommand:
+    """Test cases for the import command (Workstream S)."""
+
+    @staticmethod
+    def _mock_result(configuration: dict | None = None) -> object:
+        """Build a real OptimizationResult for the mocked optimizer."""
+        from spark_optima.core.result import OptimizationResult
+
+        return OptimizationResult(
+            configuration=configuration
+            if configuration is not None
+            else {
+                "spark.executor.memory": "8g",
+                "spark.executor.cores": 4,
+                "spark.sql.shuffle.partitions": 200,
+            },
+            estimated_time_minutes=10.0,
+            confidence_score=0.9,
+            platform_specific={"platform": "local"},
+        )
+
+    def test_import_command_help(self, runner: CliRunner) -> None:
+        """Test import command help."""
+        result = runner.invoke(app, ["import", "--help"])
+
+        assert result.exit_code == 0
+        assert "import" in result.output.lower()
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_import_json_diff(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+        tmp_path: Path,
+    ) -> None:
+        """JSON output carries current, recommended, and a correct diff."""
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = self._mock_result()
+        mock_optimizer.return_value = mock_instance
+
+        config = _write_config_file(
+            tmp_path,
+            [
+                "spark.executor.memory 2g",
+                "spark.old.param x",
+                "spark.sql.shuffle.partitions 200",
+            ],
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "import",
+                "-c",
+                str(config),
+                "--code",
+                str(sample_code_file),
+                "--output",
+                "json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["current"]["spark.executor.memory"] == "2g"
+        assert payload["recommended"]["spark.executor.memory"] == "8g"
+        assert payload["diff"]["changed"] == {
+            "spark.executor.memory": {"current": "2g", "recommended": "8g"},
+        }
+        assert payload["diff"]["only_in_current"] == {"spark.old.param": "x"}
+        assert payload["diff"]["only_in_recommended"] == {"spark.executor.cores": 4}
+        # "200" (string) and 200 (int) must compare as equal
+        assert "spark.sql.shuffle.partitions" not in payload["diff"]["changed"]
+        assert payload["estimated_time_minutes"] == pytest.approx(10.0)
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_import_table_output(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Table output shows the diff sections and the estimated time."""
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = self._mock_result()
+        mock_optimizer.return_value = mock_instance
+
+        config = _write_config_file(
+            tmp_path,
+            ["spark.executor.memory 2g", "spark.old.param x"],
+        )
+
+        result = runner.invoke(
+            app,
+            ["import", "-c", str(config), "--code", str(sample_code_file)],
+        )
+
+        assert result.exit_code == 0
+        assert "Current vs Recommended" in result.output
+        assert "Only in current" in result.output
+        assert "Only in recommended" in result.output
+        assert "10.0 min" in result.output
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_import_identical_config(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+        tmp_path: Path,
+    ) -> None:
+        """An already-optimal config reports no differences."""
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = self._mock_result({"spark.executor.memory": "4g"})
+        mock_optimizer.return_value = mock_instance
+
+        config = _write_config_file(tmp_path, ["spark.executor.memory 4g"])
+
+        result = runner.invoke(
+            app,
+            ["import", "-c", str(config), "--code", str(sample_code_file)],
+        )
+
+        assert result.exit_code == 0
+        assert "already matches" in result.output
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_import_passes_options_through(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Platform, version, data size, and trials reach the Optimizer."""
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = self._mock_result()
+        mock_optimizer.return_value = mock_instance
+
+        config = _write_config_file(tmp_path, ["spark.executor.memory 2g"])
+
+        result = runner.invoke(
+            app,
+            [
+                "import",
+                "-c",
+                str(config),
+                "--code",
+                str(sample_code_file),
+                "-p",
+                "databricks",
+                "-s",
+                "3.4.0",
+                "-d",
+                "25",
+                "--bayesian-trials",
+                "7",
+            ],
+        )
+
+        assert result.exit_code == 0
+        _, init_kwargs = mock_optimizer.call_args
+        assert init_kwargs["platform"] == "databricks"
+        assert init_kwargs["spark_version"] == "3.4.0"
+        _, optimize_kwargs = mock_instance.optimize.call_args
+        assert optimize_kwargs["bayesian_trials"] == 7
+        assert optimize_kwargs["data_profile"] == {"size_gb": 25.0}
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_import_optimizer_failure(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+        tmp_path: Path,
+    ) -> None:
+        """An optimization failure exits 1 with an error message."""
+        mock_instance = MagicMock()
+        mock_instance.optimize.side_effect = RuntimeError("boom")
+        mock_optimizer.return_value = mock_instance
+
+        config = _write_config_file(tmp_path, ["spark.executor.memory 2g"])
+
+        result = runner.invoke(
+            app,
+            ["import", "-c", str(config), "--code", str(sample_code_file)],
+        )
+
+        assert result.exit_code == 1
+        assert "Optimization failed" in result.output
+
+    def test_import_missing_config_file(self, runner: CliRunner, sample_code_file: Path, tmp_path: Path) -> None:
+        """A missing config file exits 1."""
+        result = runner.invoke(
+            app,
+            [
+                "import",
+                "-c",
+                str(tmp_path / "missing.conf"),
+                "--code",
+                str(sample_code_file),
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_import_requires_options(self, runner: CliRunner) -> None:
+        """import requires both --config and --code."""
+        result = runner.invoke(app, ["import"])
+
+        assert result.exit_code != 0
+
+
+class TestCLITemplatesCommand:
+    """Test cases for the templates command (Workstream S)."""
+
+    def test_templates_command_help(self, runner: CliRunner) -> None:
+        """Test templates command help."""
+        result = runner.invoke(app, ["templates", "--help"])
+
+        assert result.exit_code == 0
+        assert "template" in result.output.lower()
+
+    def test_templates_list_table(self, runner: CliRunner) -> None:
+        """The list table shows all four bundled templates."""
+        result = runner.invoke(app, ["templates"])
+
+        assert result.exit_code == 0
+        for name in ("etl-batch", "streaming", "ml-training", "interactive"):
+            assert name in result.output
+
+    def test_templates_list_json(self, runner: CliRunner) -> None:
+        """JSON list output is machine readable with all templates."""
+        result = runner.invoke(app, ["templates", "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert {entry["name"] for entry in payload} == {
+            "etl-batch",
+            "streaming",
+            "ml-training",
+            "interactive",
+        }
+
+    def test_templates_show_json(self, runner: CliRunner) -> None:
+        """JSON show output contains the curated params with rationale."""
+        result = runner.invoke(
+            app,
+            ["templates", "--show", "etl-batch", "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["name"] == "etl-batch"
+        assert payload["config"]["spark.sql.adaptive.enabled"]["value"] == "true"
+        assert payload["config"]["spark.sql.adaptive.enabled"]["comment"]
+        assert payload["recommended_for"]
+        assert payload["not_recommended_for"]
+
+    def test_templates_show_table(self, runner: CliRunner) -> None:
+        """Table show output displays the template details."""
+        result = runner.invoke(app, ["templates", "--show", "streaming"])
+
+        assert result.exit_code == 0
+        assert "Streaming" in result.output
+        assert "Curated Configuration" in result.output
+        assert "Recommended for" in result.output
+
+    def test_templates_show_unknown(self, runner: CliRunner) -> None:
+        """An unknown template name exits 1 listing the available ones."""
+        result = runner.invoke(app, ["templates", "--show", "does-not-exist"])
+
+        assert result.exit_code == 1
+        assert "Unknown template" in result.output

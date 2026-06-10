@@ -60,6 +60,7 @@ def _to_detail(job: Job) -> JobDetailResponse:
         spark_version=job.spark_version,
         result=job.result,
         error=job.error,
+        webhook_status=job.webhook_status,
     )
 
 
