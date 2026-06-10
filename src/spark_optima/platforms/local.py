@@ -181,9 +181,7 @@ class LocalPlatform(LocalPlatformBase):
 
         """
         usable = (
-            cluster_config.driver_type.resources
-            if cluster_config.driver_type
-            else cluster_config.worker_type.resources
+            cluster_config.driver_type.resources if cluster_config.driver_type else cluster_config.worker_type.resources
         )
 
         config = {

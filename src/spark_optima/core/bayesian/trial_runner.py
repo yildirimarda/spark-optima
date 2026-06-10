@@ -77,9 +77,7 @@ class TrialRunner:
 
         self.mode = mode
         self.timeout_seconds = timeout_seconds
-        self.max_consecutive_failures = (
-            max_consecutive_failures or self.DEFAULT_MAX_CONSECUTIVE_FAILURES
-        )
+        self.max_consecutive_failures = max_consecutive_failures or self.DEFAULT_MAX_CONSECUTIVE_FAILURES
 
         # Initialize engines
         self._simulation_engine = simulation_engine or SimulationEngine()
@@ -704,9 +702,7 @@ class SimulationModel:
         total_executor_cores = num_executors * executor_cores
 
         # CPU utilization based on parallelism vs cores
-        utilization = (
-            min(95.0, (parallelism / total_executor_cores) * 50) if total_executor_cores > 0 else 50.0
-        )
+        utilization = min(95.0, (parallelism / total_executor_cores) * 50) if total_executor_cores > 0 else 50.0
 
         return max(10.0, utilization)  # Minimum 10% utilization
 

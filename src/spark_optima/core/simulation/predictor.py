@@ -97,8 +97,7 @@ class MLPerformancePredictor:
         """
         if not SKLEARN_AVAILABLE:
             raise RuntimeError(
-                "scikit-learn is required for ML prediction. "
-                "Install with: pip install scikit-learn",
+                "scikit-learn is required for ML prediction. Install with: pip install scikit-learn",
             )
 
         self.model_path = Path(model_path) if model_path else None
@@ -138,8 +137,7 @@ class MLPerformancePredictor:
         """
         if len(trials) < 10:
             logger.warning(
-                f"Insufficient training data ({len(trials)} samples). "
-                "Need at least 10 trials for reliable training.",
+                f"Insufficient training data ({len(trials)} samples). Need at least 10 trials for reliable training.",
             )
             return {"r2_score": 0.0, "mae": float("inf")}
 

@@ -32,10 +32,7 @@ def client() -> TestClient:
 def valid_optimization_request() -> dict:
     """Create a valid optimization request."""
     return {
-        "code": (
-            "from pyspark.sql import SparkSession\n"
-            "spark = SparkSession.builder.getOrCreate()"
-        ),
+        "code": ("from pyspark.sql import SparkSession\nspark = SparkSession.builder.getOrCreate()"),
         "platform": "local",
         "spark_version": "3.5.0",
         "resources": {
@@ -49,9 +46,7 @@ def valid_optimization_request() -> dict:
 class TestOptimizeEndpoint:
     """Test cases for the optimize endpoint."""
 
-    def test_optimize_returns_200(
-        self, client: TestClient, valid_optimization_request: dict
-    ) -> None:
+    def test_optimize_returns_200(self, client: TestClient, valid_optimization_request: dict) -> None:
         """Test that optimize endpoint returns HTTP 200 for valid request."""
         response = client.post("/api/v1/optimize", json=valid_optimization_request)
 
@@ -91,9 +86,7 @@ class TestOptimizeEndpoint:
         # Should either validate version or accept and fail later
         assert response.status_code in [200, 422, 400]
 
-    def test_optimize_response_structure(
-        self, client: TestClient, valid_optimization_request: dict
-    ) -> None:
+    def test_optimize_response_structure(self, client: TestClient, valid_optimization_request: dict) -> None:
         """Test optimize response structure."""
         response = client.post("/api/v1/optimize", json=valid_optimization_request)
 
@@ -147,9 +140,7 @@ class TestOptimizeEndpointWithDataProfile:
     """Test cases for optimize endpoint with data profile."""
 
     @patch("spark_optima.api.routes.optimize.get_optimization_service")
-    def test_optimize_with_data_profile(
-        self, mock_get_service: MagicMock, client: TestClient
-    ) -> None:
+    def test_optimize_with_data_profile(self, mock_get_service: MagicMock, client: TestClient) -> None:
         """Test optimize with data profile - covers line 142."""
         mock_service = MagicMock()
         mock_service.validate_spark_version.return_value = True
@@ -183,9 +174,7 @@ class TestOptimizeEndpointWithDataProfile:
         assert response.status_code in [200, 500]
 
     @patch("spark_optima.api.routes.optimize.get_optimization_service")
-    def test_optimize_with_full_data_profile(
-        self, mock_get_service: MagicMock, client: TestClient
-    ) -> None:
+    def test_optimize_with_full_data_profile(self, mock_get_service: MagicMock, client: TestClient) -> None:
         """Test optimize with full data profile including all fields."""
         mock_service = MagicMock()
         mock_service.validate_spark_version.return_value = True
@@ -223,9 +212,7 @@ class TestOptimizeEndpointWithConstraints:
     """Test cases for optimize endpoint with constraints."""
 
     @patch("spark_optima.api.routes.optimize.get_optimization_service")
-    def test_optimize_with_constraints(
-        self, mock_get_service: MagicMock, client: TestClient
-    ) -> None:
+    def test_optimize_with_constraints(self, mock_get_service: MagicMock, client: TestClient) -> None:
         """Test optimize with all constraint types - covers lines 153-160."""
         mock_service = MagicMock()
         mock_service.validate_spark_version.return_value = True
@@ -380,9 +367,7 @@ class TestOptimizeEndpointSparkVersion:
     """Test cases for Spark version validation."""
 
     @patch("spark_optima.api.routes.optimize.get_optimization_service")
-    def test_optimize_invalid_spark_version(
-        self, mock_get_service: MagicMock, client: TestClient
-    ) -> None:
+    def test_optimize_invalid_spark_version(self, mock_get_service: MagicMock, client: TestClient) -> None:
         """Test optimize with unsupported Spark version."""
         mock_service = MagicMock()
         mock_service.validate_spark_version.return_value = False
@@ -526,10 +511,7 @@ class TestAnalyzeEndpoint:
     def test_analyze_returns_200(self, client: TestClient) -> None:
         """Test that analyze endpoint returns HTTP 200 for valid request."""
         request = {
-            "code": (
-                "from pyspark.sql import SparkSession\n"
-                "spark = SparkSession.builder.getOrCreate()"
-            ),
+            "code": ("from pyspark.sql import SparkSession\nspark = SparkSession.builder.getOrCreate()"),
         }
 
         response = client.post("/api/v1/analyze", json=request)
@@ -547,10 +529,7 @@ class TestAnalyzeEndpoint:
     def test_analyze_response_structure(self, client: TestClient) -> None:
         """Test analyze response structure."""
         request = {
-            "code": (
-                "from pyspark.sql import SparkSession\n"
-                "spark = SparkSession.builder.getOrCreate()"
-            ),
+            "code": ("from pyspark.sql import SparkSession\nspark = SparkSession.builder.getOrCreate()"),
         }
 
         response = client.post("/api/v1/analyze", json=request)
@@ -573,9 +552,7 @@ class TestOptimizeEndpointConstraintsMaxMemoryGb:
     """Test cases for max_memory_gb constraint (line 154)."""
 
     @patch("spark_optima.api.routes.optimize.get_optimization_service")
-    def test_optimize_with_max_memory_gb_constraint(
-        self, mock_get_service: MagicMock, client: TestClient
-    ) -> None:
+    def test_optimize_with_max_memory_gb_constraint(self, mock_get_service: MagicMock, client: TestClient) -> None:
         """Test optimize with max_memory_gb constraint - covers line 154."""
         mock_service = MagicMock()
         mock_service.validate_spark_version.return_value = True
@@ -592,10 +569,7 @@ class TestOptimizeEndpointConstraintsMaxMemoryGb:
         mock_get_service.return_value = mock_service
 
         request = {
-            "code": (
-                "from pyspark.sql import SparkSession\n"
-                "spark = SparkSession.builder.getOrCreate()"
-            ),
+            "code": ("from pyspark.sql import SparkSession\nspark = SparkSession.builder.getOrCreate()"),
             "platform": "local",
             "resources": {
                 "cpu_cores": 4,
@@ -619,9 +593,7 @@ class TestOptimizeEndpointConstraintsMaxCostPerHour:
     """Test cases for max_cost_per_hour constraint (line 156)."""
 
     @patch("spark_optima.api.routes.optimize.get_optimization_service")
-    def test_optimize_with_max_cost_per_hour_constraint(
-        self, mock_get_service: MagicMock, client: TestClient
-    ) -> None:
+    def test_optimize_with_max_cost_per_hour_constraint(self, mock_get_service: MagicMock, client: TestClient) -> None:
         """Test optimize with max_cost_per_hour constraint - covers line 156."""
         mock_service = MagicMock()
         mock_service.validate_spark_version.return_value = True
@@ -638,10 +610,7 @@ class TestOptimizeEndpointConstraintsMaxCostPerHour:
         mock_get_service.return_value = mock_service
 
         request = {
-            "code": (
-                "from pyspark.sql import SparkSession\n"
-                "spark = SparkSession.builder.getOrCreate()"
-            ),
+            "code": ("from pyspark.sql import SparkSession\nspark = SparkSession.builder.getOrCreate()"),
             "platform": "local",
             "resources": {
                 "cpu_cores": 4,
@@ -665,9 +634,7 @@ class TestOptimizeEndpointConstraintsMaxExecutors:
     """Test cases for max_executors constraint (line 158)."""
 
     @patch("spark_optima.api.routes.optimize.get_optimization_service")
-    def test_optimize_with_max_executors_constraint(
-        self, mock_get_service: MagicMock, client: TestClient
-    ) -> None:
+    def test_optimize_with_max_executors_constraint(self, mock_get_service: MagicMock, client: TestClient) -> None:
         """Test optimize with max_executors constraint - covers line 158."""
         mock_service = MagicMock()
         mock_service.validate_spark_version.return_value = True
@@ -684,10 +651,7 @@ class TestOptimizeEndpointConstraintsMaxExecutors:
         mock_get_service.return_value = mock_service
 
         request = {
-            "code": (
-                "from pyspark.sql import SparkSession\n"
-                "spark = SparkSession.builder.getOrCreate()"
-            ),
+            "code": ("from pyspark.sql import SparkSession\nspark = SparkSession.builder.getOrCreate()"),
             "platform": "local",
             "resources": {
                 "cpu_cores": 4,
@@ -711,9 +675,7 @@ class TestOptimizeEndpointConstraintsTimeoutMinutes:
     """Test cases for timeout_minutes constraint (line 160)."""
 
     @patch("spark_optima.api.routes.optimize.get_optimization_service")
-    def test_optimize_with_timeout_minutes_constraint(
-        self, mock_get_service: MagicMock, client: TestClient
-    ) -> None:
+    def test_optimize_with_timeout_minutes_constraint(self, mock_get_service: MagicMock, client: TestClient) -> None:
         """Test optimize with timeout_minutes constraint - covers line 160."""
         mock_service = MagicMock()
         mock_service.validate_spark_version.return_value = True
@@ -730,10 +692,7 @@ class TestOptimizeEndpointConstraintsTimeoutMinutes:
         mock_get_service.return_value = mock_service
 
         request = {
-            "code": (
-                "from pyspark.sql import SparkSession\n"
-                "spark = SparkSession.builder.getOrCreate()"
-            ),
+            "code": ("from pyspark.sql import SparkSession\nspark = SparkSession.builder.getOrCreate()"),
             "platform": "local",
             "resources": {
                 "cpu_cores": 4,
@@ -765,10 +724,7 @@ class TestAnalyzeEndpointErrorHandling:
         mock_engine_class.return_value = mock_engine
 
         request = {
-            "code": (
-                "from pyspark.sql import SparkSession\n"
-                "spark = SparkSession.builder.getOrCreate()"
-            ),
+            "code": ("from pyspark.sql import SparkSession\nspark = SparkSession.builder.getOrCreate()"),
         }
 
         response = client.post("/api/v1/analyze", json=request)
@@ -777,9 +733,7 @@ class TestAnalyzeEndpointErrorHandling:
         assert "Analysis failed" in response.json()["detail"]
 
     @patch("spark_optima.api.routes.optimize.RecommendationEngine")
-    def test_analyze_error_logs_exception(
-        self, mock_engine_class: MagicMock, client: TestClient
-    ) -> None:
+    def test_analyze_error_logs_exception(self, mock_engine_class: MagicMock, client: TestClient) -> None:
         """Test that analyze endpoint logs exception on error."""
         mock_engine = MagicMock()
         mock_engine.analyze_file.side_effect = RuntimeError("Test error")
@@ -788,12 +742,7 @@ class TestAnalyzeEndpointErrorHandling:
         with patch("spark_optima.api.routes.optimize.logger") as mock_logger:
             response = client.post(
                 "/api/v1/analyze",
-                json={
-                    "code": (
-                        "from pyspark.sql import SparkSession\n"
-                        "spark = SparkSession.builder.getOrCreate()"
-                    )
-                },
+                json={"code": ("from pyspark.sql import SparkSession\nspark = SparkSession.builder.getOrCreate()")},
             )
 
             assert response.status_code == 500

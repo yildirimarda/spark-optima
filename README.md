@@ -14,7 +14,7 @@ Spark Optima is a professional, production-ready tool that automatically finds t
 ## ✨ Features
 
 - 🧠 **Hybrid Optimization**: Combines Spark best practices with intelligent Bayesian search
-- 🎯 **Multi-Platform Support**: Local, AWS Glue, Databricks, Azure Synapse
+- 🎯 **Multi-Platform Support**: Local, AWS Glue, AWS EMR, Databricks, Azure Synapse
 - 📊 **Code Analysis**: Detects Spark code smells and suggests improvements
 - 🚀 **Dual Mode**: Fast simulation mode or real execution mode with actual measurements
 - 🔒 **Secure Execution**: Docker-based isolation for untrusted code execution
@@ -307,6 +307,7 @@ for suggestion in result.code_suggestions:
 | **AWS Glue** | ✅ Ready | Including Glue 3.0/4.0 |
 | **Databricks** | ✅ Ready | DBR 10.x - 14.x |
 | **Azure Synapse** | ✅ Ready | Node sizes: Small to XXLarge |
+| **AWS EMR** | ✅ Ready | EMR 6.9 - 7.5 on EC2 (m5/r5/c5) |
 
 ---
 

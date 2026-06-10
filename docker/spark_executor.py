@@ -29,10 +29,13 @@ import logging
 import os
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 # Disable all logging to avoid mixing with JSON output
 logging.disable(logging.CRITICAL + 1)
+
 
 def main() -> None:
     """Execute Spark code in isolated Docker container."""
@@ -106,10 +109,7 @@ def main() -> None:
 
         for key, value in config.items():
             # Convert value to string, handling booleans for Spark
-            if isinstance(value, bool):
-                str_value = "true" if value else "false"
-            else:
-                str_value = str(value)
+            str_value = ("true" if value else "false") if isinstance(value, bool) else str(value)
             builder = builder.config(key, str_value)
 
         spark = builder.getOrCreate()
@@ -147,7 +147,7 @@ def main() -> None:
                 stack_trace = java_exc.getStackTrace()
                 if stack_trace:
                     error_detail += "\nJava stack trace:"
-                    for i, elem in enumerate(stack_trace[:10]):  # First 10 elements
+                    for elem in stack_trace[:10]:  # First 10 elements
                         error_detail += f"\n  at {elem}"
             except Exception:
                 pass
@@ -155,10 +155,8 @@ def main() -> None:
 
     finally:
         if spark is not None:
-            try:
+            with suppress(Exception):
                 spark.stop()
-            except Exception as e:
-                pass
 
 
 def _output_success(result: dict[str, Any]) -> None:

@@ -12,7 +12,10 @@ from __future__ import annotations
 import ast
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 from spark_optima.analysis.models import (
     CodeLocation,
@@ -73,6 +76,7 @@ SPARK_METHOD_MAP: dict[str, SparkOperationType] = {
     "distinct": SparkOperationType.TRANSFORMATION,
     "orderBy": SparkOperationType.TRANSFORMATION,
     "sort": SparkOperationType.TRANSFORMATION,
+    "limit": SparkOperationType.TRANSFORMATION,
     "union": SparkOperationType.TRANSFORMATION,
     "unionAll": SparkOperationType.TRANSFORMATION,
     "intersect": SparkOperationType.TRANSFORMATION,
@@ -201,6 +205,7 @@ class SparkCodeParser:
         dataframe_var: str,
         arguments: list[str] | None = None,
         location: CodeLocation | None = None,
+        in_loop: bool = False,
     ) -> SparkOperation:
         """Add a detected Spark operation.
 
@@ -209,6 +214,7 @@ class SparkCodeParser:
             dataframe_var: Variable name of the DataFrame.
             arguments: List of argument representations.
             location: Source code location.
+            in_loop: Whether the operation occurs inside a loop body.
 
         Returns:
             The created SparkOperation.
@@ -223,6 +229,7 @@ class SparkCodeParser:
             arguments=arguments or [],
             location=location,
             chain_position=self._chain_counter,
+            in_loop=in_loop,
         )
 
         self._chain_counter += 1
@@ -357,6 +364,72 @@ class _SparkVisitor(ast.NodeVisitor):
         """
         self.parser = parser
         self.current_df_var: str | None = None
+        self._loop_stack: list[ast.For | ast.AsyncFor | ast.While] = []
+
+    @property
+    def in_loop(self) -> bool:
+        """Whether the visitor is currently inside a loop body."""
+        return bool(self._loop_stack)
+
+    def visit_For(self, node: ast.For) -> None:  # noqa: N802
+        """Visit for-loop nodes, tracking loop context for the body.
+
+        The loop target and iterable are evaluated once, so they are visited
+        outside the loop context; only body statements run per iteration.
+
+        Args:
+            node: AST For node.
+
+        """
+        self._visit_loop(node, pre_loop=[node.target, node.iter], body=node.body, post_loop=node.orelse)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:  # noqa: N802
+        """Visit async for-loop nodes, tracking loop context for the body.
+
+        Args:
+            node: AST AsyncFor node.
+
+        """
+        self._visit_loop(node, pre_loop=[node.target, node.iter], body=node.body, post_loop=node.orelse)
+
+    def visit_While(self, node: ast.While) -> None:  # noqa: N802
+        """Visit while-loop nodes, tracking loop context for test and body.
+
+        The loop test is re-evaluated on every iteration, so it is visited
+        inside the loop context together with the body.
+
+        Args:
+            node: AST While node.
+
+        """
+        self._visit_loop(node, pre_loop=[], body=[node.test, *node.body], post_loop=node.orelse)
+
+    def _visit_loop(
+        self,
+        node: ast.For | ast.AsyncFor | ast.While,
+        pre_loop: Sequence[ast.AST],
+        body: Sequence[ast.AST],
+        post_loop: Sequence[ast.stmt],
+    ) -> None:
+        """Visit a loop node, marking per-iteration children as in-loop.
+
+        Args:
+            node: The loop node being visited.
+            pre_loop: Child nodes evaluated once before the loop starts.
+            body: Child nodes evaluated on every iteration.
+            post_loop: Child nodes evaluated once after the loop ends (else clause).
+
+        """
+        for child in pre_loop:
+            self.visit(child)
+        self._loop_stack.append(node)
+        try:
+            for child in body:
+                self.visit(child)
+        finally:
+            self._loop_stack.pop()
+        for child in post_loop:
+            self.visit(child)
 
     def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
         """Visit function/method call nodes.
@@ -379,6 +452,7 @@ class _SparkVisitor(ast.NodeVisitor):
                     dataframe_var=df_var,
                     arguments=arguments,
                     location=location,
+                    in_loop=self.in_loop,
                 )
 
         # Check for standalone function calls like broadcast(), udf(), pandas_udf()
@@ -392,6 +466,7 @@ class _SparkVisitor(ast.NodeVisitor):
                     dataframe_var="broadcast_call",
                     arguments=[],
                     location=location,
+                    in_loop=self.in_loop,
                 )
             elif func_name in ("udf", "pandas_udf"):
                 location = self._get_location(node)
@@ -402,6 +477,7 @@ class _SparkVisitor(ast.NodeVisitor):
                     dataframe_var="udf_call",
                     arguments=arguments,
                     location=location,
+                    in_loop=self.in_loop,
                 )
 
         # Continue visiting child nodes

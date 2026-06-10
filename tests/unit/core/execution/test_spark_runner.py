@@ -30,7 +30,9 @@ class TestSparkRunner:
         """Test runner initialization raises error when Docker not available."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
         # Mock Docker as not available
         runner._docker_available = False
 
@@ -41,7 +43,8 @@ class TestSparkRunner:
         """Test runner initialization with mocked Spark."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False,
+        runner = SparkRunner(
+            use_docker=False,
             app_name="TestApp",
             master="local[4]",
             log_level="ERROR",
@@ -55,7 +58,9 @@ class TestSparkRunner:
         """Test get_active_session returns None initially."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         assert runner.get_active_session() is None
 
@@ -63,7 +68,9 @@ class TestSparkRunner:
         """Test get_applied_configs returns empty dict initially."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         assert runner.get_applied_configs() == {}
 
@@ -71,7 +78,9 @@ class TestSparkRunner:
         """Test config validation with valid config."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         errors = runner.validate_config(
             {
@@ -86,7 +95,9 @@ class TestSparkRunner:
         """Test config validation detects missing memory."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         errors = runner.validate_config({})
 
@@ -96,7 +107,9 @@ class TestSparkRunner:
         """Test config validation detects invalid memory format."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         errors = runner.validate_config(
             {
@@ -110,7 +123,9 @@ class TestSparkRunner:
         """Test config validation detects invalid cores."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         errors = runner.validate_config(
             {
@@ -136,7 +151,9 @@ class TestSparkRunner:
         """Test config validation with Spark version."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         # Valid config should pass even with version
         errors = runner.validate_config({"spark.executor.memory": "4g"}, spark_version="3.4.0")
@@ -175,7 +192,9 @@ class TestSparkRunnerExecuteFile:
         """Test execute_file with non-existent file."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         result = runner.execute_file("/nonexistent/file.py")
 
@@ -187,7 +206,9 @@ class TestSparkRunnerExecuteFile:
         """Test execute_file accepts Path object."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         # Should work with Path
         path = Path(__file__)
@@ -207,13 +228,13 @@ class TestSparkRunnerWithResourceSpec:
         """Test validation with resource spec."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         resource_spec = ResourceSpec(cpu_cores=16, memory_gb=64)
 
-        errors = runner.validate_config(
-            {"spark.executor.memory": "4g"}, resource_spec=resource_spec
-        )
+        errors = runner.validate_config({"spark.executor.memory": "4g"}, resource_spec=resource_spec)
 
         # Resource spec doesn't affect validation directly
         assert isinstance(errors, list)
@@ -226,7 +247,9 @@ class TestSparkRunnerCreateSession:
         """Test that create_session returns a context manager."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
         context_manager = runner.create_session({"spark.executor.memory": "4g"})
 
         # Should be a context manager
@@ -241,7 +264,9 @@ class TestSparkRunnerBuildSession:
         """Test that _build_session requires PySpark."""
         from spark_optima.core.execution.spark_runner import _PYSPARK_AVAILABLE, SparkRunner
 
-        SparkRunner(use_docker=False, )
+        SparkRunner(
+            use_docker=False,
+        )
 
         if not _PYSPARK_AVAILABLE:
             # If PySpark not available, _build_session should fail
@@ -256,7 +281,9 @@ class TestSparkRunnerGetSparkInfo:
         """Test that get_spark_info returns proper structure."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
         info = runner.get_spark_info()
 
         assert "pyspark_available" in info
@@ -318,7 +345,9 @@ class TestSparkRunnerStopSession:
         """Test stopping a session that doesn't exist."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        SparkRunner(use_docker=False, )
+        SparkRunner(
+            use_docker=False,
+        )
         # Should not raise even if no session
         # (We can't easily test this without a real session)
 
@@ -331,7 +360,9 @@ class TestSparkRunnerAppliedConfigs:
         """Test getting applied configs."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         # Mock the create_session context manager
         mock_spark = MagicMock()
@@ -353,7 +384,9 @@ class TestSparkRunnerExecuteCode:
         """Test executing code with mocked Spark."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
         runner._docker_available = True  # Mock Docker as available
 
         # Mock _execute_code_docker to return success
@@ -371,7 +404,8 @@ class TestSparkRunnerEdgeCases:
         """Test runner initialization with all parameters."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False,
+        runner = SparkRunner(
+            use_docker=False,
             app_name="TestApp",
             master="local[2]",
             log_level="DEBUG",
@@ -385,7 +419,9 @@ class TestSparkRunnerEdgeCases:
         """Test validation still works with only executor memory."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
         errors = runner.validate_config({"spark.executor.memory": "4g"})
 
         # Should not have missing driver memory error (it's not required)
@@ -400,7 +436,9 @@ class TestSparkRunnerCreateSessionWithMock:
         """Test that create_session sets _active_session and _session_configs (lines 103-107)."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
         config = {"spark.executor.memory": "4g", "spark.executor.cores": "2"}
 
         # Mock Spark session
@@ -425,7 +463,9 @@ class TestSparkRunnerCreateSessionWithMock:
         """Test create_session with empty config sets empty configs."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         # Mock Spark session
         mock_spark = MagicMock()
@@ -443,7 +483,9 @@ class TestSparkRunnerCreateSessionWithMock:
         """Test that _stop_session is called on exit (lines 111-113)."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         # Mock Spark session
         mock_spark = MagicMock()
@@ -467,7 +509,9 @@ class TestSparkRunnerBuildSessionWithResourceSpec:
         """Test _build_session applies resource_spec defaults for high cpu_cores."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         # Mock Spark session
         mock_spark = MagicMock()
@@ -493,7 +537,9 @@ class TestSparkRunnerBuildSessionWithResourceSpec:
         """Test _build_session applies resource_spec defaults for low cpu_cores."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         # Mock Spark session
         mock_spark = MagicMock()
@@ -547,7 +593,9 @@ class TestSparkRunnerStopSessionV2:
         """Test _stop_session handles exceptions gracefully."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         # Mock spark that raises on stop
         # The except block catches (RuntimeError, AttributeError)
@@ -564,7 +612,9 @@ class TestSparkRunnerStopSessionV2:
         """Test _stop_session stops spark successfully."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         # Mock spark
         mock_spark = MagicMock()
@@ -583,7 +633,9 @@ class TestSparkRunnerExecuteCodeV2:
         """Test timeout handler in execute_code (Docker mode)."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
         runner._docker_available = True  # Mock Docker as available
 
         # Mock _execute_code_docker to return timeout result (not raise exception)
@@ -628,7 +680,9 @@ class TestSparkRunnerExecuteCodeV2:
         """Test execute_code returns success result with metrics."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
         runner._docker_available = True  # Mock Docker as available
 
         # Mock _execute_code_docker to avoid actual Docker call
@@ -655,7 +709,9 @@ class TestSparkRunnerGetSparkInfoEdgeCases:
         """Test get_spark_info handles exception when getting pyspark version (lines 385-386)."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         # To trigger lines 385-386, we need pyspark.__version__ to raise an ImportError
         # The except block catches ImportError
@@ -701,7 +757,9 @@ class TestSparkRunnerExecuteFileEdgeCases:
         """Test execute_file passes timeout to execute_code."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         # Create a temporary file
         import tempfile
@@ -718,9 +776,7 @@ class TestSparkRunnerExecuteFileEdgeCases:
                 mock_execute.assert_called_once()
                 # Check that timeout was passed
                 call_kwargs = mock_execute.call_args
-                assert (
-                    call_kwargs[1].get("timeout_seconds") == 1800 or call_kwargs[0][1] is None
-                )  # config may be None
+                assert call_kwargs[1].get("timeout_seconds") == 1800 or call_kwargs[0][1] is None  # config may be None
 
         finally:
             import os
@@ -731,7 +787,9 @@ class TestSparkRunnerExecuteFileEdgeCases:
         """Test validation detects invalid driver memory."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         errors = runner.validate_config(
             {
@@ -746,7 +804,9 @@ class TestSparkRunnerExecuteFileEdgeCases:
         """Test validation detects invalid driver cores."""
         from spark_optima.core.execution.spark_runner import SparkRunner
 
-        runner = SparkRunner(use_docker=False, )
+        runner = SparkRunner(
+            use_docker=False,
+        )
 
         errors = runner.validate_config(
             {

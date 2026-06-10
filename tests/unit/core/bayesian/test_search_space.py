@@ -599,3 +599,217 @@ class TestSearchSpaceBuilderMoreCoverage:
         """Test _parse_memory_string with no number."""
         with pytest.raises(ValueError):
             SearchSpaceBuilder._parse_memory_string("g")  # No number
+
+
+class TestSearchSpaceBuilderToTrialParams:
+    """Tests for SearchSpaceBuilder.to_trial_params (heuristic seed trial mapping)."""
+
+    @pytest.fixture
+    def builder(self) -> SearchSpaceBuilder:
+        """Create a search space builder."""
+        return SearchSpaceBuilder()
+
+    @pytest.fixture
+    def config_set(self) -> ConfigSet:
+        """Create an empty config set."""
+        return ConfigSet(version="3.5.0")
+
+    def test_memory_param_mapped_to_bytes_on_grid(
+        self,
+        builder: SearchSpaceBuilder,
+        config_set: ConfigSet,
+    ) -> None:
+        """Memory values are parsed to bytes, clamped, and snapped to the step grid."""
+        heuristic = {"spark.executor.memory": "4g"}
+        space = builder.build_from_heuristic(heuristic, config_set)
+
+        params = builder.to_trial_params(heuristic)
+
+        assert "spark.executor.memory" in params
+        value = params["spark.executor.memory"]
+        low = int(space["spark.executor.memory"]["low"])
+        high = int(space["spark.executor.memory"]["high"])
+        step = SearchSpaceBuilder.compute_bytes_step(low, high)
+        assert low <= value <= high
+        assert (value - low) % step == 0
+        # The snapped value stays within one step of the heuristic baseline
+        assert abs(value - 4 * 1024**3) <= step
+
+    def test_boolean_param_parsed_from_string(
+        self,
+        builder: SearchSpaceBuilder,
+        config_set: ConfigSet,
+    ) -> None:
+        """String boolean values map to the True/False categorical choices."""
+        heuristic = {"spark.sql.adaptive.enabled": "true", "spark.shuffle.compress": "false"}
+        builder.build_from_heuristic(heuristic, config_set)
+
+        params = builder.to_trial_params(heuristic)
+
+        assert params["spark.sql.adaptive.enabled"] is True
+        assert params["spark.shuffle.compress"] is False
+
+    def test_executor_cores_string_matched_to_int_choice(
+        self,
+        builder: SearchSpaceBuilder,
+        config_set: ConfigSet,
+    ) -> None:
+        """String core counts map to the integer categorical choices."""
+        heuristic = {"spark.executor.cores": "4"}
+        builder.build_from_heuristic(heuristic, config_set)
+
+        params = builder.to_trial_params(heuristic)
+
+        assert params["spark.executor.cores"] == 4
+        assert isinstance(params["spark.executor.cores"], int)
+
+    def test_categorical_value_not_in_choices_is_skipped(
+        self,
+        builder: SearchSpaceBuilder,
+        config_set: ConfigSet,
+    ) -> None:
+        """Categorical values without a matching choice are skipped."""
+        heuristic = {"spark.serializer": "com.example.CustomSerializer"}
+        builder.build_from_heuristic(heuristic, config_set)
+
+        params = builder.to_trial_params(heuristic)
+
+        assert "spark.serializer" not in params
+
+    def test_int_param_within_bounds_and_step_aligned(
+        self,
+        builder: SearchSpaceBuilder,
+        config_set: ConfigSet,
+    ) -> None:
+        """Integer values land within bounds and on the step grid."""
+        heuristic = {"spark.sql.shuffle.partitions": "200"}
+        space = builder.build_from_heuristic(heuristic, config_set)
+
+        params = builder.to_trial_params(heuristic)
+
+        value = params["spark.sql.shuffle.partitions"]
+        low = int(space["spark.sql.shuffle.partitions"]["low"])
+        high = int(space["spark.sql.shuffle.partitions"]["high"])
+        step = int(space["spark.sql.shuffle.partitions"].get("step", 1))
+        assert low <= value <= high
+        assert (value - low) % step == 0
+        assert abs(value - 200) <= step
+
+    def test_duration_string_parsed_to_seconds(
+        self,
+        builder: SearchSpaceBuilder,
+        config_set: ConfigSet,
+    ) -> None:
+        """Duration strings (e.g. "600s") are parsed into the seconds-based range."""
+        heuristic = {"spark.network.timeout": "600s"}
+        space = builder.build_from_heuristic(heuristic, config_set)
+
+        params = builder.to_trial_params(heuristic)
+
+        value = params["spark.network.timeout"]
+        assert space["spark.network.timeout"]["low"] <= value <= space["spark.network.timeout"]["high"]
+        assert isinstance(value, int)
+
+    def test_params_outside_search_space_are_skipped(
+        self,
+        builder: SearchSpaceBuilder,
+        config_set: ConfigSet,
+    ) -> None:
+        """Config entries not present in the search space are silently skipped."""
+        heuristic = {
+            "spark.executor.memory": "4g",
+            "spark.app.name": "my-app",  # FIXED_PARAMS - excluded from the space
+            "custom.unknown.param": "x",  # No metadata - excluded from the space
+        }
+        builder.build_from_heuristic(heuristic, config_set)
+
+        params = builder.to_trial_params(heuristic)
+
+        assert "spark.executor.memory" in params
+        assert "spark.app.name" not in params
+        assert "custom.unknown.param" not in params
+
+    def test_out_of_range_int_value_clamped_to_bounds(
+        self,
+        builder: SearchSpaceBuilder,
+        config_set: ConfigSet,
+    ) -> None:
+        """Values above/below the search range are clamped to the bounds."""
+        space = builder.build_from_heuristic({"spark.sql.shuffle.partitions": "200"}, config_set)
+        low = int(space["spark.sql.shuffle.partitions"]["low"])
+        high = int(space["spark.sql.shuffle.partitions"]["high"])
+
+        too_high = builder.to_trial_params({"spark.sql.shuffle.partitions": 100000})
+        too_low = builder.to_trial_params({"spark.sql.shuffle.partitions": 1})
+
+        assert low <= too_high["spark.sql.shuffle.partitions"] <= high
+        assert too_low["spark.sql.shuffle.partitions"] == low
+
+    def test_out_of_range_float_value_clamped(
+        self,
+        builder: SearchSpaceBuilder,
+        config_set: ConfigSet,
+    ) -> None:
+        """Float values outside a custom range are clamped to the range edges."""
+        search_config = SearchSpaceConfig(
+            param_ranges={"spark.memory.fraction": (0.5, 0.9)},
+        )
+        builder.build_from_heuristic({"spark.memory.fraction": 0.95}, config_set, search_config)
+
+        params = builder.to_trial_params({"spark.memory.fraction": 0.95})
+
+        assert params["spark.memory.fraction"] == pytest.approx(0.9)
+
+    def test_explicit_search_space_argument(
+        self,
+        builder: SearchSpaceBuilder,
+    ) -> None:
+        """An explicitly passed search space overrides the stored one."""
+        space = {
+            "spark.task.cpus": {"type": "int", "low": 1, "high": 4, "base_value": 2},
+        }
+
+        params = builder.to_trial_params({"spark.task.cpus": 2}, space)
+
+        assert params == {"spark.task.cpus": 2}
+
+    def test_unparseable_value_falls_back_to_base_value(
+        self,
+        builder: SearchSpaceBuilder,
+    ) -> None:
+        """Unparseable raw values fall back to the search-space base value."""
+        space = {
+            "spark.network.timeout": {
+                "type": "int",
+                "low": 100,
+                "high": 1000,
+                "base_value": 600,
+            },
+        }
+
+        params = builder.to_trial_params({"spark.network.timeout": "not-a-number"}, space)
+
+        assert params["spark.network.timeout"] == 600
+
+    def test_unknown_type_skipped(self, builder: SearchSpaceBuilder) -> None:
+        """Parameters with unknown types are not enqueued (never suggested)."""
+        space = {"some.param": {"type": "mystery", "base_value": "x"}}
+
+        params = builder.to_trial_params({"some.param": "x"}, space)
+
+        assert params == {}
+
+    def test_empty_config_returns_empty_params(self, builder: SearchSpaceBuilder) -> None:
+        """An empty configuration produces no trial parameters."""
+        assert builder.to_trial_params({}) == {}
+
+    def test_snap_to_grid_alignment(self) -> None:
+        """_snap_to_grid clamps and aligns values onto low + k * step."""
+        # In range, snapped to nearest grid point
+        assert SearchSpaceBuilder._snap_to_grid(200, 138, 258, 6) == 198
+        # Above range: clamped to highest aligned point
+        assert SearchSpaceBuilder._snap_to_grid(1000, 138, 258, 6) == 258
+        # Below range: clamped to low
+        assert SearchSpaceBuilder._snap_to_grid(0, 138, 258, 6) == 138
+        # Degenerate step is treated as 1
+        assert SearchSpaceBuilder._snap_to_grid(5, 1, 10, 0) == 5

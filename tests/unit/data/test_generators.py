@@ -970,10 +970,12 @@ class TestGenerateMethod:
         mock_df.write = MagicMock()
         mock_df.write.mode.return_value = mock_df.write
 
-        with (patch("spark_optima.data.generators.SparkSession") as mock_spark_class,
-              patch.object(generator, "_generate_rdd") as mock_rdd,
-              patch.object(generator, "_build_schema") as mock_schema,
-              patch.object(generator, "_default_columns") as mock_default):
+        with (
+            patch("spark_optima.data.generators.SparkSession") as mock_spark_class,
+            patch.object(generator, "_generate_rdd") as mock_rdd,
+            patch.object(generator, "_build_schema") as mock_schema,
+            patch.object(generator, "_default_columns") as mock_default,
+        ):
             mock_spark_class.builder.appName().master().getOrCreate.return_value = mock_spark
             mock_rdd.return_value = MagicMock()
             mock_schema.return_value = MagicMock()
@@ -998,9 +1000,11 @@ class TestGenerateMethod:
         mock_df.write = MagicMock()
         mock_df.write.mode.return_value = mock_df.write
 
-        with (patch.object(generator, "_generate_rdd") as mock_rdd,
-              patch.object(generator, "_build_schema") as mock_schema,
-              patch.object(generator, "_default_columns") as mock_default):
+        with (
+            patch.object(generator, "_generate_rdd") as mock_rdd,
+            patch.object(generator, "_build_schema") as mock_schema,
+            patch.object(generator, "_default_columns") as mock_default,
+        ):
             mock_rdd.return_value = MagicMock()
             mock_schema.return_value = MagicMock()
             mock_default.return_value = [
@@ -1035,9 +1039,11 @@ class TestGenerateMethod:
             ColumnSpec(name="category", data_type="string", cardinality=10),
         ]
 
-        with (patch.object(generator, "_generate_rdd") as mock_rdd,
-              patch.object(generator, "_build_schema") as mock_schema,
-              patch.object(generator, "_apply_skew") as mock_skew):
+        with (
+            patch.object(generator, "_generate_rdd") as mock_rdd,
+            patch.object(generator, "_build_schema") as mock_schema,
+            patch.object(generator, "_apply_skew") as mock_skew,
+        ):
             mock_rdd.return_value = MagicMock()
             mock_schema.return_value = MagicMock()
             mock_skew.return_value = MagicMock()
@@ -1064,18 +1070,20 @@ class TestGenerateMethod:
         mock_writer.mode.return_value = mock_writer
         mock_writer.option.return_value = mock_writer
 
-        with patch.object(generator, "_generate_rdd") as mock_rdd, \
-            patch.object(generator, "_build_schema") as mock_schema:
-                mock_rdd.return_value = MagicMock()
-                mock_schema.return_value = MagicMock()
+        with (
+            patch.object(generator, "_generate_rdd") as mock_rdd,
+            patch.object(generator, "_build_schema") as mock_schema,
+        ):
+            mock_rdd.return_value = MagicMock()
+            mock_schema.return_value = MagicMock()
 
-                config = DataGeneratorConfig(format="parquet", compression="snappy")
-                columns = [ColumnSpec(name="id", data_type="int", min_value=1, max_value=100)]
-                generator.generate("./output", config=config, columns=columns)
+            config = DataGeneratorConfig(format="parquet", compression="snappy")
+            columns = [ColumnSpec(name="id", data_type="int", min_value=1, max_value=100)]
+            generator.generate("./output", config=config, columns=columns)
 
-                # Verify parquet format was used
-                mock_writer.format.assert_called_with("parquet")
-                mock_writer.format().save.assert_called_once()
+            # Verify parquet format was used
+            mock_writer.format.assert_called_with("parquet")
+            mock_writer.format().save.assert_called_once()
 
     @patch("spark_optima.data.generators.PYSPARK_AVAILABLE", True)
     def test_generate_writes_delta(self) -> None:
@@ -1092,16 +1100,18 @@ class TestGenerateMethod:
         mock_writer.mode.return_value = mock_writer
         mock_writer.option.return_value = mock_writer
 
-        with patch.object(generator, "_generate_rdd") as mock_rdd, \
-            patch.object(generator, "_build_schema") as mock_schema:
-                mock_rdd.return_value = MagicMock()
-                mock_schema.return_value = MagicMock()
+        with (
+            patch.object(generator, "_generate_rdd") as mock_rdd,
+            patch.object(generator, "_build_schema") as mock_schema,
+        ):
+            mock_rdd.return_value = MagicMock()
+            mock_schema.return_value = MagicMock()
 
-                config = DataGeneratorConfig(format="delta")
-                columns = [ColumnSpec(name="id", data_type="int", min_value=1, max_value=100)]
-                generator.generate("./output", config=config, columns=columns)
+            config = DataGeneratorConfig(format="delta")
+            columns = [ColumnSpec(name="id", data_type="int", min_value=1, max_value=100)]
+            generator.generate("./output", config=config, columns=columns)
 
-                mock_writer.format.assert_called_with("delta")
+            mock_writer.format.assert_called_with("delta")
 
     @patch("spark_optima.data.generators.PYSPARK_AVAILABLE", True)
     def test_generate_writes_csv(self) -> None:
@@ -1118,16 +1128,18 @@ class TestGenerateMethod:
         mock_writer.mode.return_value = mock_writer
         mock_writer.option.return_value = mock_writer
 
-        with patch.object(generator, "_generate_rdd") as mock_rdd, \
-            patch.object(generator, "_build_schema") as mock_schema:
-                mock_rdd.return_value = MagicMock()
-                mock_schema.return_value = MagicMock()
+        with (
+            patch.object(generator, "_generate_rdd") as mock_rdd,
+            patch.object(generator, "_build_schema") as mock_schema,
+        ):
+            mock_rdd.return_value = MagicMock()
+            mock_schema.return_value = MagicMock()
 
-                config = DataGeneratorConfig(format="csv")
-                columns = [ColumnSpec(name="id", data_type="int", min_value=1, max_value=100)]
-                generator.generate("./output", config=config, columns=columns)
+            config = DataGeneratorConfig(format="csv")
+            columns = [ColumnSpec(name="id", data_type="int", min_value=1, max_value=100)]
+            generator.generate("./output", config=config, columns=columns)
 
-                mock_writer.option.assert_any_call("header", "true")
+            mock_writer.option.assert_any_call("header", "true")
 
     @patch("spark_optima.data.generators.PYSPARK_AVAILABLE", True)
     def test_generate_writes_orc(self) -> None:
@@ -1144,16 +1156,18 @@ class TestGenerateMethod:
         mock_writer.mode.return_value = mock_writer
         mock_writer.option.return_value = mock_writer
 
-        with patch.object(generator, "_generate_rdd") as mock_rdd, \
-            patch.object(generator, "_build_schema") as mock_schema:
-                mock_rdd.return_value = MagicMock()
-                mock_schema.return_value = MagicMock()
+        with (
+            patch.object(generator, "_generate_rdd") as mock_rdd,
+            patch.object(generator, "_build_schema") as mock_schema,
+        ):
+            mock_rdd.return_value = MagicMock()
+            mock_schema.return_value = MagicMock()
 
-                config = DataGeneratorConfig(format="orc")
-                columns = [ColumnSpec(name="id", data_type="int", min_value=1, max_value=100)]
-                generator.generate("./output", config=config, columns=columns)
+            config = DataGeneratorConfig(format="orc")
+            columns = [ColumnSpec(name="id", data_type="int", min_value=1, max_value=100)]
+            generator.generate("./output", config=config, columns=columns)
 
-                mock_writer.format.assert_called_with("orc")
+            mock_writer.format.assert_called_with("orc")
 
 
 class TestGenerateTabularEdgeCases:
@@ -1170,9 +1184,7 @@ class TestGenerateTabularEdgeCases:
             call_args = mock_generate.call_args
             columns = call_args.args[2]
             # Check that string columns were created
-            str_cols = [
-                c for c in columns if c.data_type == "string" and c.name.startswith("str_col_")
-            ]
+            str_cols = [c for c in columns if c.data_type == "string" and c.name.startswith("str_col_")]
             assert len(str_cols) > 0
 
     def test_generate_tabular_numeric_columns(self) -> None:
@@ -1375,16 +1387,15 @@ class TestApplySkew:
         # Mock the pyspark functions used in _apply_skew
         with patch("pyspark.sql.functions.rand") as mock_rand:
             mock_rand.return_value = 0.5  # Ensure the condition is a number
-            with patch("pyspark.sql.functions.lit"), \
-                patch("pyspark.sql.functions.when") as mock_when:
-                    mock_when.return_value = mock_when
-                    mock_when.otherwise.return_value = "skewed_col"
+            with patch("pyspark.sql.functions.lit"), patch("pyspark.sql.functions.when") as mock_when:
+                mock_when.return_value = mock_when
+                mock_when.otherwise.return_value = "skewed_col"
 
-                    result = generator._apply_skew(mock_df, columns, 2.0)
+                result = generator._apply_skew(mock_df, columns, 2.0)
 
-                    # Verify withColumn was called to apply skew
-                    mock_df.withColumn.assert_called_once()
-                    assert result == mock_skewed_df
+                # Verify withColumn was called to apply skew
+                mock_df.withColumn.assert_called_once()
+                assert result == mock_skewed_df
 
     @patch("spark_optima.data.generators.PYSPARK_AVAILABLE", True)
     def test_apply_skew_returns_df_when_no_categorical_cols(self) -> None:
@@ -1420,16 +1431,15 @@ class TestApplySkew:
         # Mock the pyspark functions
         with patch("pyspark.sql.functions.rand") as mock_rand:
             mock_rand.return_value = 0.5  # Ensure the condition is a number
-            with patch("pyspark.sql.functions.lit"), \
-                patch("pyspark.sql.functions.when") as mock_when:
-                    mock_when.return_value = mock_when
-                    mock_when.otherwise.return_value = "skewed_col"
+            with patch("pyspark.sql.functions.lit"), patch("pyspark.sql.functions.when") as mock_when:
+                mock_when.return_value = mock_when
+                mock_when.otherwise.return_value = "skewed_col"
 
-                    generator._apply_skew(mock_df, columns, 2.0)
+                generator._apply_skew(mock_df, columns, 2.0)
 
-                    # Verify withColumn was called with first categorical column name
-                    call_args = mock_df.withColumn.call_args
-                    assert call_args[0][0] == "category1"
+                # Verify withColumn was called with first categorical column name
+                call_args = mock_df.withColumn.call_args
+                assert call_args[0][0] == "category1"
 
     @patch("spark_optima.data.generators.PYSPARK_AVAILABLE", True)
     def test_apply_skew_filters_string_with_cardinality(self) -> None:
@@ -1441,25 +1451,22 @@ class TestApplySkew:
 
         columns = [
             ColumnSpec(name="str_no_cardinality", data_type="string"),  # Should NOT be used
-            ColumnSpec(
-                name="int_with_cardinality", data_type="int", cardinality=10
-            ),  # Should NOT be used
+            ColumnSpec(name="int_with_cardinality", data_type="int", cardinality=10),  # Should NOT be used
             ColumnSpec(name="valid_category", data_type="string", cardinality=10),  # SHOULD be used
         ]
 
         # Mock the pyspark functions
         with patch("pyspark.sql.functions.rand") as mock_rand:
             mock_rand.return_value = 0.5  # Ensure the condition is a number
-            with patch("pyspark.sql.functions.lit"), \
-                patch("pyspark.sql.functions.when") as mock_when:
-                    mock_when.return_value = mock_when
-                    mock_when.otherwise.return_value = "skewed_col"
+            with patch("pyspark.sql.functions.lit"), patch("pyspark.sql.functions.when") as mock_when:
+                mock_when.return_value = mock_when
+                mock_when.otherwise.return_value = "skewed_col"
 
-                    generator._apply_skew(mock_df, columns, 2.0)
+                generator._apply_skew(mock_df, columns, 2.0)
 
-                    # Verify withColumn was called with the valid category column
-                    call_args = mock_df.withColumn.call_args
-                    assert call_args[0][0] == "valid_category"
+                # Verify withColumn was called with the valid category column
+                call_args = mock_df.withColumn.call_args
+                assert call_args[0][0] == "valid_category"
 
 
 class TestPySparkImportFailure:
@@ -1572,9 +1579,11 @@ class TestGenerateMethodWriteEdgeCases:
         mock_writer.mode.return_value = mock_writer
         mock_writer.option.return_value = mock_writer
 
-        with (patch.object(generator, "_generate_rdd") as mock_rdd,
-              patch.object(generator, "_build_schema") as mock_schema,
-              patch("pathlib.Path.mkdir") as mock_mkdir):
+        with (
+            patch.object(generator, "_generate_rdd") as mock_rdd,
+            patch.object(generator, "_build_schema") as mock_schema,
+            patch("pathlib.Path.mkdir") as mock_mkdir,
+        ):
             mock_rdd.return_value = MagicMock()
             mock_schema.return_value = MagicMock()
 
@@ -1598,17 +1607,19 @@ class TestGenerateMethodWriteEdgeCases:
         mock_df_repartitioned.write = mock_writer
         mock_writer.mode.return_value = mock_writer
 
-        with patch.object(generator, "_generate_rdd") as mock_rdd, \
-            patch.object(generator, "_build_schema") as mock_schema:
-                mock_rdd.return_value = MagicMock()
-                mock_schema.return_value = MagicMock()
+        with (
+            patch.object(generator, "_generate_rdd") as mock_rdd,
+            patch.object(generator, "_build_schema") as mock_schema,
+        ):
+            mock_rdd.return_value = MagicMock()
+            mock_schema.return_value = MagicMock()
 
-                columns = [ColumnSpec(name="id", data_type="int", min_value=1, max_value=100)]
-                config = DataGeneratorConfig(compression="gzip")
-                generator.generate("./output", config=config, columns=columns)
+            columns = [ColumnSpec(name="id", data_type="int", min_value=1, max_value=100)]
+            config = DataGeneratorConfig(compression="gzip")
+            generator.generate("./output", config=config, columns=columns)
 
-                # Verify compression was set
-                mock_writer.option.assert_any_call("compression", "gzip")
+            # Verify compression was set
+            mock_writer.option.assert_any_call("compression", "gzip")
 
     @patch("spark_optima.data.generators.PYSPARK_AVAILABLE", True)
     def test_generate_with_no_compression_in_format_options(self) -> None:
@@ -1639,15 +1650,17 @@ class TestGenerateMethodWriteEdgeCases:
 
         mock_df_repartitioned.write = MockWriter()
 
-        with patch.object(generator, "_generate_rdd") as mock_rdd, \
-            patch.object(generator, "_build_schema") as mock_schema:
-                mock_rdd.return_value = MagicMock()
-                mock_schema.return_value = MagicMock()
+        with (
+            patch.object(generator, "_generate_rdd") as mock_rdd,
+            patch.object(generator, "_build_schema") as mock_schema,
+        ):
+            mock_rdd.return_value = MagicMock()
+            mock_schema.return_value = MagicMock()
 
-                columns = [ColumnSpec(name="id", data_type="int", min_value=1, max_value=100)]
-                # delta format has overwriteSchema but no default compression
-                config = DataGeneratorConfig(format="delta", compression="zstd")
-                generator.generate("./output", config=config, columns=columns)
+            columns = [ColumnSpec(name="id", data_type="int", min_value=1, max_value=100)]
+            # delta format has overwriteSchema but no default compression
+            config = DataGeneratorConfig(format="delta", compression="zstd")
+            generator.generate("./output", config=config, columns=columns)
 
-                # Verify compression was set even though not in default options
-                assert ("compression", "zstd") in option_calls
+            # Verify compression was set even though not in default options
+            assert ("compression", "zstd") in option_calls

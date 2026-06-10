@@ -30,13 +30,14 @@ class TestPlatformEnum:
         """Test that platform enum has expected values."""
         assert Platform.LOCAL == "local"
         assert Platform.AWS_GLUE == "aws_glue"
+        assert Platform.AWS_EMR == "aws_emr"
         assert Platform.DATABRICKS == "databricks"
         assert Platform.AZURE_SYNAPSE == "azure_synapse"
 
     def test_platform_enum_count(self) -> None:
         """Test that all expected platforms are defined."""
         platforms = list(Platform)
-        assert len(platforms) == 4
+        assert len(platforms) == 5
 
 
 class TestDataFormatEnum:

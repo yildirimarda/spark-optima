@@ -47,9 +47,7 @@ class TestPerformanceModel:
         data_profile = DataCharacteristics(size_gb=100, format="parquet")
         operations = OperationProfile(operations=[OperationType.SCAN, OperationType.AGGREGATION])
 
-        result = model.estimate(
-            config, resource_spec, data_profile=data_profile, operations=operations
-        )
+        result = model.estimate(config, resource_spec, data_profile=data_profile, operations=operations)
 
         assert result["execution_time_seconds"] > 0
         assert result["memory_peak_gb"] > 0
@@ -145,9 +143,7 @@ class TestPerformanceModel:
         config = {}
         cluster_topology = {"num_executors": 2, "executor_memory_gb": 4}
 
-        shuffle_metrics = model._estimate_shuffle_metrics(
-            operations, data_profile, config, cluster_topology
-        )
+        shuffle_metrics = model._estimate_shuffle_metrics(operations, data_profile, config, cluster_topology)
 
         assert "read_gb" in shuffle_metrics
         assert "write_gb" in shuffle_metrics
@@ -198,9 +194,7 @@ class TestPerformanceModelMissingCoverage:
         )
         operations = OperationProfile(operations=[OperationType.AGGREGATION])
 
-        result = model.estimate(
-            config, resource_spec, data_profile=data_profile, operations=operations
-        )
+        result = model.estimate(config, resource_spec, data_profile=data_profile, operations=operations)
 
         assert result["execution_time_seconds"] > 0
         assert "stage_0_aggregation" in result["stage_times"]
@@ -216,9 +210,7 @@ class TestPerformanceModelMissingCoverage:
         data_profile = DataCharacteristics(size_gb=10, format="parquet")
         operations = OperationProfile(operations=[OperationType.UDF])
 
-        result = model.estimate(
-            config, resource_spec, data_profile=data_profile, operations=operations
-        )
+        result = model.estimate(config, resource_spec, data_profile=data_profile, operations=operations)
 
         assert result["execution_time_seconds"] > 0
         assert "stage_0_udf" in result["stage_times"]
@@ -234,9 +226,7 @@ class TestPerformanceModelMissingCoverage:
         data_profile = DataCharacteristics(size_gb=10, format="parquet")
         operations = OperationProfile(operations=[OperationType.CACHED])
 
-        result = model.estimate(
-            config, resource_spec, data_profile=data_profile, operations=operations
-        )
+        result = model.estimate(config, resource_spec, data_profile=data_profile, operations=operations)
 
         assert result["execution_time_seconds"] > 0
         # CACHED operation should result in higher data memory allocation
@@ -279,9 +269,7 @@ class TestPerformanceModelMissingCoverage:
         data_profile = DataCharacteristics(size_gb=100, format="parquet")
         operations = OperationProfile(operations=[OperationType.AGGREGATION, OperationType.JOIN])
 
-        result = model.estimate(
-            config, resource_spec, data_profile=data_profile, operations=operations
-        )
+        result = model.estimate(config, resource_spec, data_profile=data_profile, operations=operations)
 
         # With 1GB executor and large data, peak memory may exceed 95% of executor
         # The success flag and issues should reflect this
@@ -313,9 +301,7 @@ class TestPerformanceModelMissingCoverage:
         data_profile = DataCharacteristics(size_gb=10, format="parquet", skew_factor=2.0)
         operations = OperationProfile(operations=[OperationType.SCAN])
 
-        result = model.estimate(
-            config, resource_spec, data_profile=data_profile, operations=operations
-        )
+        result = model.estimate(config, resource_spec, data_profile=data_profile, operations=operations)
 
         assert result["execution_time_seconds"] > 0
         assert "stage_0_scan" in result["stage_times"]

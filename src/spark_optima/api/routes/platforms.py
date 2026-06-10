@@ -147,8 +147,7 @@ async def get_platform(platform_name: str) -> PlatformInfoResponse:
     if metadata is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Platform '{platform_name}' not found. "
-            f"Use /api/v1/platforms to list available platforms.",
+            detail=f"Platform '{platform_name}' not found. Use /api/v1/platforms to list available platforms.",
         )
 
     return PlatformInfoResponse(

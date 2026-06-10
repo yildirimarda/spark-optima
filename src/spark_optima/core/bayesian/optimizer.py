@@ -147,6 +147,10 @@ class BayesianOptimizer:
         self.max_consecutive_failures: int = 10  # Default: stop after 10 consecutive failures
         self._code_path = code_path
 
+        # Warm-start tracking (E1/E2): seed trial + prior trials loaded from storage
+        self._n_prior_trials: int = 0
+        self._seed_trial_enqueued: bool = False
+
     def optimize(
         self,
         n_trials: int = 50,
@@ -176,8 +180,27 @@ class BayesianOptimizer:
         if max_consecutive_failures is not None:
             self.max_consecutive_failures = max_consecutive_failures
 
-        # Create Optuna study
+        # Create Optuna study (resumes from storage when available)
         study = self._create_study()
+
+        # Warm start (E2): count completed trials loaded from a stored study
+        self._n_prior_trials = sum(1 for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE)
+        self._seed_trial_enqueued = False
+        if self._n_prior_trials > 0:
+            logger.info(
+                f"Warm start: loaded {self._n_prior_trials} completed prior trials from study '{self.study_name}'",
+            )
+        elif n_trials > 0:
+            # Heuristic seed trial (E1): enqueue the baseline configuration as the
+            # first trial so Optuna never returns a result worse than the warm start.
+            # Only seed fresh studies - resumed studies already contain the seed.
+            seed_params = self.get_seed_trial_params()
+            if seed_params:
+                study.enqueue_trial(seed_params, skip_if_exists=True)
+                self._seed_trial_enqueued = True
+                logger.info(
+                    f"Enqueued heuristic baseline as seed trial ({len(seed_params)} parameters)",
+                )
 
         # Optimization callback for progress tracking and error recovery
         def callback(_study: optuna.Study, _trial: optuna.Trial) -> None:
@@ -226,6 +249,10 @@ class BayesianOptimizer:
     def _create_study(self) -> optuna.Study:
         """Create an Optuna study with appropriate configuration.
 
+        When a storage path is configured and the study already exists in
+        storage, the study is loaded instead of recreated so prior trials
+        warm-start the optimization.
+
         Returns:
             Configured Optuna study.
 
@@ -243,6 +270,9 @@ class BayesianOptimizer:
             reduction_factor=3,
         )
 
+        # Resume existing studies only when persistent storage is configured
+        load_if_exists = self._storage is not None
+
         # Create study
         if self._is_multi_objective:
             study = optuna.create_study(
@@ -251,6 +281,7 @@ class BayesianOptimizer:
                 sampler=sampler,
                 pruner=pruner,
                 directions=self._objective_func.get_directions(),
+                load_if_exists=load_if_exists,
             )
         else:
             study = optuna.create_study(
@@ -259,9 +290,28 @@ class BayesianOptimizer:
                 sampler=sampler,
                 pruner=pruner,
                 direction=self._objective_func.get_directions()[0],
+                load_if_exists=load_if_exists,
             )
 
         return study
+
+    def get_seed_trial_params(self) -> dict[str, Any]:
+        """Build Optuna trial parameters for the heuristic baseline configuration.
+
+        The returned dictionary matches the parameter names, categorical choices,
+        and numeric units used by the objective's ``trial.suggest_*`` calls, so it
+        can be enqueued directly via ``study.enqueue_trial()``. Parameters outside
+        the search space are skipped and out-of-range values are clamped.
+
+        Returns:
+            Dictionary of Optuna parameter names to seed values. Empty when the
+            search space is empty.
+
+        """
+        return self._search_space_builder.to_trial_params(
+            self.heuristic_config,
+            self._search_space,
+        )
 
     def _objective(
         self,
@@ -362,9 +412,11 @@ class BayesianOptimizer:
                     )
                     low_val, high_val = high_val, low_val
 
-                # Calculate reasonable step (1% of range, min 1)
-                range_size = high_val - low_val
-                step = max(1, range_size // 100) if range_size > 0 else 1
+                # Step shared with SearchSpaceBuilder.to_trial_params so enqueued
+                # seed values land exactly on the suggestion grid
+                step = SearchSpaceBuilder.compute_bytes_step(low_val, high_val)
+                # Align the upper bound to the step grid to avoid Optuna range warnings
+                high_val = low_val + ((high_val - low_val) // step) * step
                 bytes_value = trial.suggest_int(param_name, low_val, high_val, step=step)
                 config[param_name] = self._format_bytes(bytes_value)
 
@@ -378,10 +430,7 @@ class BayesianOptimizer:
                 task_cpus = int(config["spark.task.cpus"])
                 exec_cores = int(config["spark.executor.cores"])
                 if task_cpus > exec_cores:
-                    logger.warning(
-                        f"Adjusting spark.task.cpus ({task_cpus}) to <= "
-                        f"spark.executor.cores ({exec_cores})"
-                    )
+                    logger.warning(f"Adjusting spark.task.cpus ({task_cpus}) to <= spark.executor.cores ({exec_cores})")
                     config["spark.task.cpus"] = exec_cores
             except (ValueError, TypeError):
                 pass
@@ -432,6 +481,8 @@ class BayesianOptimizer:
                     "objectives": self.objectives,
                     "n_trials": len(self._trial_results),
                     "best_score": best_score,
+                    "n_prior_trials": self._n_prior_trials,
+                    "seed_trial_enqueued": self._seed_trial_enqueued,
                 },
             )
 
@@ -452,6 +503,8 @@ class BayesianOptimizer:
                     "objectives": self.objectives,
                     "n_trials": 0,
                     "study_directions": study.directions,
+                    "n_prior_trials": self._n_prior_trials,
+                    "seed_trial_enqueued": self._seed_trial_enqueued,
                 },
             )
 
@@ -490,6 +543,8 @@ class BayesianOptimizer:
                 "objectives": self.objectives,
                 "n_trials": len(self._trial_results),
                 "study_directions": study.directions,
+                "n_prior_trials": self._n_prior_trials,
+                "seed_trial_enqueued": self._seed_trial_enqueued,
             },
         )
 
@@ -526,6 +581,11 @@ class BayesianOptimizer:
     def _get_trial_config(self, trial: optuna.Trial) -> dict[str, Any]:
         """Get configuration for a trial.
 
+        For trials run in this session, the configuration is taken from the
+        recorded trial results. For trials loaded from a stored study
+        (warm start), the configuration is reconstructed from the Optuna
+        trial parameters.
+
         Args:
             trial: Optuna trial.
 
@@ -537,7 +597,36 @@ class BayesianOptimizer:
             (tr for tr in self._trial_results if tr.trial_number == trial.number),
             None,
         )
-        return trial_result.configuration if trial_result else {}
+        if trial_result:
+            return trial_result.configuration
+
+        # Warm-start fallback: rebuild the config from stored Optuna params
+        params = getattr(trial, "params", None)
+        if isinstance(params, dict):
+            return self._config_from_trial_params(params)
+        return {}
+
+    def _config_from_trial_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Reconstruct a Spark configuration from raw Optuna trial parameters.
+
+        Byte-size parameters are stored as integers in Optuna and must be
+        converted back to Spark memory strings (e.g. "4g").
+
+        Args:
+            params: Optuna trial parameter dictionary.
+
+        Returns:
+            Spark configuration dictionary.
+
+        """
+        config: dict[str, Any] = {}
+        for param_name, value in params.items():
+            search_def = self._search_space.get(param_name)
+            if search_def and search_def.get("type") == "bytes":
+                config[param_name] = self._format_bytes(int(value))
+            else:
+                config[param_name] = value
+        return config
 
     @staticmethod
     def _format_bytes(bytes_value: int) -> str:

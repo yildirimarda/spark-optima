@@ -168,8 +168,7 @@ class Platform(ABC):
             )
         if cluster_config.worker_count > constraints.max_workers:
             errors.append(
-                f"Worker count {cluster_config.worker_count} exceeds maximum "
-                f"{constraints.max_workers} for {self.name}",
+                f"Worker count {cluster_config.worker_count} exceeds maximum {constraints.max_workers} for {self.name}",
             )
 
         # Validate worker resources

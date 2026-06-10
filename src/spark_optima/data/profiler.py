@@ -197,9 +197,7 @@ class DataProfiler:
 
         # Initialize Spark if needed
         if self.spark is None:
-            self.spark = (
-                SparkSession.builder.appName("SparkOptimaProfiler").master("local[*]").getOrCreate()
-            )
+            self.spark = SparkSession.builder.appName("SparkOptimaProfiler").master("local[*]").getOrCreate()
             self._own_spark = True
 
         data_path = Path(data_path)
@@ -261,9 +259,7 @@ class DataProfiler:
             raise RuntimeError("PySpark required")
 
         if self.spark is None:
-            self.spark = (
-                SparkSession.builder.appName("SparkOptimaProfiler").master("local[*]").getOrCreate()
-            )
+            self.spark = SparkSession.builder.appName("SparkOptimaProfiler").master("local[*]").getOrCreate()
             self._own_spark = True
 
         data_path = Path(data_path)
@@ -388,9 +384,7 @@ class DataProfiler:
             raise RuntimeError("PySpark required")
 
         if self.spark is None:
-            self.spark = (
-                SparkSession.builder.appName("SparkOptimaProfiler").master("local[*]").getOrCreate()
-            )
+            self.spark = SparkSession.builder.appName("SparkOptimaProfiler").master("local[*]").getOrCreate()
             self._own_spark = True
 
         df = self._load_data(Path(data_path), self._infer_format(Path(data_path)))

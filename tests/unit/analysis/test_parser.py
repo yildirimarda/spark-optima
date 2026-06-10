@@ -211,9 +211,7 @@ class TestParserEdgeCases:
         visitor = _SparkVisitor(parser)
         # Create a simple lambda: lambda x: x + 1
         node = ast.Lambda(
-            args=ast.arguments(
-                posonlyargs=[], args=[ast.arg(arg="x")], kwonlyargs=[], kw_defaults=[], defaults=[]
-            ),
+            args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="x")], kwonlyargs=[], kw_defaults=[], defaults=[]),
             body=ast.BinOp(
                 left=ast.Name(id="x", ctx=ast.Load()),
                 op=ast.Add(),
@@ -290,3 +288,90 @@ df2 = df1.filter(df1.x > 0)
         node = ast.Constant(value=42)
         result = visitor._node_to_string(node)
         assert result == "42"
+
+
+class TestLoopContextTracking:
+    """Tests for loop-context tracking in the AST visitor."""
+
+    def test_operation_inside_for_loop_marked(self):
+        """Test that operations inside a for loop have in_loop=True."""
+        code = """
+for c in columns:
+    df = df.withColumn(c, df[c])
+"""
+        parser = SparkCodeParser()
+        result = parser.parse_source(code)
+        with_column_ops = [op for op in result.operations if op.method_name == "withColumn"]
+        assert len(with_column_ops) == 1
+        assert with_column_ops[0].in_loop is True
+
+    def test_operation_outside_loop_not_marked(self):
+        """Test that operations outside loops have in_loop=False."""
+        code = """
+df = df.withColumn("a", df["a"])
+"""
+        parser = SparkCodeParser()
+        result = parser.parse_source(code)
+        with_column_ops = [op for op in result.operations if op.method_name == "withColumn"]
+        assert len(with_column_ops) == 1
+        assert with_column_ops[0].in_loop is False
+
+    def test_operation_inside_while_loop_marked(self):
+        """Test that operations inside a while loop have in_loop=True."""
+        code = """
+while condition:
+    df = df.filter(df.x > 0)
+"""
+        parser = SparkCodeParser()
+        result = parser.parse_source(code)
+        filter_ops = [op for op in result.operations if op.method_name == "filter"]
+        assert len(filter_ops) == 1
+        assert filter_ops[0].in_loop is True
+
+    def test_operation_after_loop_not_marked(self):
+        """Test that the loop stack is popped after the loop ends."""
+        code = """
+for c in columns:
+    df = df.withColumn(c, df[c])
+df = df.select("a")
+"""
+        parser = SparkCodeParser()
+        result = parser.parse_source(code)
+        select_ops = [op for op in result.operations if op.method_name == "select"]
+        assert len(select_ops) == 1
+        assert select_ops[0].in_loop is False
+
+    def test_for_loop_iterable_not_marked(self):
+        """Test that the loop iterable is evaluated once and not marked as in-loop."""
+        code = """
+for row in df.collect():
+    print(row)
+"""
+        parser = SparkCodeParser()
+        result = parser.parse_source(code)
+        collect_ops = [op for op in result.operations if op.method_name == "collect"]
+        assert len(collect_ops) == 1
+        assert collect_ops[0].in_loop is False
+
+    def test_nested_loops_marked(self):
+        """Test that operations in nested loops are marked as in-loop."""
+        code = """
+for a in outer:
+    for b in inner:
+        df = df.withColumn(b, df[b])
+    df = df.filter(df.x > 0)
+"""
+        parser = SparkCodeParser()
+        result = parser.parse_source(code)
+        assert all(op.in_loop for op in result.operations if op.method_name in ("withColumn", "filter"))
+
+    def test_limit_tracked_as_transformation(self):
+        """Test that limit() calls are recorded as transformations."""
+        code = """
+df.limit(10)
+"""
+        parser = SparkCodeParser()
+        result = parser.parse_source(code)
+        limit_ops = [op for op in result.operations if op.method_name == "limit"]
+        assert len(limit_ops) == 1
+        assert limit_ops[0].operation_type == SparkOperationType.TRANSFORMATION

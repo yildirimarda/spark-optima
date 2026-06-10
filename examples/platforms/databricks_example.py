@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Example: Optimize Spark configuration for Databricks."""
 
-import json
 from spark_optima import Optimizer
 from spark_optima.platforms.models import ResourceSpec
+
 
 def main():
     """Run optimization for Databricks platform."""
@@ -44,7 +44,7 @@ def main():
         objectives=["minimize_time"],
     )
 
-    print(f"\n🔧 Optimal Configuration for Databricks:")
+    print("\n🔧 Optimal Configuration for Databricks:")
     print("-" * 70)
     for key in result.configuration:
         if "spark.executor" in key or "spark.driver" in key:
@@ -53,8 +53,8 @@ def main():
     print(f"\n📊 Estimated Time: {result.estimated_time_minutes:.1f} minutes")
 
     # Export for Databricks
-    print(f"\n📋 Databricks Cluster Configuration:")
-    print(f"  spark.conf.set for each parameter in result.configuration")
+    print("\n📋 Databricks Cluster Configuration:")
+    print("  spark.conf.set for each parameter in result.configuration")
 
 
 if __name__ == "__main__":

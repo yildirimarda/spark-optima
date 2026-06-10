@@ -7,6 +7,8 @@ This module provides the command-line interface for Spark Optima,
 allowing users to run configuration optimization from the terminal.
 """
 
+import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,8 @@ from rich.table import Table
 
 from spark_optima import __version__
 from spark_optima.core.optimizer import Optimizer
+
+logger = logging.getLogger(__name__)
 
 # Create Typer app
 app = typer.Typer(
@@ -62,7 +66,7 @@ def optimize(
         "local",
         "--platform",
         "-p",
-        help="Target platform (local, databricks, aws_glue, azure_synapse)",
+        help="Target platform (local, databricks, aws_glue, aws_emr, azure_synapse)",
     ),
     spark_version: str = typer.Option(
         "3.5.0",
@@ -138,8 +142,7 @@ def optimize(
     # Display header
     console.print(
         Panel.fit(
-            "[bold blue]🔥 Spark Optima[/bold blue]\n"
-            "[dim]Intelligent Spark Configuration Optimization[/dim]",
+            "[bold blue]🔥 Spark Optima[/bold blue]\n[dim]Intelligent Spark Configuration Optimization[/dim]",
             border_style="blue",
         ),
     )
@@ -202,12 +205,30 @@ def optimize(
 
     if output_format == "json":
         exporter = ConfigExporter(result, platform)
-        console.print(exporter.export_json())
+        typer.echo(exporter.export_json())
     elif output_format == "yaml":
         exporter = ConfigExporter(result, platform)
-        console.print(exporter.export_yaml())
+        typer.echo(exporter.export_yaml())
     else:  # table
         display_results_table(result)
+
+    # Auto-save to optimization history (best effort — never break the optimize flow)
+    try:
+        from spark_optima.core.history import OptimizationHistory
+
+        with OptimizationHistory() as history_store:
+            entry_id = history_store.save(
+                result.to_dict(),
+                platform=platform,
+                spark_version=spark_version,
+                mode=mode,
+                code_path=str(code_path_obj),
+            )
+        console.print(
+            f"\n[dim]Saved to history (id={entry_id}). View with: spark-optima history --show {entry_id}[/dim]",
+        )
+    except Exception as e:  # history persistence must never break optimization
+        logger.warning("Failed to save optimization result to history: %s", e)
 
     # Save hint
     console.print("\n[dim]Tip: Save results with --output json > result.json[/dim]")
@@ -261,8 +282,7 @@ def analyze(
     # Display header
     console.print(
         Panel.fit(
-            "[bold blue]🔍 Spark Code Analysis[/bold blue]\n"
-            "[dim]Identify optimization opportunities[/dim]",
+            "[bold blue]🔍 Spark Code Analysis[/bold blue]\n[dim]Identify optimization opportunities[/dim]",
             border_style="blue",
         ),
     )
@@ -272,7 +292,8 @@ def analyze(
 
     with console.status("[bold green]Analyzing code..."):
         try:
-            result = analyze_code(str(code_path_obj))
+            source_code = code_path_obj.read_text(encoding="utf-8")
+            result = analyze_code(source_code)
         except (OSError, RuntimeError, ValueError, AttributeError, TypeError) as e:
             console.print(f"[bold red]Analysis failed:[/bold red] {e}")
             raise typer.Exit(1) from e
@@ -281,7 +302,7 @@ def analyze(
     if output_format == "json":
         import json
 
-        console.print(json.dumps(result.to_dict(), indent=2))
+        typer.echo(json.dumps(result.to_dict(), indent=2))
     else:
         # Table format
         table = Table(title="Code Analysis Results")
@@ -325,8 +346,7 @@ def platforms_list() -> None:
     # Display header
     console.print(
         Panel.fit(
-            "[bold blue]🖥️ Supported Platforms[/bold blue]\n"
-            "[dim]Available execution platforms[/dim]",
+            "[bold blue]🖥️ Supported Platforms[/bold blue]\n[dim]Available execution platforms[/dim]",
             border_style="blue",
         ),
     )
@@ -445,9 +465,9 @@ def wizard() -> None:
     if output_format in ("json", "yaml"):
         exporter = ConfigExporter(result, platform)
         if output_format == "json":
-            console.print(exporter.export_json())
+            typer.echo(exporter.export_json())
         else:
-            console.print(exporter.export_yaml())
+            typer.echo(exporter.export_yaml())
     else:
         display_results_table(result)
 
@@ -468,7 +488,7 @@ def export(
         "-f",
         help=(
             "Export format (json, yaml, databricks-json, aws-glue, "
-            "azure-synapse, env, properties)"
+            "azure-synapse, env, properties, airflow, kubernetes, emr)"
         ),
     ),
     output: str = typer.Option(
@@ -561,6 +581,9 @@ def export(
                 "azure-synapse": exporter.export_azure_synapse,
                 "env": exporter.export_environment_variables,
                 "properties": exporter.export_properties_file,
+                "airflow": exporter.export_airflow_dag,
+                "kubernetes": exporter.export_kubernetes_configmap,
+                "emr": exporter.export_aws_emr,
             }
 
             if format not in formatters:
@@ -568,11 +591,358 @@ def export(
                 console.print(f"Supported formats: {', '.join(formatters.keys())}")
                 raise typer.Exit(1)
 
-            console.print(formatters[format]())  # type: ignore[operator]
+            typer.echo(formatters[format]())  # type: ignore[operator]
 
     except ValueError as e:
         console.print(f"[bold red]Export error:[/bold red] {e}")
         raise typer.Exit(1) from e
+
+
+def _load_result_dict(result_path: Path) -> dict[str, Any]:
+    """Load an optimization result JSON file into a dictionary.
+
+    Args:
+        result_path: Path to a result JSON file produced by the optimize/export commands.
+
+    Returns:
+        Parsed result dictionary.
+
+    Raises:
+        typer.Exit: If the file cannot be read or does not contain a JSON object.
+
+    """
+    try:
+        with open(result_path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        console.print(f"[bold red]Error loading result file:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    if not isinstance(data, dict):
+        console.print(f"[bold red]Error:[/bold red] {result_path} does not contain a JSON object")
+        raise typer.Exit(1)
+    return data
+
+
+def _extract_metrics(result_data: dict[str, Any]) -> dict[str, float]:
+    """Extract comparable numeric metrics from a result dictionary.
+
+    Args:
+        result_data: Parsed optimization result dictionary.
+
+    Returns:
+        Mapping of metric name to numeric value (time, confidence, cost if present).
+
+    """
+    metrics: dict[str, float] = {}
+    for key in ("estimated_time_minutes", "confidence_score"):
+        value = result_data.get(key)
+        if isinstance(value, (int, float)):
+            metrics[key] = float(value)
+
+    # Cost is optional and may live at several locations depending on the platform
+    cost_candidates = (
+        result_data.get("estimated_cost"),
+        (result_data.get("metadata") or {}).get("estimated_cost"),
+        (result_data.get("platform_specific") or {}).get("estimated_cost"),
+    )
+    for candidate in cost_candidates:
+        if isinstance(candidate, (int, float)):
+            metrics["estimated_cost"] = float(candidate)
+            break
+    return metrics
+
+
+def _display_history_entry(entry: Any) -> None:
+    """Display the full details of a single history entry.
+
+    Args:
+        entry: HistoryEntry instance to display.
+
+    """
+    console.print(
+        Panel.fit(
+            f"[bold blue]History Entry #{entry.entry_id}[/bold blue]\n[dim]{entry.created_at}[/dim]",
+            border_style="blue",
+        ),
+    )
+
+    summary_table = Table(title="Run Summary", show_header=False)
+    summary_table.add_column("Field", style="cyan")
+    summary_table.add_column("Value", style="green")
+    summary_table.add_row("Platform", entry.platform)
+    summary_table.add_row("Spark Version", entry.spark_version)
+    summary_table.add_row("Mode", entry.mode)
+    summary_table.add_row("Estimated Time", f"{entry.estimated_time_minutes:.1f} min")
+    summary_table.add_row("Confidence", f"{entry.confidence_score:.1%}")
+    summary_table.add_row("Code Path", entry.code_path or "-")
+    console.print(summary_table)
+
+    config_table = Table(title="Optimized Configuration")
+    config_table.add_column("Parameter", style="cyan", no_wrap=True)
+    config_table.add_column("Value", style="green")
+    for param, value in sorted(entry.configuration.items()):
+        config_table.add_row(param, str(value))
+    console.print(config_table)
+
+
+@app.command()
+def history(
+    limit: int = typer.Option(
+        20,
+        "--limit",
+        "-n",
+        help="Maximum number of entries to list",
+    ),
+    platform: str = typer.Option(
+        "",
+        "--platform",
+        "-p",
+        help="Filter entries by platform (local, databricks, aws_glue, azure_synapse)",
+    ),
+    show: int = typer.Option(
+        0,
+        "--show",
+        help="Show full details of the entry with this ID",
+    ),
+    clear: bool = typer.Option(
+        False,
+        "--clear",
+        help="Delete all history entries",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the confirmation prompt for --clear",
+    ),
+) -> None:
+    """Browse past optimization runs stored in the local history database.
+
+    Optimization results are saved automatically by the optimize command to
+    ~/.spark_optima/history.db (override with SPARK_OPTIMA_HISTORY_DB).
+
+    Example:
+        $ spark-optima history --limit 10
+        $ spark-optima history --show 3
+        $ spark-optima history --clear --yes
+
+    """
+    from spark_optima.core.history import OptimizationHistory
+
+    with OptimizationHistory() as history_store:
+        if clear:
+            if not yes and not typer.confirm("Delete ALL optimization history entries?"):
+                console.print("[yellow]Aborted.[/yellow]")
+                return
+            deleted = history_store.clear()
+            console.print(f"[green]✓[/green] Deleted {deleted} history entries")
+            return
+
+        if show:
+            entry = history_store.get(show)
+            if entry is None:
+                console.print(f"[bold red]Error:[/bold red] no history entry with id {show}")
+                raise typer.Exit(1)
+            _display_history_entry(entry)
+            return
+
+        try:
+            entries = history_store.list_entries(platform=platform or None, limit=limit)
+        except ValueError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            raise typer.Exit(1) from e
+
+    if not entries:
+        console.print("[yellow]No optimization history found.[/yellow]")
+        return
+
+    table = Table(title="Optimization History")
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Created (UTC)", style="dim")
+    table.add_column("Platform", style="green")
+    table.add_column("Spark", style="green")
+    table.add_column("Mode", style="dim")
+    table.add_column("Est. Time", justify="right")
+    table.add_column("Confidence", justify="right")
+    for entry in entries:
+        table.add_row(
+            str(entry.entry_id),
+            entry.created_at[:19].replace("T", " "),
+            entry.platform,
+            entry.spark_version,
+            entry.mode,
+            f"{entry.estimated_time_minutes:.1f} min",
+            f"{entry.confidence_score:.1%}",
+        )
+    console.print(table)
+
+
+@app.command()
+def compare(
+    result_a: str = typer.Option(
+        ...,
+        "--result-a",
+        "-a",
+        help="Path to the first optimization result JSON file",
+    ),
+    result_b: str = typer.Option(
+        ...,
+        "--result-b",
+        "-b",
+        help="Path to the second optimization result JSON file",
+    ),
+    output_format: str = typer.Option(
+        "table",
+        "--output",
+        "-o",
+        help="Output format (table, json)",
+    ),
+) -> None:
+    """Compare two optimization result files.
+
+    Shows configuration parameters that differ between the two results,
+    parameters present in only one of them, and metric deltas.
+
+    Example:
+        $ spark-optima compare -a result1.json -b result2.json
+        $ spark-optima compare -a result1.json -b result2.json --output json
+
+    """
+    data_a = _load_result_dict(Path(result_a))
+    data_b = _load_result_dict(Path(result_b))
+
+    config_a: dict[str, Any] = data_a.get("configuration") or {}
+    config_b: dict[str, Any] = data_b.get("configuration") or {}
+
+    shared_keys = set(config_a) & set(config_b)
+    changed = {key: (config_a[key], config_b[key]) for key in shared_keys if config_a[key] != config_b[key]}
+    only_in_a = {key: config_a[key] for key in set(config_a) - set(config_b)}
+    only_in_b = {key: config_b[key] for key in set(config_b) - set(config_a)}
+
+    metrics_a = _extract_metrics(data_a)
+    metrics_b = _extract_metrics(data_b)
+    metric_deltas = {
+        name: {"a": metrics_a[name], "b": metrics_b[name], "delta": metrics_b[name] - metrics_a[name]}
+        for name in metrics_a
+        if name in metrics_b
+    }
+
+    if output_format == "json":
+        diff = {
+            "changed": {key: {"a": a_value, "b": b_value} for key, (a_value, b_value) in sorted(changed.items())},
+            "only_in_a": {key: only_in_a[key] for key in sorted(only_in_a)},
+            "only_in_b": {key: only_in_b[key] for key in sorted(only_in_b)},
+            "metrics": metric_deltas,
+        }
+        console.print_json(data=diff)
+        return
+
+    console.print(
+        Panel.fit(
+            f"[bold blue]Configuration Comparison[/bold blue]\n[dim]A: {result_a}\nB: {result_b}[/dim]",
+            border_style="blue",
+        ),
+    )
+
+    if not changed and not only_in_a and not only_in_b:
+        console.print("[green]Configurations are identical.[/green]")
+    else:
+        config_table = Table(title="Configuration Differences")
+        config_table.add_column("Parameter", style="cyan", no_wrap=True)
+        config_table.add_column("Value A", style="green")
+        config_table.add_column("Value B", style="yellow")
+        for key in sorted(changed):
+            a_value, b_value = changed[key]
+            config_table.add_row(key, str(a_value), str(b_value))
+        for key in sorted(only_in_a):
+            config_table.add_row(key, str(only_in_a[key]), "[dim]-[/dim]")
+        for key in sorted(only_in_b):
+            config_table.add_row(key, "[dim]-[/dim]", str(only_in_b[key]))
+        console.print(config_table)
+
+    if metric_deltas:
+        metrics_table = Table(title="Metric Deltas")
+        metrics_table.add_column("Metric", style="cyan", no_wrap=True)
+        metrics_table.add_column("A", justify="right")
+        metrics_table.add_column("B", justify="right")
+        metrics_table.add_column("Delta (B - A)", justify="right")
+        for name, delta in metric_deltas.items():
+            metrics_table.add_row(
+                name,
+                f"{delta['a']:.2f}",
+                f"{delta['b']:.2f}",
+                f"{delta['delta']:+.2f}",
+            )
+        console.print(metrics_table)
+
+
+@app.command()
+def explain(
+    result_file: str = typer.Option(
+        ...,
+        "--result-file",
+        "-r",
+        help="Path to optimization result JSON file",
+    ),
+) -> None:
+    """Explain the rationale behind each parameter in an optimization result.
+
+    Rationale is sourced from the heuristic rule registry, falling back to the
+    Spark parameter database description, and finally to a Bayesian tuning note.
+
+    Example:
+        $ spark-optima explain -r result.json
+
+    """
+    from spark_optima.core.config_engine.loader import VersionLoader
+    from spark_optima.core.heuristics.rules import RuleRegistry
+
+    result_data = _load_result_dict(Path(result_file))
+    configuration: dict[str, Any] = result_data.get("configuration") or {}
+    if not configuration:
+        console.print("[yellow]Result file contains no configuration to explain.[/yellow]")
+        return
+
+    metadata = result_data.get("metadata") or {}
+    platform_specific = result_data.get("platform_specific") or {}
+    spark_version = str(
+        metadata.get("spark_version") or platform_specific.get("spark_version") or "3.5.0",
+    )
+
+    registry = RuleRegistry()
+    try:
+        config_set = VersionLoader().load(spark_version)
+    except (OSError, ValueError, KeyError):
+        config_set = None
+
+    console.print(
+        Panel.fit(
+            "[bold blue]Configuration Explanation[/bold blue]\n"
+            f"[dim]Spark {spark_version} — {len(configuration)} parameters[/dim]",
+            border_style="blue",
+        ),
+    )
+
+    table = Table(title="Parameter Rationale")
+    table.add_column("Parameter", style="cyan", no_wrap=True)
+    table.add_column("Value", style="green")
+    table.add_column("Source", style="dim")
+    table.add_column("Rationale")
+    for param, value in sorted(configuration.items()):
+        rule = registry.get_rule(param)
+        db_param = config_set.parameters.get(param) if config_set else None
+        if rule is not None and rule.description:
+            source = "heuristic"
+            rationale = rule.description
+        elif db_param is not None and db_param.description:
+            source = "database"
+            rationale = db_param.description
+        else:
+            source = "bayesian"
+            rationale = "Tuned by Bayesian optimization"
+        table.add_row(param, str(value), source, rationale)
+    console.print(table)
 
 
 if __name__ == "__main__":

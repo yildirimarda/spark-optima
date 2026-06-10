@@ -45,6 +45,7 @@ class HeuristicRuleDef:
             "local",
             "databricks",
             "aws_glue",
+            "aws_emr",
             "azure_synapse",
         ],
     )
@@ -139,6 +140,8 @@ class RuleRegistry:
         self._register_sql_rules()
         # Dynamic allocation rules
         self._register_dynamic_allocation_rules()
+        # Speculative execution rules
+        self._register_speculation_rules()
         # Serialization rules
         self._register_serialization_rules()
         # IO rules
@@ -227,9 +230,7 @@ class RuleRegistry:
                 formula="0.6",
                 base_value=0.6,
                 priority="high",
-                description=(
-                    "60% for execution/storage, 40% for user data and Spark internal metadata"
-                ),
+                description=("60% for execution/storage, 40% for user data and Spark internal metadata"),
             ),
             HeuristicRuleDef(
                 param_name="spark.memory.storageFraction",
@@ -473,6 +474,35 @@ class RuleRegistry:
                 description="5x median is a good threshold for skew detection",
             ),
             HeuristicRuleDef(
+                param_name="spark.sql.adaptive.skewJoin.skewedPartitionFactor",
+                category=ParameterCategory.SQL,
+                formula="3.0",
+                base_value=3.0,
+                priority="high",
+                conditions={"skew_factor": ">1.5"},
+                min_version="3.0.0",
+                description=(
+                    "Lower the skew detection threshold to 3x median when input data "
+                    "is known to be skewed, so AQE splits hot partitions earlier"
+                ),
+            ),
+            HeuristicRuleDef(
+                param_name="spark.sql.adaptive.advisoryPartitionSizeInBytes",
+                category=ParameterCategory.SQL,
+                formula=(
+                    "floor(min(134217728, max(67108864, "
+                    "data_size_gb * 1073741824 / max(spark_sql_shuffle_partitions, 200))))"
+                ),
+                base_value="64m",
+                priority="medium",
+                depends_on=["data_size_gb"],
+                min_version="3.0.0",
+                description=(
+                    "Advise AQE to coalesce/split toward 64-128MB partitions based on "
+                    "data size per shuffle partition (value in bytes)"
+                ),
+            ),
+            HeuristicRuleDef(
                 param_name="spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes",
                 category=ParameterCategory.SQL,
                 formula="256m",
@@ -535,7 +565,7 @@ class RuleRegistry:
                 formula="true",
                 base_value=True,
                 priority="high",
-                applies_to=["databricks", "aws_glue", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
                 description="Enable for cost optimization and elasticity (cloud platforms)",
             ),
             HeuristicRuleDef(
@@ -553,7 +583,7 @@ class RuleRegistry:
                 formula="2",
                 base_value=2,
                 priority="medium",
-                applies_to=["databricks", "aws_glue", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
                 description="Keep 2 executors minimum for quick startup",
             ),
             HeuristicRuleDef(
@@ -563,8 +593,21 @@ class RuleRegistry:
                 base_value=20,
                 priority="high",
                 depends_on=["total_cores", "executor_cores"],
-                applies_to=["databricks", "aws_glue", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
                 description="Scale with available cluster capacity",
+            ),
+            HeuristicRuleDef(
+                param_name="spark.dynamicAllocation.maxExecutors",
+                category=ParameterCategory.DYNAMIC_ALLOCATION,
+                formula="min(max(10, ceil(data_size_gb / 4)), 128)",
+                base_value=20,
+                priority="high",
+                depends_on=["data_size_gb"],
+                conditions={"data_size_gb": ">0"},
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
+                description=(
+                    "Data-aware executor ceiling: roughly one executor per 4GB of input, bounded to a sane 10-128 range"
+                ),
             ),
             HeuristicRuleDef(
                 param_name="spark.dynamicAllocation.initialExecutors",
@@ -573,7 +616,7 @@ class RuleRegistry:
                 base_value=2,
                 priority="low",
                 depends_on=["spark_dynamicAllocation_minExecutors"],
-                applies_to=["databricks", "aws_glue", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
                 description="Start with minimum executors",
             ),
             HeuristicRuleDef(
@@ -582,7 +625,7 @@ class RuleRegistry:
                 formula="300",
                 base_value="300s",
                 priority="medium",
-                applies_to=["databricks", "aws_glue", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
                 description="5 minutes idle before removal for cost savings",
             ),
             HeuristicRuleDef(
@@ -591,7 +634,7 @@ class RuleRegistry:
                 formula='"infinity"',
                 base_value="infinity",
                 priority="low",
-                applies_to=["databricks", "aws_glue", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
                 description="Keep executors with cached data indefinitely",
             ),
             HeuristicRuleDef(
@@ -600,7 +643,7 @@ class RuleRegistry:
                 formula="5",
                 base_value="5s",
                 priority="medium",
-                applies_to=["databricks", "aws_glue", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
                 description="Wait 5s of backlog before scaling up",
             ),
             HeuristicRuleDef(
@@ -611,6 +654,54 @@ class RuleRegistry:
                 priority="high",
                 conditions={"dynamic_allocation_enabled": True},
                 description="Required for dynamic allocation with shuffle",
+            ),
+        ]
+        self._rules.extend(rules)
+
+    def _register_speculation_rules(self) -> None:
+        """Register speculative execution heuristic rules.
+
+        Speculation re-launches slow (straggler) task attempts on other
+        executors. It helps long-running or skewed workloads where a few slow
+        tasks dominate stage time, but every speculative attempt duplicates
+        work, so it stays off for short, uniform jobs.
+        """
+        rules = [
+            HeuristicRuleDef(
+                param_name="spark.speculation",
+                category=ParameterCategory.SCHEDULER,
+                formula="true",
+                base_value=True,
+                priority="medium",
+                conditions={"large_shuffles": True},
+                description=(
+                    "Re-launch straggler tasks for long-running/skewed workloads; "
+                    "duplicate attempts cost extra resources, so keep off for short uniform jobs"
+                ),
+            ),
+            HeuristicRuleDef(
+                param_name="spark.speculation.quantile",
+                category=ParameterCategory.SCHEDULER,
+                formula="0.75",
+                base_value=0.75,
+                priority="medium",
+                conditions={"large_shuffles": True},
+                description=(
+                    "Wait until 75% of tasks in a stage finish before speculating, "
+                    "limiting duplicate work to true stragglers"
+                ),
+            ),
+            HeuristicRuleDef(
+                param_name="spark.speculation.multiplier",
+                category=ParameterCategory.SCHEDULER,
+                formula="1.5",
+                base_value=1.5,
+                priority="medium",
+                conditions={"large_shuffles": True},
+                description=(
+                    "Speculate tasks running 1.5x slower than the median, "
+                    "balancing straggler recovery against duplicate-task cost"
+                ),
             ),
         ]
         self._rules.extend(rules)

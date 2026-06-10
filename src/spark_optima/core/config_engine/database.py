@@ -186,16 +186,10 @@ class ConfigDatabase:
         if category:
             if isinstance(category, str):
                 category = ParameterCategory(category)
-            parameters = {
-                name: param for name, param in parameters.items() if param.category == category
-            }
+            parameters = {name: param for name, param in parameters.items() if param.category == category}
 
         if platform:
-            parameters = {
-                name: param
-                for name, param in parameters.items()
-                if param.is_applicable_for(platform)
-            }
+            parameters = {name: param for name, param in parameters.items() if param.is_applicable_for(platform)}
 
         return parameters
 

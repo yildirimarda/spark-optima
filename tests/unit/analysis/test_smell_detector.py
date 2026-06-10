@@ -542,3 +542,509 @@ class TestSmellDetectorExceptionHandling:
         assert result is not None
         # Restore original rules
         detector._detection_rules = original_rules
+
+
+class TestCartesianJoinDetection:
+    """Tests for cartesian/cross join detection."""
+
+    def test_cross_join_detected(self) -> None:
+        """Test that crossJoin() is flagged as a cartesian product."""
+        code = """
+result = df1.crossJoin(df2)
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("cartesian_join")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.HIGH
+        assert smells[0].location is not None
+        assert smells[0].location.line == 2
+
+    def test_regular_join_not_flagged(self) -> None:
+        """Test that a keyed join is not flagged as cartesian."""
+        code = """
+result = df1.join(df2, "id")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("cartesian_join") == []
+
+
+class TestToPandasDetection:
+    """Tests for toPandas() detection."""
+
+    def test_topandas_detected(self) -> None:
+        """Test that toPandas() is flagged with HIGH severity."""
+        code = """
+pdf = df.toPandas()
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("topandas_usage")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.HIGH
+        assert smells[0].location is not None
+        assert smells[0].location.line == 2
+
+    def test_no_topandas_not_flagged(self) -> None:
+        """Test that code without toPandas() is not flagged."""
+        code = """
+df.show()
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("topandas_usage") == []
+
+
+class TestCountForEmptyCheckDetection:
+    """Tests for count()-based emptiness check detection."""
+
+    def test_count_equals_zero(self) -> None:
+        """Test detection of df.count() == 0."""
+        code = """
+if df.count() == 0:
+    pass
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("count_for_empty_check")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.MEDIUM
+        assert smells[0].location is not None
+        assert smells[0].location.line == 2
+
+    def test_count_greater_than_zero(self) -> None:
+        """Test detection of df.count() > 0."""
+        code = """
+if df.count() > 0:
+    pass
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("count_for_empty_check")) == 1
+
+    def test_count_not_equals_zero(self) -> None:
+        """Test detection of df.count() != 0."""
+        code = """
+has_rows = df.count() != 0
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("count_for_empty_check")) == 1
+
+    def test_reversed_comparison(self) -> None:
+        """Test detection of 0 == df.count()."""
+        code = """
+if 0 == df.count():
+    pass
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("count_for_empty_check")) == 1
+
+    def test_count_compared_to_nonzero_not_flagged(self) -> None:
+        """Test that count() compared against a non-zero value is not flagged."""
+        code = """
+if df.count() == 10:
+    pass
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("count_for_empty_check") == []
+
+    def test_plain_count_not_flagged(self) -> None:
+        """Test that an uncompared count() call is not flagged."""
+        code = """
+total = df.count()
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("count_for_empty_check") == []
+
+
+class TestSinglePartitionWriteDetection:
+    """Tests for single-partition write detection."""
+
+    def test_coalesce_one_chained_write(self) -> None:
+        """Test detection of coalesce(1) chained into a write."""
+        code = """
+df.coalesce(1).write.parquet("out")
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("single_partition_write")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.MEDIUM
+        assert smells[0].location is not None
+        assert smells[0].location.line == 2
+
+    def test_repartition_one_chained_write(self) -> None:
+        """Test detection of repartition(1) chained into a write."""
+        code = """
+df.repartition(1).write.csv("out")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("single_partition_write")) == 1
+
+    def test_assigned_variable_then_write(self) -> None:
+        """Test detection when the single-partition DataFrame is written later."""
+        code = """
+single = df.coalesce(1)
+single.write.parquet("out")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("single_partition_write")) == 1
+
+    def test_coalesce_many_partitions_not_flagged(self) -> None:
+        """Test that coalesce with more than one partition is not flagged."""
+        code = """
+df.coalesce(8).write.parquet("out")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("single_partition_write") == []
+
+    def test_coalesce_one_without_write_not_flagged(self) -> None:
+        """Test that coalesce(1) without a subsequent write is not flagged."""
+        code = """
+small = df.coalesce(1)
+small.show()
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("single_partition_write") == []
+
+
+class TestInferSchemaDetection:
+    """Tests for schema inference detection."""
+
+    def test_infer_schema_keyword(self) -> None:
+        """Test detection of inferSchema=True keyword argument."""
+        code = """
+df = spark.read.csv("data.csv", header=True, inferSchema=True)
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("infer_schema")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.MEDIUM
+        assert smells[0].location is not None
+        assert smells[0].location.line == 2
+
+    def test_infer_schema_option(self) -> None:
+        """Test detection of .option("inferSchema", "true")."""
+        code = """
+df = spark.read.option("inferSchema", "true").csv("data.csv")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("infer_schema")) == 1
+
+    def test_infer_schema_false_not_flagged(self) -> None:
+        """Test that inferSchema=False is not flagged."""
+        code = """
+df = spark.read.csv("data.csv", inferSchema=False)
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("infer_schema") == []
+
+    def test_infer_schema_option_false_not_flagged(self) -> None:
+        """Test that option("inferSchema", "false") is not flagged."""
+        code = """
+df = spark.read.option("inferSchema", "false").csv("data.csv")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("infer_schema") == []
+
+
+class TestWithColumnInLoopDetection:
+    """Tests for withColumn-in-loop detection."""
+
+    def test_withcolumn_in_for_loop(self) -> None:
+        """Test detection of withColumn() inside a for loop."""
+        code = """
+for c in columns:
+    df = df.withColumn(c, df[c] * 2)
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("withcolumn_in_loop")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.HIGH
+        assert smells[0].location is not None
+        assert smells[0].location.line == 3
+
+    def test_withcolumn_in_while_loop(self) -> None:
+        """Test detection of withColumn() inside a while loop."""
+        code = """
+while needs_more:
+    df = df.withColumn("x", df.x + 1)
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("withcolumn_in_loop")) == 1
+
+    def test_withcolumn_outside_loop_not_flagged(self) -> None:
+        """Test that withColumn() outside a loop is not flagged."""
+        code = """
+df = df.withColumn("a", df["a"])
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("withcolumn_in_loop") == []
+
+
+class TestSelectStarDetection:
+    """Tests for select('*') detection."""
+
+    def test_select_star_string(self) -> None:
+        """Test detection of df.select('*')."""
+        code = """
+df.select("*").show()
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("select_star")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.LOW
+
+    def test_select_star_col(self) -> None:
+        """Test detection of df.select(col('*'))."""
+        code = """
+df.select(col("*")).show()
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("select_star")) == 1
+
+    def test_select_named_columns_not_flagged(self) -> None:
+        """Test that selecting specific columns is not flagged."""
+        code = """
+df.select("a", "b").show()
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("select_star") == []
+
+
+class TestOrderByWithoutLimitDetection:
+    """Tests for orderBy/sort without limit detection."""
+
+    def test_orderby_then_action(self) -> None:
+        """Test detection of orderBy() chained into an action."""
+        code = """
+df.orderBy("x").show()
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("orderby_without_limit")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.MEDIUM
+        assert smells[0].location is not None
+        assert smells[0].location.line == 2
+
+    def test_sort_then_write(self) -> None:
+        """Test detection of sort() chained into a write."""
+        code = """
+df.sort("x").write.parquet("out")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("orderby_without_limit")) == 1
+
+    def test_orderby_with_limit_not_flagged(self) -> None:
+        """Test that orderBy().limit() is not flagged."""
+        code = """
+df.orderBy("x").limit(10).show()
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("orderby_without_limit") == []
+
+    def test_assigned_sorted_variable_written(self) -> None:
+        """Test detection when the sorted DataFrame is written via a variable."""
+        code = """
+sorted_df = df.orderBy("x")
+sorted_df.write.parquet("out")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("orderby_without_limit")) == 1
+
+    def test_assigned_sorted_variable_limited_not_flagged(self) -> None:
+        """Test that a sorted variable bounded by limit() is not flagged."""
+        code = """
+sorted_df = df.orderBy("x")
+sorted_df.limit(10).show()
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("orderby_without_limit") == []
+
+    def test_bare_orderby_not_flagged(self) -> None:
+        """Test that an unconsumed orderBy() is not flagged."""
+        code = """
+sorted_df = df.orderBy("x")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("orderby_without_limit") == []
+
+
+class TestSqlStringAnalysis:
+    """Tests for lightweight SQL string analysis in spark.sql() calls."""
+
+    def test_sql_select_star(self) -> None:
+        """Test detection of SELECT * inside a SQL literal."""
+        code = """
+df = spark.sql("SELECT * FROM events")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("select_star")) == 1
+
+    def test_sql_cross_join(self) -> None:
+        """Test detection of CROSS JOIN inside a SQL literal."""
+        code = """
+df = spark.sql("SELECT a.id FROM a CROSS JOIN b")
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("cartesian_join")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.HIGH
+
+    def test_sql_case_insensitive(self) -> None:
+        """Test that SQL anti-pattern matching is case-insensitive."""
+        code = """
+df = spark.sql("select * from a cross join b")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("select_star")) == 1
+        assert len(result.get_smells_by_type("cartesian_join")) == 1
+
+    def test_sql_fstring_skipped(self) -> None:
+        """Test that f-string SQL arguments are skipped gracefully."""
+        code = """
+table = "events"
+df = spark.sql(f"SELECT * FROM {table} CROSS JOIN b")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("select_star") == []
+        assert result.get_smells_by_type("cartesian_join") == []
+
+    def test_sql_variable_skipped(self) -> None:
+        """Test that variable SQL arguments are skipped gracefully."""
+        code = """
+df = spark.sql(query)
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("select_star") == []
+        assert result.get_smells_by_type("cartesian_join") == []
+
+    def test_sql_clean_query_not_flagged(self) -> None:
+        """Test that a clean SQL literal produces no SQL smells."""
+        code = """
+df = spark.sql("SELECT id, name FROM users JOIN orders ON users.id = orders.user_id")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("select_star") == []
+        assert result.get_smells_by_type("cartesian_join") == []
+
+
+class TestUdfDiscrimination:
+    """Tests for plain UDF vs pandas_udf severity discrimination."""
+
+    def test_plain_udf_high_severity(self) -> None:
+        """Test that a plain Python udf() is flagged as HIGH udf_usage."""
+        code = """
+my_udf = udf(lambda x: x * 2, "int")
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("udf_usage")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.HIGH
+        assert result.get_smells_by_type("pandas_udf_usage") == []
+
+    def test_pandas_udf_medium_severity(self) -> None:
+        """Test that pandas_udf() is flagged as MEDIUM pandas_udf_usage."""
+        code = """
+my_pudf = pandas_udf(lambda s: s * 2, "double")
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("pandas_udf_usage")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.MEDIUM
+        assert result.get_smells_by_type("udf_usage") == []
+
+    def test_pandas_udf_op_direct(self) -> None:
+        """Test pandas_udf discrimination with a direct ParseResult."""
+        pandas_op = SparkOperation(
+            operation_type=SparkOperationType.UDF,
+            method_name="pandas_udf",
+            dataframe_var="udf_call",
+            location=CodeLocation(line=3, column=0),
+        )
+        parse_result = ParseResult(
+            operations=[pandas_op],
+            dataframe_vars={"udf_call": [pandas_op]},
+            operation_count=1,
+        )
+        detector = SmellDetector()
+        smells = detector._detect_udf_usage(parse_result)
+        assert len(smells) == 1
+        assert smells[0].smell_type == "pandas_udf_usage"
+        assert smells[0].severity == SeverityLevel.MEDIUM
+
+
+class TestDataSkewEmptyArgumentsBugFix:
+    """Tests for the A11 bug fix: skew detection with empty arguments."""
+
+    def test_large_data_with_empty_arguments_flagged(self) -> None:
+        """Test that the large-data heuristic applies when arguments are empty."""
+        join_op = SparkOperation(
+            operation_type=SparkOperationType.JOIN,
+            method_name="join",
+            dataframe_var="df",
+            arguments=[],
+            location=CodeLocation(line=4, column=0),
+        )
+        join_op.data_size_gb = 5  # type: ignore[attr-defined]
+        parse_result = ParseResult(
+            operations=[join_op],
+            dataframe_vars={"df": [join_op]},
+            operation_count=1,
+        )
+        detector = SmellDetector()
+        smells = detector._detect_data_skew_potential(parse_result)
+        assert len(smells) == 1
+        assert smells[0].smell_type == "data_skew_potential"
+
+    def test_small_data_with_empty_arguments_not_flagged(self) -> None:
+        """Test that empty arguments without a data-size signal are not flagged."""
+        join_op = SparkOperation(
+            operation_type=SparkOperationType.JOIN,
+            method_name="join",
+            dataframe_var="df",
+            arguments=[],
+        )
+        parse_result = ParseResult(
+            operations=[join_op],
+            dataframe_vars={"df": [join_op]},
+            operation_count=1,
+        )
+        detector = SmellDetector()
+        smells = detector._detect_data_skew_potential(parse_result)
+        assert smells == []
+
+    def test_skew_column_still_flagged(self) -> None:
+        """Test that the skew-column heuristic still works after the fix."""
+        join_op = SparkOperation(
+            operation_type=SparkOperationType.JOIN,
+            method_name="join",
+            dataframe_var="df",
+            arguments=["df2", "'user_id'"],
+        )
+        parse_result = ParseResult(
+            operations=[join_op],
+            dataframe_vars={"df": [join_op]},
+            operation_count=1,
+        )
+        detector = SmellDetector()
+        smells = detector._detect_data_skew_potential(parse_result)
+        assert len(smells) == 1
+
+
+class TestLargeCollectLocationBugFix:
+    """Tests for the A12 bug fix: large_collect smell location."""
+
+    def test_large_collect_has_location(self) -> None:
+        """Test that large_collect smells carry the collect() line number."""
+        code = """
+df = spark.read.parquet("data")
+rows = df.collect()
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("large_collect")
+        assert len(smells) == 1
+        assert smells[0].location is not None
+        assert smells[0].location.line == 3
+
+    def test_collect_with_limit_not_flagged(self) -> None:
+        """Test that limit().collect() is still not flagged."""
+        code = """
+rows = df.limit(10).collect()
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("large_collect") == []

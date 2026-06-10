@@ -317,9 +317,7 @@ class MetricsCollector:
                 executor_memory_status = sc.getExecutorMemoryStatus()
 
                 if executor_memory_status:
-                    total_used = sum(
-                        (total - free) for (_, (total, free)) in executor_memory_status.items()
-                    )
+                    total_used = sum((total - free) for (_, (total, free)) in executor_memory_status.items())
                     total_available = sum(total for (_, (total, _)) in executor_memory_status.items())
 
                     avg_gb = total_used / (1024**3) if total_used > 0 else 0.0

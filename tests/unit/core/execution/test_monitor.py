@@ -462,9 +462,7 @@ class TestExecutionMonitorEdgeCases:
 
         # Mock _collect_current_metrics to return fixed value
         # This prevents the monitoring loop from updating _last_progress
-        with patch.object(
-            monitor, "_collect_current_metrics", return_value={"progress_percent": 0.0}
-        ):
+        with patch.object(monitor, "_collect_current_metrics", return_value={"progress_percent": 0.0}):
             monitor.start_monitoring(mock_spark)
 
             assert monitor._spark is mock_spark

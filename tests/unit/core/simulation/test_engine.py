@@ -407,12 +407,8 @@ class TestSimulationEngineMoreCoverage:
         engine = SimulationEngine()
 
         # Add some trial history
-        engine.simulate_trial(
-            1, {"spark.executor.memory": "4g"}, ResourceSpec(cpu_cores=8, memory_gb=32)
-        )
-        engine.simulate_trial(
-            2, {"spark.executor.memory": "8g"}, ResourceSpec(cpu_cores=8, memory_gb=32)
-        )
+        engine.simulate_trial(1, {"spark.executor.memory": "4g"}, ResourceSpec(cpu_cores=8, memory_gb=32))
+        engine.simulate_trial(2, {"spark.executor.memory": "8g"}, ResourceSpec(cpu_cores=8, memory_gb=32))
 
         # Need at least 10 samples for training
         # This will likely return an error about insufficient data
@@ -424,9 +420,7 @@ class TestSimulationEngineMoreCoverage:
         # Mock MLPerformancePredictor to raise RuntimeError
         from unittest.mock import patch
 
-        with patch(
-            "spark_optima.core.simulation.engine.MLPerformancePredictor"
-        ) as mock_predictor_class:
+        with patch("spark_optima.core.simulation.engine.MLPerformancePredictor") as mock_predictor_class:
             mock_predictor_class.side_effect = RuntimeError("Model not found")
 
             engine = SimulationEngine(use_ml=True)

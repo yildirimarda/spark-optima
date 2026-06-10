@@ -4,6 +4,7 @@
 from spark_optima import Optimizer
 from spark_optima.platforms.models import ResourceSpec
 
+
 def main():
     """Run optimization in simulation mode."""
     print("=" * 70)
@@ -42,12 +43,12 @@ def main():
         objectives=["minimize_time"],
     )
 
-    print(f"\n📊 Simulation Results:")
+    print("\n📊 Simulation Results:")
     print("-" * 70)
     print(f"  Estimated Time: {result.estimated_time_minutes:.1f} minutes")
     print(f"  Confidence Score: {result.confidence_score:.0%}")
 
-    print(f"\n🔧 Top Configuration Parameters:")
+    print("\n🔧 Top Configuration Parameters:")
     for key in ["spark.executor.memory", "spark.executor.cores", "spark.sql.shuffle.partitions"]:
         if key in result.configuration:
             print(f"  {key:45s} = {result.configuration[key]}")

@@ -429,9 +429,7 @@ class ConfigSet:
         if isinstance(category, str):
             category = ParameterCategory(category)
 
-        return {
-            name: param for name, param in self.parameters.items() if param.category == category
-        }
+        return {name: param for name, param in self.parameters.items() if param.category == category}
 
     def get_parameters_for_platform(
         self,
@@ -446,11 +444,7 @@ class ConfigSet:
             Dictionary of applicable parameters.
 
         """
-        return {
-            name: param
-            for name, param in self.parameters.items()
-            if param.is_applicable_for(platform)
-        }
+        return {name: param for name, param in self.parameters.items() if param.is_applicable_for(platform)}
 
     def get_default_config(self) -> dict[str, Any]:
         """Get default configuration as key-value pairs.
@@ -459,11 +453,7 @@ class ConfigSet:
             Dictionary of parameter names to default values.
 
         """
-        return {
-            name: param.default
-            for name, param in self.parameters.items()
-            if param.default is not None
-        }
+        return {name: param.default for name, param in self.parameters.items() if param.default is not None}
 
     def __len__(self) -> int:
         """Return number of parameters in the set."""

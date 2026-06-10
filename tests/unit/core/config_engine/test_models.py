@@ -319,9 +319,7 @@ class TestConfigSet:
             "param1": ConfigParameter(
                 name="param1", category=ParameterCategory.MEMORY, param_type=ParameterType.STRING
             ),
-            "param2": ConfigParameter(
-                name="param2", category=ParameterCategory.CPU, param_type=ParameterType.STRING
-            ),
+            "param2": ConfigParameter(name="param2", category=ParameterCategory.CPU, param_type=ParameterType.STRING),
             "param3": ConfigParameter(
                 name="param3", category=ParameterCategory.MEMORY, param_type=ParameterType.STRING
             ),
@@ -338,9 +336,7 @@ class TestConfigSet:
             "param1": ConfigParameter(
                 name="param1", category=ParameterCategory.MEMORY, param_type=ParameterType.STRING
             ),
-            "param2": ConfigParameter(
-                name="param2", category=ParameterCategory.CPU, param_type=ParameterType.STRING
-            ),
+            "param2": ConfigParameter(name="param2", category=ParameterCategory.CPU, param_type=ParameterType.STRING),
         }
         config_set = ConfigSet(version="3.5.0", parameters=params)
         memory_params = config_set.get_parameters_by_category("memory")
@@ -458,17 +454,13 @@ class TestConfigSet:
 
     def test_getitem(self) -> None:
         """Test dictionary-style access."""
-        param = ConfigParameter(
-            name="spark.test", category=ParameterCategory.MEMORY, param_type=ParameterType.STRING
-        )
+        param = ConfigParameter(name="spark.test", category=ParameterCategory.MEMORY, param_type=ParameterType.STRING)
         config_set = ConfigSet(version="3.5.0", parameters={"spark.test": param})
         assert config_set["spark.test"] == param
 
     def test_contains(self) -> None:
         """Test 'in' operator."""
-        param = ConfigParameter(
-            name="spark.test", category=ParameterCategory.MEMORY, param_type=ParameterType.STRING
-        )
+        param = ConfigParameter(name="spark.test", category=ParameterCategory.MEMORY, param_type=ParameterType.STRING)
         config_set = ConfigSet(version="3.5.0", parameters={"spark.test": param})
         assert "spark.test" in config_set
         assert "spark.other" not in config_set
@@ -478,9 +470,7 @@ class TestConfigSet:
         config_set = ConfigSet(version="3.5.0")
         assert len(config_set) == 0
 
-        param = ConfigParameter(
-            name="spark.test", category=ParameterCategory.MEMORY, param_type=ParameterType.STRING
-        )
+        param = ConfigParameter(name="spark.test", category=ParameterCategory.MEMORY, param_type=ParameterType.STRING)
         config_set.parameters["spark.test"] = param
         assert len(config_set) == 1
 

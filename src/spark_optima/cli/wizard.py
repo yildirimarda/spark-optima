@@ -112,9 +112,7 @@ class ConfigurationWizard:
         available_versions = service.get_available_spark_versions()
 
         # Show recent versions
-        recent_versions = (
-            available_versions[-5:] if len(available_versions) > 5 else available_versions
-        )
+        recent_versions = available_versions[-5:] if len(available_versions) > 5 else available_versions
 
         console.print("[dim]Available versions:[/dim]")
         for i, version in enumerate(recent_versions, 1):
@@ -254,7 +252,7 @@ class ConfigurationWizard:
             if path.exists() and path.suffix == ".py":
                 self.config["code_path"] = str(path.absolute())
                 console.print(
-                    f"[green]✓[/green] Code file: " f"[cyan]{self.config['code_path']}[/cyan]",
+                    f"[green]✓[/green] Code file: [cyan]{self.config['code_path']}[/cyan]",
                 )
                 return
             elif not path.exists():

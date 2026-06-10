@@ -85,10 +85,20 @@ class RecommendationEngine:
             "unnecessary_shuffle": self._gen_shuffle_recommendation,
             "caching_issue": self._gen_caching_recommendation,
             "udf_usage": self._gen_udf_recommendation,
+            "pandas_udf_usage": self._gen_pandas_udf_recommendation,
             "data_skew_potential": self._gen_skew_recommendation,
             "repartition_vs_coalesce": self._gen_coalesce_recommendation,
             "small_file_problem": self._gen_partitioning_recommendation,
             "serialization_issue": self._gen_serialization_recommendation,
+            "large_collect": self._gen_large_collect_recommendation,
+            "cartesian_join": self._gen_cartesian_join_recommendation,
+            "topandas_usage": self._gen_topandas_recommendation,
+            "count_for_empty_check": self._gen_empty_check_recommendation,
+            "single_partition_write": self._gen_single_partition_write_recommendation,
+            "infer_schema": self._gen_infer_schema_recommendation,
+            "withcolumn_in_loop": self._gen_withcolumn_loop_recommendation,
+            "select_star": self._gen_select_star_recommendation,
+            "orderby_without_limit": self._gen_orderby_limit_recommendation,
         }
 
     def _generate_recommendations(
@@ -301,7 +311,7 @@ class RecommendationEngine:
         return CodeRecommendation(
             smell=smell,
             suggestion="Use salting technique or enable Adaptive Query Execution",
-            before_code=f"# {op_type} on skewed column\n" f'df1.join(df2, "user_id")',
+            before_code=f'# {op_type} on skewed column\ndf1.join(df2, "user_id")',
             after_code="# Option 1: Enable AQE (Spark 3.0+)\n"
             "spark.conf.set('spark.sql.adaptive.enabled', 'true')\n"
             "spark.conf.set('spark.sql.adaptive.skewJoin.enabled', 'true')\n\n"
@@ -401,6 +411,293 @@ class RecommendationEngine:
                 "Java serialization. It reduces both CPU time and memory/network "
                 "usage during shuffles and caching. For custom classes, register "
                 "them with a KryoRegistrator for best performance."
+            ),
+            effort="low",
+        )
+
+    def _gen_pandas_udf_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for pandas_udf usage.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Replace pandas_udf with built-in functions when an equivalent exists",
+            before_code="from pyspark.sql.functions import pandas_udf\n"
+            "@pandas_udf('double')\n"
+            "def doubled(s):\n"
+            "    return s * 2\n"
+            "df.withColumn('doubled', doubled(df.value))",
+            after_code="# Built-in expressions run inside the JVM and are fully optimized\n"
+            "from pyspark.sql.functions import col\n"
+            "df.withColumn('doubled', col('value') * 2)",
+            explanation=(
+                "Pandas UDFs are vectorized via Arrow and much faster than regular "
+                "Python UDFs, but they still transfer data out of the JVM and hide "
+                "logic from the Catalyst optimizer. When the same computation can be "
+                "expressed with built-in Spark SQL functions, prefer those; keep "
+                "pandas_udf only for logic with no built-in equivalent."
+            ),
+            effort="medium",
+        )
+
+    def _gen_large_collect_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for collect() without limit().
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Bound collect() with limit() or keep the data distributed",
+            before_code="rows = df.collect()  # Pulls the entire dataset to the driver",
+            after_code="# Option 1: Bound the result\n"
+            "rows = df.limit(1000).collect()\n\n"
+            "# Option 2: Keep processing distributed\n"
+            'df.write.parquet("output/")',
+            explanation=(
+                "collect() materializes every row in driver memory, which crashes "
+                "the driver on large datasets. Bound it with limit(N) when you only "
+                "need a sample, or write results to storage and keep processing "
+                "distributed."
+            ),
+            effort="low",
+        )
+
+    def _gen_cartesian_join_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for cartesian/cross joins.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Replace the cartesian product with a keyed join (or broadcast a tiny side)",
+            before_code="result = df1.crossJoin(df2)  # |df1| x |df2| rows",
+            after_code="# Option 1: Join on a key whenever one exists\n"
+            'result = df1.join(df2, "id")\n\n'
+            "# Option 2: If the cross join is intentional and one side is tiny\n"
+            "from pyspark.sql.functions import broadcast\n"
+            "result = df1.crossJoin(broadcast(tiny_df))",
+            explanation=(
+                "A cartesian product multiplies the row counts of both inputs: even "
+                "two modest 100k-row tables explode into 10 billion rows. Most cross "
+                "joins are accidental and should be keyed joins. When a cross join is "
+                "genuinely needed (e.g. against a handful of constants), broadcast "
+                "the tiny side to avoid shuffling the large one."
+            ),
+            effort="medium",
+        )
+
+    def _gen_topandas_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for toPandas() usage.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Limit or sample before toPandas() and enable Arrow",
+            before_code="pdf = df.toPandas()  # Entire dataset into driver memory",
+            after_code="# Option 1: Bound the data first\n"
+            "pdf = df.limit(100_000).toPandas()\n\n"
+            "# Option 2: Sample a fraction\n"
+            "pdf = df.sample(fraction=0.01).toPandas()\n\n"
+            "# Always enable Arrow for the transfer\n"
+            'spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")',
+            explanation=(
+                "toPandas() collects the full DataFrame into the driver as a pandas "
+                "object, which easily exhausts driver memory. Reduce the volume with "
+                "limit() or sample() first, and enable Arrow so the transfer is "
+                "columnar and vectorized instead of row-by-row pickling."
+            ),
+            effort="low",
+        )
+
+    def _gen_empty_check_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for count()-based emptiness checks.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Use isEmpty() or take(1) instead of count() for emptiness checks",
+            before_code="if df.count() == 0:\n    handle_empty()",
+            after_code="# Spark 3.3+\n"
+            "if df.isEmpty():\n"
+            "    handle_empty()\n\n"
+            "# Older Spark versions\n"
+            "if len(df.take(1)) == 0:\n"
+            "    handle_empty()",
+            explanation=(
+                "count() computes the exact number of rows, scanning every partition "
+                "of the dataset just to answer a yes/no question. isEmpty() (Spark "
+                "3.3+) and take(1) short-circuit after finding the first row, turning "
+                "a full scan into a near-instant check."
+            ),
+            effort="low",
+        )
+
+    def _gen_single_partition_write_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for single-partition writes.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Avoid coalesce(1)/repartition(1) before writes; let Spark write in parallel",
+            before_code='df.coalesce(1).write.parquet("output/")  # Single-task write',
+            after_code="# Option 1: Parallel write (preferred)\n"
+            'df.write.parquet("output/")\n\n'
+            "# Option 2: Fewer, larger files without a single-task bottleneck\n"
+            'df.coalesce(8).write.parquet("output/")\n\n'
+            "# Option 3: If exactly one file is required, compact afterwards\n"
+            "# (e.g. a downstream job or filesystem-level merge)",
+            explanation=(
+                "coalesce(1) or repartition(1) before a write funnels the entire "
+                "output through a single task on one executor core, serializing the "
+                "write and risking OOM. Write in parallel and, if a single file is a "
+                "hard requirement, produce it in a cheap post-processing step instead."
+            ),
+            effort="low",
+        )
+
+    def _gen_infer_schema_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for schema inference in reads.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Provide an explicit schema instead of inferSchema=True",
+            before_code='df = spark.read.csv("data.csv", header=True, inferSchema=True)',
+            after_code="from pyspark.sql.types import StructType, StructField, StringType, IntegerType\n\n"
+            "schema = StructType([\n"
+            '    StructField("id", IntegerType(), False),\n'
+            '    StructField("name", StringType(), True),\n'
+            "])\n"
+            'df = spark.read.csv("data.csv", header=True, schema=schema)',
+            explanation=(
+                "inferSchema=True makes Spark read the input twice: once to sample "
+                "and infer types, once for the actual load. On large inputs this "
+                "doubles I/O, and inferred types can drift between runs. An explicit "
+                "StructType schema skips the inference pass and guarantees stable, "
+                "correct types."
+            ),
+            effort="medium",
+        )
+
+    def _gen_withcolumn_loop_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for withColumn() inside loops.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Replace per-iteration withColumn() with a single select()",
+            before_code="for c in columns:\n    df = df.withColumn(c + '_clean', trim(col(c)))",
+            after_code="# Build all expressions first, then project once\n"
+            "exprs = [trim(col(c)).alias(c + '_clean') for c in columns]\n"
+            "df = df.select('*', *exprs)\n\n"
+            "# Spark 3.3+: withColumns accepts a mapping in one call\n"
+            "df = df.withColumns({c + '_clean': trim(col(c)) for c in columns})",
+            explanation=(
+                "Each withColumn() call adds a new projection node to the logical "
+                "plan. Inside a loop this grows the plan linearly, and Catalyst "
+                "analysis cost grows much faster — long loops cause minutes of "
+                "planning time or StackOverflowError. Building the expressions in "
+                "Python and projecting once keeps the plan flat."
+            ),
+            effort="medium",
+        )
+
+    def _gen_select_star_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for select('*') / SELECT * usage.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Select only the columns you actually need",
+            before_code='df.select("*")  # or spark.sql("SELECT * FROM events")',
+            after_code='df.select("user_id", "event_time", "amount")\n'
+            '# or: spark.sql("SELECT user_id, event_time, amount FROM events")',
+            explanation=(
+                "Selecting every column disables column pruning: Spark must read, "
+                "deserialize, and shuffle data you never use. For columnar formats "
+                "like Parquet/ORC, naming only the needed columns lets Spark skip "
+                "entire column chunks on disk, often cutting I/O dramatically."
+            ),
+            effort="low",
+        )
+
+    def _gen_orderby_limit_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for orderBy without limit.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Add limit() for top-N queries or avoid the global sort",
+            before_code='df.orderBy(col("amount").desc()).show()  # Full global sort',
+            after_code="# Option 1: Top-N — Spark optimizes orderBy+limit into TakeOrdered\n"
+            'df.orderBy(col("amount").desc()).limit(100).show()\n\n'
+            "# Option 2: Order within partitions when global order is not needed\n"
+            'df.sortWithinPartitions("amount")',
+            explanation=(
+                "orderBy()/sort() performs a global sort: the whole dataset is "
+                "range-partitioned and shuffled. When followed by limit(N), Spark "
+                "rewrites the query into a cheap TakeOrdered operation that never "
+                "sorts the full data. If you only need ordering inside each output "
+                "file or partition, sortWithinPartitions() avoids the shuffle "
+                "entirely."
             ),
             effort="low",
         )

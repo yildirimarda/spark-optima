@@ -404,9 +404,7 @@ class SparkRunner:
             # Note: Resource constraints are applied via Spark config, not Docker limits
             # This avoids Docker errors when optimizer suggests more resources than available
             # Docker only enforces limits if resource_spec is explicitly set with enforce=true
-            enforce_limits = (
-                resource_spec is not None and resource_spec.__dict__.get("enforce_limits", False)
-            )
+            enforce_limits = resource_spec is not None and resource_spec.__dict__.get("enforce_limits", False)
             if enforce_limits and resource_spec is not None:
                 docker_cmd.extend(
                     [
@@ -660,7 +658,9 @@ class SparkRunner:
             line = lines[i].strip()
             if line.startswith("{") and line.endswith("}"):
                 try:
-                    return json.loads(line)
+                    parsed = json.loads(line)
+                    if isinstance(parsed, dict):
+                        return parsed
                 except json.JSONDecodeError:
                     # Try multi-line JSON starting from this line
                     pass
@@ -674,7 +674,9 @@ class SparkRunner:
             if end != -1:
                 json_str = text[start : end + 1]
                 try:
-                    return json.loads(json_str)
+                    parsed = json.loads(json_str)
+                    if isinstance(parsed, dict):
+                        return parsed
                 except json.JSONDecodeError:
                     pass
             start = text.rfind("{", 0, start - 1)

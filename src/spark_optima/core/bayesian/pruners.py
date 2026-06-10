@@ -432,9 +432,7 @@ class SparkConfigPruner(BasePruner if OPTUNA_AVAILABLE else object):  # type: ig
 
         # Find similar configurations
         for i, hist_config in enumerate(self._config_history):
-            if self._config_similarity(config, hist_config) > 0.9 and self._performance_history[
-                i
-            ] >= float("inf"):
+            if self._config_similarity(config, hist_config) > 0.9 and self._performance_history[i] >= float("inf"):
                 # Very similar to this historical config
                 # Historical config failed
                 return True
@@ -501,9 +499,7 @@ class SparkConfigPruner(BasePruner if OPTUNA_AVAILABLE else object):  # type: ig
 
         """
         # Get completed trials for comparison
-        completed_trials = [
-            t for t in study.trials if t.state == TrialState.COMPLETE and t.number < trial.number
-        ]
+        completed_trials = [t for t in study.trials if t.state == TrialState.COMPLETE and t.number < trial.number]
 
         if len(completed_trials) < self.warmup_trials:
             return False

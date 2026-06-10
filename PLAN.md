@@ -24,8 +24,9 @@ The tool collects the user's Spark code, target platform, resource constraints, 
 | 10 | Kubernetes & Production | ✅ Done |
 | 11 | Documentation & Examples | ✅ Done |
 | — | UV Migration (Poetry → UV) | ✅ Done |
+| 12 | v1.1 Improvements (EMR, history, new smells, exports, warm-start) | ✅ Done |
 
-**Active:** Post-audit improvements (see below).
+**Active:** v1.2 backlog grooming (see "Backlog" at the bottom).
 
 ---
 
@@ -36,7 +37,7 @@ The tool collects the user's Spark code, target platform, resource constraints, 
 | Optimization Algorithm | Hybrid (Heuristic + Bayesian) | Heuristics provide a warm start; Optuna refines from there |
 | Run Mode | Simulation + Execution | Fast prediction for exploration, real runs for validation |
 | Spark Versions | 3.x, 4.x | Broad version support; new versions loaded via config scraper |
-| Platforms | Local, AWS Glue, Databricks, Azure Synapse | Covers the primary managed and self-hosted targets |
+| Platforms | Local, AWS Glue, AWS EMR, Databricks, Azure Synapse | Covers the primary managed and self-hosted targets |
 | Language Support | Python (Phase 1) | Scala support planned for a future release |
 | Architecture | Modular plugin-based | Platform adapters and optimization strategies are swappable |
 
@@ -241,3 +242,88 @@ dynamic_allocation:
 ```
 
 The full parameter database (200+ entries, covering Spark 3.x and 4.x) lives in `src/spark_optima/core/config_engine/database.py`. New Spark releases can be loaded by updating the config scraper in `core/config_engine/loader.py`.
+
+---
+
+## v1.1 Improvement Plan (2026-06-10)
+
+Findings from a deep audit of the codebase (core pipeline, analysis module, platforms/exports, API/CLI/tests/CI). Work is split into five independent workstreams implemented in parallel.
+
+### Workstream A — Code Analysis Upgrades
+
+The smell detector covers 9 patterns but misses roughly half of the well-known PySpark anti-patterns, and `spark.sql("...")` strings are never inspected.
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| A1 | Cartesian/cross join smell | Flag `crossJoin()` (HIGH severity) | ✅ Done |
+| A2 | `toPandas()` smell | Driver OOM risk on large data (HIGH) | ✅ Done |
+| A3 | `count()` emptiness check smell | `df.count() == 0` → recommend `isEmpty()` / `limit(1)` | ✅ Done |
+| A4 | Single-partition write smell | `repartition(1)` / `coalesce(1)` before write | ✅ Done |
+| A5 | `inferSchema=True` smell | Recommend explicit schema | ✅ Done |
+| A6 | `withColumn` in loop smell | Track loop context in AST visitor (HIGH) | ✅ Done |
+| A7 | `select("*")` smell | Column pruning recommendation | ✅ Done |
+| A8 | `orderBy` without `limit` smell | Full-sort warning | ✅ Done |
+| A9 | UDF discrimination | `pandas_udf` → MEDIUM, plain Python UDF → HIGH with pandas_udf recommendation | ✅ Done |
+| A10 | Lightweight SQL string analysis | Inspect `spark.sql()` literals for `SELECT *` and `CROSS JOIN` | ✅ Done |
+| A11 | Bug fix: skew detection skips ops with empty arguments | `smell_detector.py` | ✅ Done |
+| A12 | Bug fix: `large_collect` smell has `location=None` | Extract line from AST node | ✅ Done |
+
+### Workstream B — AWS EMR Platform Adapter
+
+Local, Glue, Databricks, and Synapse are covered; EMR (one of the most common Spark targets) is missing.
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| B1 | `platforms/aws_emr.py` | EMR on EC2: m5/r5/c5 worker types, YARN config translation, EC2 + EMR surcharge cost model | ✅ Done |
+| B2 | Registry + validation wiring | `PLATFORM_REGISTRY`, `Optimizer` platform validation, API platform list | ✅ Done |
+| B3 | Tests + docs | `tests/unit/platforms/test_aws_emr.py`, `docs/platforms/aws-emr.md`, mkdocs nav | ✅ Done |
+
+### Workstream C — Optimization History & New CLI Commands
+
+No persistence of optimization results exists; every run is lost. CLI lacks compare/explain/history.
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| C1 | `core/history.py` | SQLite-backed `OptimizationHistory` (save/list/get/clear), auto-save from CLI `optimize` | ✅ Done |
+| C2 | `spark-optima history` | List/show/clear past runs | ✅ Done |
+| C3 | `spark-optima compare` | Diff two result JSON files: config deltas + metric deltas | ✅ Done |
+| C4 | `spark-optima explain` | Per-parameter rationale from heuristic rule descriptions | ✅ Done |
+
+### Workstream D — Export Formats & Heuristic Rules
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| D1 | Airflow DAG export | Platform-aware operator snippet (SparkSubmitOperator / DatabricksSubmitRunOperator / GlueJobOperator) | ✅ Done |
+| D2 | Kubernetes ConfigMap export | For spark-on-k8s deployments | ✅ Done |
+| D3 | AWS EMR export | `aws emr create-cluster --configurations` JSON | ✅ Done |
+| D4 | Speculation rules | `spark.speculation.*` conditioned on skew | ✅ Done |
+| D5 | Data-aware dynamic allocation bounds | `maxExecutors` scaled from data size | ✅ Done |
+| D6 | AQE fine-tuning rules | Skew factor + advisory partition size, data-aware | ✅ Done |
+
+### Workstream E — Bayesian Optimizer Improvements
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| E1 | Heuristic seed trial | Enqueue heuristic config as trial #1 so Optuna never regresses below the warm start | ✅ Done |
+| E2 | Warm-start from stored study | When `storage_path` exists, resume/load past trials instead of starting cold | ✅ Done |
+
+### Integration & Cleanup
+
+| # | Item | Status |
+|---|------|--------|
+| I1 | Wire new export formats into CLI `export` command | ✅ Done |
+| I2 | Consolidate duplicate `tests/unit/test_optimizer.py` into `tests/unit/core/test_optimizer.py` | ✅ Done |
+| I3 | Quality gates: ruff, mypy, bandit, pytest (80%+ coverage), mkdocs build --strict | ✅ Done |
+| I4 | Update CHANGELOG.md | ✅ Done |
+
+### Backlog (v1.2+) — identified but deliberately deferred
+
+- **Spark event log / History Server integration** — parse real metrics instead of stubs in `metrics_collector.py` (GC time, CPU utilization, shuffle metrics are currently hardcoded zeros)
+- **Async job-based API** — `POST /optimize/async` + job polling; current endpoints block on long optimizations
+- **API auth + rate limiting** — required before any public deployment
+- **ML predictor end-to-end** — `MLPerformancePredictor` exists but is not wired into the simulation pipeline
+- **Google Dataproc + Spark-on-K8s platform adapters**
+- **Live/regional pricing** — all cost models are hardcoded single-region; `region` constructor params are accepted but unused
+- **Full SQL analysis** — proper SQL parser for `spark.sql()` strings (v1.1 ships a lightweight literal scan only)
+- **Pareto frontier export/visualization** for multi-objective runs
+- **Performance model improvements** — GC modeling, network bandwidth, task straggler/skew distribution modeling

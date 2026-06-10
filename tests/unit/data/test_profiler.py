@@ -859,9 +859,7 @@ class TestProfileMethod:
         mock_df.schema.simpleString.return_value = "struct<id:int,name:string>"
         mock_df.schema.fields = [
             MagicMock(name="id", dataType=MagicMock(simpleString=lambda: "int"), nullable=False),
-            MagicMock(
-                name="name", dataType=MagicMock(simpleString=lambda: "string"), nullable=True
-            ),
+            MagicMock(name="name", dataType=MagicMock(simpleString=lambda: "string"), nullable=True),
         ]
         mock_df.filter.return_value.count.return_value = 0
         mock_df.select.return_value.distinct.return_value.count.return_value = 100
@@ -903,9 +901,7 @@ class TestProfileMethod:
         mock_df.schema = MagicMock()
         mock_df.schema.simpleString.return_value = "struct<col1:string>"
         mock_df.schema.fields = [
-            MagicMock(
-                name="col1", dataType=MagicMock(simpleString=lambda: "string"), nullable=True
-            ),
+            MagicMock(name="col1", dataType=MagicMock(simpleString=lambda: "string"), nullable=True),
         ]
         mock_df.filter.return_value.count.return_value = 0
         mock_df.select.return_value.distinct.return_value.count.return_value = 10
@@ -1052,9 +1048,7 @@ class TestProfileColumnMethod:
     @patch("spark_optima.data.profiler.spark_max")
     @patch("spark_optima.data.profiler.avg")
     @patch("spark_optima.data.profiler.stddev")
-    def test_profile_numeric_column(
-        self, mock_stddev, mock_avg, mock_spark_max, mock_spark_min, mock_col
-    ) -> None:
+    def test_profile_numeric_column(self, mock_stddev, mock_avg, mock_spark_max, mock_spark_min, mock_col) -> None:
         """Test profiling a numeric column."""
         profiler = DataProfiler()
 

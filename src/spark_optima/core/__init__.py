@@ -17,7 +17,8 @@ This module contains the core components for Spark configuration optimization,
 including the main Optimizer class, result handling, and base interfaces.
 """
 
+from spark_optima.core.history import HistoryEntry, OptimizationHistory
 from spark_optima.core.optimizer import Optimizer
 from spark_optima.core.result import OptimizationResult
 
-__all__ = ["Optimizer", "OptimizationResult"]
+__all__ = ["HistoryEntry", "OptimizationHistory", "Optimizer", "OptimizationResult"]

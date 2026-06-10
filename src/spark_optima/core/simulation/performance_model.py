@@ -303,8 +303,7 @@ class PerformanceModel:
             "confidence_interval": confidence_interval,
             "is_simulation": True,
             "simulation_warning": (
-                "This is a simulation estimate, not actual measurement. "
-                "Results may vary in real execution."
+                "This is a simulation estimate, not actual measurement. Results may vary in real execution."
                 if confidence < 0.7
                 else ""
             ),
@@ -466,9 +465,7 @@ class PerformanceModel:
                 cardinality_factor = min(math.log10(max_cardinality) / 3, 3.0)
 
                 agg_data_size = data_profile.size_gb * 0.3  # Aggregation reduces data
-                processing_time = (
-                    (agg_data_size / (base_rate * total_cores)) * complexity * cardinality_factor
-                )
+                processing_time = (agg_data_size / (base_rate * total_cores)) * complexity * cardinality_factor
             else:
                 # General processing
                 processing_time = (data_profile.size_gb / (base_rate * total_cores)) * complexity
@@ -736,23 +733,20 @@ class PerformanceModel:
         # Check memory limits
         if peak_memory > executor_memory * 0.95:
             issues.append(
-                f"Peak memory ({peak_memory:.1f}GB) exceeds executor memory "
-                f"({executor_memory:.1f}GB)",
+                f"Peak memory ({peak_memory:.1f}GB) exceeds executor memory ({executor_memory:.1f}GB)",
             )
 
         # Check executor memory against resources
         if executor_memory > resource_spec.memory_gb:
             issues.append(
-                f"Executor memory ({executor_memory:.1f}GB) exceeds "
-                f"total memory ({resource_spec.memory_gb:.1f}GB)",
+                f"Executor memory ({executor_memory:.1f}GB) exceeds total memory ({resource_spec.memory_gb:.1f}GB)",
             )
 
         # Check core configuration
         executor_cores = cluster_topology["executor_cores"]
         if executor_cores > resource_spec.cpu_cores:
             issues.append(
-                f"Executor cores ({executor_cores}) exceed "
-                f"total cores ({resource_spec.cpu_cores})",
+                f"Executor cores ({executor_cores}) exceed total cores ({resource_spec.cpu_cores})",
             )
 
         # Check for reasonable parallelism
@@ -760,8 +754,7 @@ class PerformanceModel:
         total_cores = cluster_topology["total_executor_cores"]
         if parallelism > total_cores * 10:
             issues.append(
-                f"Parallelism ({parallelism}) is very high relative to "
-                f"cores ({total_cores}) - may cause overhead",
+                f"Parallelism ({parallelism}) is very high relative to cores ({total_cores}) - may cause overhead",
             )
 
         is_feasible = len(issues) == 0

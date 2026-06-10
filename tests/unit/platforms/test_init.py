@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from spark_optima.platforms import (
+    AWSEMRPlatform,
     AWSGluePlatform,
     AzureSynapsePlatform,
     DatabricksPlatform,
@@ -42,6 +43,11 @@ class TestGetPlatform:
         """Test getting aws_glue platform."""
         platform = get_platform("aws_glue")
         assert isinstance(platform, AWSGluePlatform)
+
+    def test_get_platform_aws_emr(self) -> None:
+        """Test getting aws_emr platform."""
+        platform = get_platform("aws_emr")
+        assert isinstance(platform, AWSEMRPlatform)
 
     def test_get_platform_azure_synapse(self) -> None:
         """Test getting azure_synapse platform."""
@@ -86,14 +92,15 @@ class TestListPlatforms:
         platforms = list_platforms()
         assert "local" in platforms
         assert "aws_glue" in platforms
+        assert "aws_emr" in platforms
         assert "databricks" in platforms
         assert "azure_synapse" in platforms
 
     def test_list_platforms_no_unexpected(self) -> None:
         """Test that list_platforms doesn't contain unexpected platforms."""
         platforms = list_platforms()
-        # Should only contain the 4 known platforms
-        assert len(platforms) == 4
+        # Should only contain the 5 known platforms
+        assert len(platforms) == 5
 
     def test_list_platforms_returns_copy(self) -> None:
         """Test that list_platforms returns a copy (not the original)."""
@@ -117,6 +124,7 @@ class TestGetPlatformInfo:
         info = get_platform_info()
         assert "local" in info
         assert "aws_glue" in info
+        assert "aws_emr" in info
         assert "databricks" in info
         assert "azure_synapse" in info
 
@@ -174,6 +182,13 @@ class TestGetPlatformInfo:
         databricks_info = info["databricks"]
         assert databricks_info["name"] == "databricks"
         assert isinstance(databricks_info["display_name"], str)
+
+    def test_get_platform_info_aws_emr_platform(self) -> None:
+        """Test get_platform_info for AWS EMR platform specifically."""
+        info = get_platform_info()
+        emr_info = info["aws_emr"]
+        assert emr_info["name"] == "aws_emr"
+        assert isinstance(emr_info["display_name"], str)
 
     def test_get_platform_info_azure_synapse_platform(self) -> None:
         """Test get_platform_info for Azure Synapse platform specifically."""

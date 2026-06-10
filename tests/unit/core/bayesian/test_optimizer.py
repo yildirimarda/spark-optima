@@ -9,9 +9,13 @@ initialization, search space definition, and optimization workflow.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from spark_optima.core.bayesian.models import (
     BayesianOptimizationResult,
@@ -741,8 +745,10 @@ class TestBayesianOptimizerBuildResult:
         optimizer._is_multi_objective = False
         optimizer.study_name = "test_single"
 
-        with patch("spark_optima.core.bayesian.optimizer.TPESampler"), \
-             patch("spark_optima.core.bayesian.optimizer.HyperbandPruner"):
+        with (
+            patch("spark_optima.core.bayesian.optimizer.TPESampler"),
+            patch("spark_optima.core.bayesian.optimizer.HyperbandPruner"),
+        ):
             study = optimizer._create_study()
             assert study is not None
 
@@ -752,8 +758,10 @@ class TestBayesianOptimizerBuildResult:
         optimizer.study_name = "test_multi"
         optimizer.objectives = ["minimize_time", "minimize_cost"]
 
-        with patch("spark_optima.core.bayesian.optimizer.TPESampler"), \
-             patch("spark_optima.core.bayesian.optimizer.HyperbandPruner"):
+        with (
+            patch("spark_optima.core.bayesian.optimizer.TPESampler"),
+            patch("spark_optima.core.bayesian.optimizer.HyperbandPruner"),
+        ):
             study = optimizer._create_study()
             assert study is not None
 
@@ -970,3 +978,271 @@ class TestBayesianOptimizerMoreCoverage:
 
         result = optimizer.optimize(n_trials=1, show_progress=False)
         assert isinstance(result, BayesianOptimizationResult)
+
+
+def _load_journal_study(study_name: str, storage_path: str) -> Any:
+    """Load an Optuna study from a journal storage file."""
+    import optuna
+
+    storage = optuna.storages.JournalStorage(optuna.storages.JournalFileStorage(storage_path))
+    return optuna.load_study(study_name=study_name, storage=storage)
+
+
+class TestBayesianOptimizerSeedTrial:
+    """Tests for E1 - enqueueing the heuristic baseline as the first trial."""
+
+    @pytest.fixture
+    def config_set(self) -> ConfigSet:
+        """Create test config set."""
+        return ConfigSet(version="3.5.0", parameters={}, metadata={})
+
+    @pytest.fixture
+    def resource_spec(self) -> ResourceSpec:
+        """Create test resource specification."""
+        return ResourceSpec(cpu_cores=8, memory_gb=32)
+
+    @pytest.fixture
+    def heuristic_config(self) -> dict:
+        """Create a representative heuristic baseline configuration."""
+        return {
+            "spark.executor.memory": "4g",
+            "spark.executor.cores": "4",
+            "spark.sql.adaptive.enabled": "true",
+            "spark.sql.shuffle.partitions": "200",
+        }
+
+    def test_first_trial_uses_seeded_params(
+        self,
+        tmp_path: Path,
+        config_set: ConfigSet,
+        resource_spec: ResourceSpec,
+        heuristic_config: dict,
+    ) -> None:
+        """The first completed trial runs exactly the enqueued seed parameters."""
+        storage_path = str(tmp_path / "seed_study.log")
+        optimizer = BayesianOptimizer(
+            heuristic_config=heuristic_config,
+            config_set=config_set,
+            resource_spec=resource_spec,
+            study_name="seed_study",
+            storage_path=storage_path,
+        )
+
+        seed_params = optimizer.get_seed_trial_params()
+        assert seed_params  # Search space is non-empty
+
+        result = optimizer.optimize(n_trials=3, show_progress=False)
+
+        assert result.metadata["seed_trial_enqueued"] is True
+        assert result.metadata["n_prior_trials"] == 0
+
+        import optuna
+
+        study = _load_journal_study("seed_study", storage_path)
+        first_trial = study.trials[0]
+        assert first_trial.state == optuna.trial.TrialState.COMPLETE
+        # Optuna accepted every fixed parameter (no out-of-range fallback sampling)
+        assert first_trial.params == seed_params
+
+    def test_best_result_not_worse_than_seed(
+        self,
+        tmp_path: Path,
+        config_set: ConfigSet,
+        resource_spec: ResourceSpec,
+        heuristic_config: dict,
+    ) -> None:
+        """The best objective value is never worse than the seed trial's value."""
+        storage_path = str(tmp_path / "seed_best_study.log")
+        optimizer = BayesianOptimizer(
+            heuristic_config=heuristic_config,
+            config_set=config_set,
+            resource_spec=resource_spec,
+            study_name="seed_best_study",
+            storage_path=storage_path,
+        )
+
+        optimizer.optimize(n_trials=3, show_progress=False)
+
+        study = _load_journal_study("seed_best_study", storage_path)
+        seed_value = study.trials[0].value
+        assert seed_value is not None
+        assert study.best_value <= seed_value
+
+    def test_seed_params_skip_entries_outside_search_space(
+        self,
+        config_set: ConfigSet,
+        resource_spec: ResourceSpec,
+    ) -> None:
+        """Heuristic entries without a search-space definition are not enqueued."""
+        optimizer = BayesianOptimizer(
+            heuristic_config={
+                "spark.executor.memory": "4g",
+                "spark.app.name": "my-app",  # Fixed param - never optimized
+                "custom.unknown.param": "x",  # Unknown - not in the search space
+            },
+            config_set=config_set,
+            resource_spec=resource_spec,
+        )
+
+        seed_params = optimizer.get_seed_trial_params()
+
+        assert "spark.executor.memory" in seed_params
+        assert "spark.app.name" not in seed_params
+        assert "custom.unknown.param" not in seed_params
+
+    def test_seed_params_clamped_into_search_range(
+        self,
+        config_set: ConfigSet,
+        resource_spec: ResourceSpec,
+    ) -> None:
+        """Out-of-range heuristic values are clamped into the suggested ranges."""
+        optimizer = BayesianOptimizer(
+            heuristic_config={"spark.memory.fraction": 0.95},
+            config_set=config_set,
+            resource_spec=resource_spec,
+            search_space_config=SearchSpaceConfig(
+                param_ranges={"spark.memory.fraction": (0.5, 0.9)},
+            ),
+        )
+
+        seed_params = optimizer.get_seed_trial_params()
+
+        assert seed_params["spark.memory.fraction"] == pytest.approx(0.9)
+
+    def test_no_seed_for_empty_search_space(
+        self,
+        config_set: ConfigSet,
+        resource_spec: ResourceSpec,
+    ) -> None:
+        """No seed trial is enqueued when the search space is empty."""
+        optimizer = BayesianOptimizer(
+            heuristic_config={},
+            config_set=config_set,
+            resource_spec=resource_spec,
+        )
+
+        result = optimizer.optimize(n_trials=1, show_progress=False)
+
+        assert result.metadata["seed_trial_enqueued"] is False
+
+
+class TestBayesianOptimizerWarmStart:
+    """Tests for E2 - warm-starting from a stored study."""
+
+    @pytest.fixture
+    def config_set(self) -> ConfigSet:
+        """Create test config set."""
+        return ConfigSet(version="3.5.0", parameters={}, metadata={})
+
+    @pytest.fixture
+    def resource_spec(self) -> ResourceSpec:
+        """Create test resource specification."""
+        return ResourceSpec(cpu_cores=8, memory_gb=32)
+
+    @pytest.fixture
+    def heuristic_config(self) -> dict:
+        """Create a representative heuristic baseline configuration."""
+        return {
+            "spark.executor.memory": "4g",
+            "spark.executor.cores": "4",
+            "spark.sql.shuffle.partitions": "200",
+        }
+
+    def _make_optimizer(
+        self,
+        config_set: ConfigSet,
+        resource_spec: ResourceSpec,
+        heuristic_config: dict,
+        storage_path: str,
+    ) -> BayesianOptimizer:
+        """Create an optimizer bound to a shared study name and storage."""
+        return BayesianOptimizer(
+            heuristic_config=heuristic_config,
+            config_set=config_set,
+            resource_spec=resource_spec,
+            study_name="warm_start_study",
+            storage_path=storage_path,
+        )
+
+    def test_warm_start_accumulates_prior_trials(
+        self,
+        tmp_path: Path,
+        config_set: ConfigSet,
+        resource_spec: ResourceSpec,
+        heuristic_config: dict,
+    ) -> None:
+        """A second run on the same storage resumes the study and counts prior trials."""
+        storage_path = str(tmp_path / "warm_study.log")
+
+        optimizer1 = self._make_optimizer(config_set, resource_spec, heuristic_config, storage_path)
+        result1 = optimizer1.optimize(n_trials=3, show_progress=False)
+        assert result1.metadata["n_prior_trials"] == 0
+        assert result1.metadata["seed_trial_enqueued"] is True
+
+        optimizer2 = self._make_optimizer(config_set, resource_spec, heuristic_config, storage_path)
+        result2 = optimizer2.optimize(n_trials=2, show_progress=False)
+        assert result2.metadata["n_prior_trials"] == 3
+
+        study = _load_journal_study("warm_start_study", storage_path)
+        assert len(study.trials) == 5  # 3 from run 1 + 2 from run 2
+
+    def test_warm_start_does_not_reenqueue_seed(
+        self,
+        tmp_path: Path,
+        config_set: ConfigSet,
+        resource_spec: ResourceSpec,
+        heuristic_config: dict,
+    ) -> None:
+        """The seed trial is only enqueued once, not on every resume."""
+        storage_path = str(tmp_path / "no_reseed_study.log")
+
+        optimizer1 = self._make_optimizer(config_set, resource_spec, heuristic_config, storage_path)
+        optimizer1.optimize(n_trials=2, show_progress=False)
+        seed_params = optimizer1.get_seed_trial_params()
+
+        optimizer2 = self._make_optimizer(config_set, resource_spec, heuristic_config, storage_path)
+        result2 = optimizer2.optimize(n_trials=2, show_progress=False)
+
+        assert result2.metadata["seed_trial_enqueued"] is False
+        study = _load_journal_study("warm_start_study", storage_path)
+        seeded_trials = [t for t in study.trials if t.params == seed_params]
+        assert len(seeded_trials) == 1
+
+    def test_warm_start_best_config_from_prior_trials(
+        self,
+        tmp_path: Path,
+        config_set: ConfigSet,
+        resource_spec: ResourceSpec,
+        heuristic_config: dict,
+    ) -> None:
+        """A resumed run reconstructs the best config even when it came from a prior run."""
+        storage_path = str(tmp_path / "prior_best_study.log")
+
+        optimizer1 = self._make_optimizer(config_set, resource_spec, heuristic_config, storage_path)
+        optimizer1.optimize(n_trials=3, show_progress=False)
+
+        # Second run executes zero new trials: the best trial must come from run 1
+        optimizer2 = self._make_optimizer(config_set, resource_spec, heuristic_config, storage_path)
+        result2 = optimizer2.optimize(n_trials=0, show_progress=False)
+
+        assert result2.metadata["n_prior_trials"] == 3
+        assert result2.best_config
+        assert "spark.executor.memory" in result2.best_config
+
+    def test_in_memory_run_reports_zero_prior_trials(
+        self,
+        config_set: ConfigSet,
+        resource_spec: ResourceSpec,
+        heuristic_config: dict,
+    ) -> None:
+        """Runs without persistent storage never report prior trials."""
+        optimizer = BayesianOptimizer(
+            heuristic_config=heuristic_config,
+            config_set=config_set,
+            resource_spec=resource_spec,
+        )
+
+        result = optimizer.optimize(n_trials=1, show_progress=False)
+
+        assert result.metadata["n_prior_trials"] == 0
+        assert result.metadata["seed_trial_enqueued"] is True

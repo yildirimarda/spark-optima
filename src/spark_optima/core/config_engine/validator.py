@@ -216,11 +216,7 @@ class ConfigValidator:
                 valid = False
 
         # Pattern validation
-        if (
-            constraints.pattern
-            and isinstance(value, str)
-            and not re.match(constraints.pattern, value)
-        ):
+        if constraints.pattern and isinstance(value, str) and not re.match(constraints.pattern, value):
             self._errors.append(
                 ValidationError(
                     f"Value '{value}' does not match pattern '{constraints.pattern}'",

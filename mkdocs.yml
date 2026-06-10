@@ -96,6 +96,7 @@ nav:
   - Platform Guides:
       - Local: platforms/local.md
       - AWS Glue: platforms/aws-glue.md
+      - AWS EMR: platforms/aws-emr.md
       - Databricks: platforms/databricks.md
       - Azure Synapse: platforms/azure-synapse.md
   - API Reference:

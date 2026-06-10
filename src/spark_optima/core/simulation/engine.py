@@ -227,8 +227,7 @@ class SimulationEngine:
 
         # Add simulation warning to metrics
         metrics.warnings.append(
-            "SIMULATION RESULT: This is a simulation, not a real measurement. "
-            "Actual performance may vary.",
+            "SIMULATION RESULT: This is a simulation, not a real measurement. Actual performance may vary.",
         )
 
         # Build detailed breakdown

@@ -124,8 +124,7 @@ async def optimize(request: OptimizationRequest) -> OptimizationResponse:
             available = service.get_available_spark_versions()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported Spark version: {request.spark_version}. "
-                f"Available: {available}",
+                detail=f"Unsupported Spark version: {request.spark_version}. Available: {available}",
             )
 
         # Create resource spec
