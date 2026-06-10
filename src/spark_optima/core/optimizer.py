@@ -74,7 +74,7 @@ class Optimizer:
             ValueError: If platform or optimization_mode is invalid.
 
         """
-        valid_platforms = ["local", "databricks", "aws_glue", "azure_synapse"]
+        valid_platforms = ["local", "databricks", "aws_glue", "aws_emr", "azure_synapse"]
         valid_modes = ["simulation", "execution"]
 
         if platform not in valid_platforms:
@@ -368,9 +368,7 @@ class Optimizer:
             if data_profile
             else {},
             "bayesian_used": self._bayesian_result is not None,
-            "bayesian_trials": (
-                len(self._bayesian_result.all_trials) if self._bayesian_result else 0
-            ),
+            "bayesian_trials": (len(self._bayesian_result.all_trials) if self._bayesian_result else 0),
         }
 
         # Add code analysis metadata if available
@@ -464,6 +462,13 @@ class Optimizer:
             }
         elif self.platform == "aws_glue":
             platform_config["glue_version"] = "4.0"
+        elif self.platform == "aws_emr":
+            from spark_optima.platforms.aws_emr import AWSEMRPlatform
+
+            platform_config["emr_release_label"] = next(
+                (rel for rel, ver in AWSEMRPlatform.EMR_TO_SPARK_VERSION.items() if ver == self.spark_version),
+                AWSEMRPlatform.DEFAULT_RELEASE_LABEL,
+            )
         elif self.platform == "azure_synapse":
             platform_config["spark_pool_version"] = self.spark_version
 

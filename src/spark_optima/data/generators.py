@@ -178,9 +178,7 @@ class DataGenerator:
 
         # Initialize Spark if needed
         if self.spark is None:
-            self.spark = (
-                SparkSession.builder.appName("SparkOptimaDataGen").master("local[*]").getOrCreate()
-            )
+            self.spark = SparkSession.builder.appName("SparkOptimaDataGen").master("local[*]").getOrCreate()
             self._own_spark = True
 
         # Create schema if not provided
@@ -495,9 +493,7 @@ class DataGenerator:
 
         """
         # Find categorical columns to skew
-        categorical_cols = [
-            col.name for col in columns if col.data_type == "string" and col.cardinality
-        ]
+        categorical_cols = [col.name for col in columns if col.data_type == "string" and col.cardinality]
 
         if not categorical_cols:
             return df

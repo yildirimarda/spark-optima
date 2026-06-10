@@ -482,7 +482,8 @@ class AzureSynapsePlatform(Platform):
                 "file": code,
                 "args": [],
                 "sparkConfigProperties": self.translate_to_spark_config(
-                    cluster_config or self.recommend_config(
+                    cluster_config
+                    or self.recommend_config(
                         ResourceSpec(cpu_cores=8, memory_gb=32),
                         spark_version="3.3.0",
                     ),

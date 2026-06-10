@@ -383,9 +383,7 @@ class TestStratifiedSampler:
         sampler = StratifiedSampler(spark=mock_spark)
         config = SampleConfig(sample_size=0.5, seed=42)
 
-        result = sampler.sample(
-            "input.parquet", "output.parquet", config, stratify_column="category"
-        )
+        result = sampler.sample("input.parquet", "output.parquet", config, stratify_column="category")
 
         assert result == Path("output.parquet")
 
@@ -407,9 +405,7 @@ class TestStratifiedSampler:
         sampler = StratifiedSampler(spark=mock_spark)
         config = SampleConfig(sample_size=0.5)
 
-        result = sampler.sample(
-            "input.parquet", "output.parquet", config, stratify_column="category"
-        )
+        result = sampler.sample("input.parquet", "output.parquet", config, stratify_column="category")
 
         # Should return empty DataFrame result
         assert result == Path("output.parquet")
@@ -480,9 +476,7 @@ class TestStratifiedSampler:
         sampler = StratifiedSampler(spark=mock_spark)
         config = SampleConfig(sample_size=50, strategy="stratified")  # Absolute size
 
-        result = sampler.sample(
-            "input.parquet", "output.parquet", config, stratify_column="category"
-        )
+        result = sampler.sample("input.parquet", "output.parquet", config, stratify_column="category")
 
         assert result == Path("output.parquet")
 
@@ -504,9 +498,7 @@ class TestStratifiedSampler:
         sampler = StratifiedSampler(spark=None)
         config = SampleConfig(strategy="stratified", sample_size=0.5)
 
-        result = sampler.sample(
-            "input.parquet", "output.parquet", config, stratify_column="category"
-        )
+        result = sampler.sample("input.parquet", "output.parquet", config, stratify_column="category")
 
         # Verify Spark session was created
         mock_spark_class.builder.appName.assert_called_once_with("SparkOptimaSampler")
@@ -545,9 +537,7 @@ class TestReservoirSampler:
     @patch("spark_optima.data.samplers.Window")
     @patch("spark_optima.data.samplers.row_number")
     @patch("spark_optima.data.samplers.col")
-    def test_sample_reservoir_basic(
-        self, mock_col, mock_row_number, mock_window, mock_rand, mock_spark_class
-    ) -> None:
+    def test_sample_reservoir_basic(self, mock_col, mock_row_number, mock_window, mock_rand, mock_spark_class) -> None:
         """Test reservoir sample method."""
         mock_spark = MagicMock()
         mock_spark_class.builder.appName.return_value = mock_spark_class.builder
@@ -737,9 +727,7 @@ class TestDataSampler:
         sampler = DataSampler(spark=mock_spark)
         config = SampleConfig(strategy="stratified", sample_size=0.5)
 
-        result = sampler.sample(
-            "./input.parquet", "./output.parquet", config, stratify_column="category"
-        )
+        result = sampler.sample("./input.parquet", "./output.parquet", config, stratify_column="category")
 
         assert result == Path("./output.parquet")
 
@@ -881,12 +869,8 @@ class TestEstimateSampleSize:
         sampler = DataSampler()
         # Without finite population correction, sample size would be ~384
         # With population of 1000, it should be smaller
-        size_small = sampler.estimate_sample_size(
-            total_rows=1000, confidence=0.95, margin_error=0.05
-        )
-        size_large = sampler.estimate_sample_size(
-            total_rows=100000, confidence=0.95, margin_error=0.05
-        )
+        size_small = sampler.estimate_sample_size(total_rows=1000, confidence=0.95, margin_error=0.05)
+        size_large = sampler.estimate_sample_size(total_rows=100000, confidence=0.95, margin_error=0.05)
         # Smaller population should give smaller or equal sample size
         assert size_small <= size_large
 

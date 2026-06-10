@@ -3,6 +3,7 @@
 
 from spark_optima.analysis import CodeAnalyzer
 
+
 def main():
     """Analyze Spark code and get improvement suggestions."""
     print("=" * 70)
@@ -30,13 +31,13 @@ def main():
 
     # Display detected operations
     if analysis.operations:
-        print(f"\n📋 Detected Operations:")
+        print("\n📋 Detected Operations:")
         print("-" * 70)
         for op in analysis.operations:
             print(f"  - {op.operation_type}: {op.description}")
 
     # Get optimization suggestions
-    print(f"\n💡 Code Optimization Suggestions:")
+    print("\n💡 Code Optimization Suggestions:")
     print("-" * 70)
     for suggestion in analysis.suggestions[:5]:
         print(f"  • {suggestion}")

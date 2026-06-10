@@ -506,6 +506,248 @@ class SearchSpaceBuilder:
             "base_value": base_bytes,
         }
 
+    def to_trial_params(
+        self,
+        config: dict[str, Any],
+        search_space: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Map a Spark configuration onto Optuna trial parameters for enqueueing.
+
+        Produces a parameter dictionary whose keys and value types match exactly
+        what the optimizer's ``trial.suggest_*`` calls expect, so the dictionary
+        can be passed to ``study.enqueue_trial()`` without triggering Optuna
+        "fixed parameter out of range" warnings.
+
+        Behavior per parameter type:
+            - ``categorical``: the value is matched against the choices (with
+              boolean/int/float/str coercion). Unmatchable values are skipped.
+            - ``int``: the value is clamped into ``[low, high]`` and snapped to
+              the step grid. Duration strings (e.g. ``"600s"``) are parsed.
+            - ``float``: the value is clamped into ``[low, high]``.
+            - ``bytes``: memory strings (e.g. ``"4g"``) are parsed to bytes,
+              clamped, and snapped to the same step grid the optimizer uses.
+
+        Parameters not present in the search space (or with unknown types) are
+        skipped silently.
+
+        Args:
+            config: Spark configuration (e.g. the heuristic baseline).
+            search_space: Search space to map against. Defaults to the last
+                built search space.
+
+        Returns:
+            Dictionary mapping Optuna parameter names to in-range values.
+
+        """
+        space = search_space if search_space is not None else self._search_space
+        params: dict[str, Any] = {}
+
+        for param_name, search_def in space.items():
+            if param_name not in config:
+                continue
+
+            raw_value = config[param_name]
+            param_type = search_def.get("type")
+
+            if param_type == "categorical":
+                choice = self._match_categorical(raw_value, search_def.get("choices", []))
+                if choice is not None:
+                    params[param_name] = choice
+
+            elif param_type == "int":
+                int_value = self._coerce_int(raw_value, search_def.get("base_value"))
+                if int_value is None:
+                    continue
+                low = int(search_def["low"])
+                high = int(search_def["high"])
+                step = int(search_def.get("step", 1))
+                params[param_name] = self._snap_to_grid(int_value, low, high, step)
+
+            elif param_type == "float":
+                float_value = self._coerce_float(raw_value, search_def.get("base_value"))
+                if float_value is None:
+                    continue
+                low_f = float(search_def["low"])
+                high_f = float(search_def["high"])
+                params[param_name] = min(max(float_value, low_f), high_f)
+
+            elif param_type == "bytes":
+                bytes_value = self._coerce_bytes(raw_value, search_def.get("base_value"))
+                if bytes_value is None:
+                    continue
+                low_b = int(search_def["low"])
+                high_b = int(search_def["high"])
+                # Mirror the optimizer's defensive swap for inverted ranges
+                if low_b > high_b:
+                    low_b, high_b = high_b, low_b
+                step_b = self.compute_bytes_step(low_b, high_b)
+                params[param_name] = self._snap_to_grid(bytes_value, low_b, high_b, step_b)
+
+            # Unknown types are not suggested by the objective - skip them
+
+        return params
+
+    @staticmethod
+    def compute_bytes_step(low: int, high: int) -> int:
+        """Compute the suggestion step for byte-size parameters.
+
+        This is the single source of truth shared by the optimizer's sampling
+        code and the trial-enqueueing mapping, so enqueued values always land
+        on the same grid that ``trial.suggest_int`` uses.
+
+        Args:
+            low: Lower bound in bytes.
+            high: Upper bound in bytes.
+
+        Returns:
+            Step size in bytes (1% of the range, minimum 1).
+
+        """
+        range_size = high - low
+        return max(1, range_size // 100) if range_size > 0 else 1
+
+    @staticmethod
+    def _snap_to_grid(value: int, low: int, high: int, step: int) -> int:
+        """Clamp an integer value into [low, high] and align it to the step grid.
+
+        Optuna rejects enqueued values that are not of the form ``low + k * step``,
+        so clamping alone is not sufficient.
+
+        Args:
+            value: Value to clamp and align.
+            low: Lower bound (grid origin).
+            high: Upper bound.
+            step: Grid step size.
+
+        Returns:
+            Clamped value aligned to the step grid.
+
+        """
+        if step <= 0:
+            step = 1
+        # Highest grid point that does not exceed high (Optuna adjusts high the same way)
+        high_aligned = low + ((high - low) // step) * step
+        clamped = max(low, min(value, high_aligned))
+        snapped = low + round((clamped - low) / step) * step
+        return min(max(snapped, low), high_aligned)
+
+    @classmethod
+    def _match_categorical(cls, value: Any, choices: list[Any]) -> Any | None:
+        """Match a configuration value against categorical choices.
+
+        Args:
+            value: Raw configuration value (possibly a string form).
+            choices: Available categorical choices.
+
+        Returns:
+            The matching choice object (preserving its type), or None if the
+            value cannot be matched to any choice.
+
+        """
+        if not choices:
+            return None
+
+        # Boolean choices: parse string forms like "true"/"false"
+        if all(isinstance(c, bool) for c in choices):
+            parsed = cls._parse_boolean(value)
+            return parsed if parsed in choices else None
+
+        # Direct equality (returns the canonical choice object)
+        for choice in choices:
+            if not isinstance(value, bool) and choice == value:
+                return choice
+
+        # Numeric coercion (e.g. "4" -> 4 for executor cores)
+        for caster in (int, float):
+            try:
+                cast_value = caster(value)
+            except (TypeError, ValueError):
+                continue
+            for choice in choices:
+                if not isinstance(choice, bool) and choice == cast_value:
+                    return choice
+
+        # String comparison as a last resort
+        str_value = str(value)
+        for choice in choices:
+            if str(choice) == str_value:
+                return choice
+
+        return None
+
+    @classmethod
+    def _coerce_int(cls, value: Any, fallback: Any) -> int | None:
+        """Coerce a configuration value to an integer.
+
+        Handles plain integers, numeric strings, and duration strings
+        (e.g. "600s"). Falls back to the search-space base value when the
+        raw value cannot be parsed.
+
+        Args:
+            value: Raw configuration value.
+            fallback: Base value from the search space definition.
+
+        Returns:
+            Integer value or None if no usable value exists.
+
+        """
+        for candidate in (value, fallback):
+            if candidate is None:
+                continue
+            try:
+                return int(float(candidate))
+            except (TypeError, ValueError, OverflowError):
+                pass
+            try:
+                return int(cls._parse_duration_string(str(candidate)))
+            except (ValueError, OverflowError):
+                pass
+        return None
+
+    @classmethod
+    def _coerce_float(cls, value: Any, fallback: Any) -> float | None:
+        """Coerce a configuration value to a float.
+
+        Args:
+            value: Raw configuration value.
+            fallback: Base value from the search space definition.
+
+        Returns:
+            Float value or None if no usable value exists.
+
+        """
+        for candidate in (value, fallback):
+            if candidate is None:
+                continue
+            try:
+                return float(candidate)
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    @classmethod
+    def _coerce_bytes(cls, value: Any, fallback: Any) -> int | None:
+        """Coerce a configuration value to a byte count.
+
+        Args:
+            value: Raw configuration value (e.g. "4g", "512m", or an int).
+            fallback: Base value from the search space definition (bytes).
+
+        Returns:
+            Byte count or None if no usable value exists.
+
+        """
+        for candidate in (value, fallback):
+            if candidate is None:
+                continue
+            if isinstance(candidate, int | float) and not isinstance(candidate, bool):
+                return int(candidate)
+            try:
+                return cls._parse_memory_string(str(candidate))
+            except ValueError:
+                pass
+        return None
+
     @staticmethod
     def _parse_memory_string(value: str) -> int:
         """Parse memory string to bytes.

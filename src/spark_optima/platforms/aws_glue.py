@@ -513,7 +513,7 @@ class AWSGluePlatform(Platform):
             from botocore.exceptions import ClientError, NoCredentialsError
         except ImportError as e:
             raise RuntimeError(
-                "boto3 is required for AWS Glue execution. " "Install with: pip install boto3",
+                "boto3 is required for AWS Glue execution. Install with: pip install boto3",
             ) from e
 
         # Get AWS credentials from environment

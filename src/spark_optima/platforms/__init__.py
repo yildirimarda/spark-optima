@@ -23,6 +23,7 @@ Example:
 
 """
 
+from spark_optima.platforms.aws_emr import AWSEMRPlatform
 from spark_optima.platforms.aws_glue import AWSGluePlatform
 from spark_optima.platforms.azure_synapse import AzureSynapsePlatform
 from spark_optima.platforms.base import LocalPlatformBase, Platform
@@ -41,6 +42,7 @@ from spark_optima.platforms.models import (
 PLATFORM_REGISTRY: dict[str, type[Platform]] = {
     "local": LocalPlatform,
     "aws_glue": AWSGluePlatform,
+    "aws_emr": AWSEMRPlatform,
     "databricks": DatabricksPlatform,
     "azure_synapse": AzureSynapsePlatform,
 }
@@ -50,7 +52,7 @@ def get_platform(name: str, **kwargs: object) -> Platform:
     """Get a platform instance by name.
 
     Args:
-        name: Platform identifier (local, aws_glue, databricks, azure_synapse).
+        name: Platform identifier (local, aws_glue, aws_emr, databricks, azure_synapse).
         **kwargs: Additional arguments passed to platform constructor.
 
     Returns:
@@ -113,6 +115,7 @@ __all__ = [
     "Platform",
     "LocalPlatformBase",
     "LocalPlatform",
+    "AWSEMRPlatform",
     "AWSGluePlatform",
     "DatabricksPlatform",
     "AzureSynapsePlatform",

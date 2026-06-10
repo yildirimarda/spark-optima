@@ -20,6 +20,7 @@ class Platform(str, Enum):
 
     LOCAL = "local"
     AWS_GLUE = "aws_glue"
+    AWS_EMR = "aws_emr"
     DATABRICKS = "databricks"
     AZURE_SYNAPSE = "azure_synapse"
 

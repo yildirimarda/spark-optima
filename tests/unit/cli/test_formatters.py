@@ -139,15 +139,115 @@ class TestConfigExporter:
         data = json.loads(content)
         assert "configuration" in data
 
-    def test_save_to_file_unsupported_format(
-        self, sample_result: OptimizationResult, tmp_path: Path
-    ) -> None:
+    def test_save_to_file_unsupported_format(self, sample_result: OptimizationResult, tmp_path: Path) -> None:
         """Test saving with unsupported format raises error."""
         exporter = ConfigExporter(sample_result, "local")
         output_file = tmp_path / "config.txt"
 
         with pytest.raises(ValueError, match="Unsupported format"):
             exporter.save_to_file(output_file, "unsupported")
+
+    def test_export_airflow_dag_local_uses_spark_submit_operator(self, sample_result: OptimizationResult) -> None:
+        """Test Airflow export uses SparkSubmitOperator for local platform."""
+        exporter = ConfigExporter(sample_result, "local")
+        output = exporter.export_airflow_dag()
+
+        assert "from airflow import DAG" in output
+        assert "SparkSubmitOperator" in output
+        assert "conf=SPARK_CONF" in output
+        assert '"spark.executor.memory": "4g"' in output
+        assert "dag_id=" in output
+        assert "TODO" in output
+        # Other platforms' operators must not leak in
+        assert "DatabricksSubmitRunOperator" not in output
+        assert "GlueJobOperator" not in output
+
+    def test_export_airflow_dag_databricks_operator(self, sample_result: OptimizationResult) -> None:
+        """Test Airflow export uses DatabricksSubmitRunOperator for Databricks."""
+        exporter = ConfigExporter(sample_result, "databricks")
+        output = exporter.export_airflow_dag()
+
+        assert "DatabricksSubmitRunOperator" in output
+        assert "new_cluster=" in output
+        assert '"spark_conf": SPARK_CONF' in output
+        assert "SparkSubmitOperator" not in output
+
+    def test_export_airflow_dag_glue_operator(self, sample_result: OptimizationResult) -> None:
+        """Test Airflow export uses GlueJobOperator with --conf DefaultArguments."""
+        exporter = ConfigExporter(sample_result, "aws_glue")
+        output = exporter.export_airflow_dag()
+
+        assert "GlueJobOperator" in output
+        assert "DEFAULT_ARGUMENTS" in output
+        assert '"--conf"' in output
+        assert "spark.executor.memory=4g" in output
+        assert "SparkSubmitOperator" not in output
+
+    def test_export_kubernetes_configmap(self, sample_result: OptimizationResult) -> None:
+        """Test Kubernetes ConfigMap export structure and contents."""
+        import yaml
+
+        exporter = ConfigExporter(sample_result, "local")
+        output = exporter.export_kubernetes_configmap()
+
+        assert "apiVersion: v1" in output
+        assert "kind: ConfigMap" in output
+        assert "name: spark-optima-config" in output
+
+        # Must be valid YAML with spark-defaults.conf style data
+        manifest = yaml.safe_load(output)
+        assert manifest["kind"] == "ConfigMap"
+        assert manifest["metadata"]["name"] == "spark-optima-config"
+        defaults_conf = manifest["data"]["spark-defaults.conf"]
+        assert "spark.executor.memory 4g" in defaults_conf
+        assert "spark.sql.shuffle.partitions 200" in defaults_conf
+
+    def test_export_kubernetes_configmap_sorted_keys(self, sample_result: OptimizationResult) -> None:
+        """Test ConfigMap output renders config keys deterministically sorted."""
+        exporter = ConfigExporter(sample_result, "local")
+        output = exporter.export_kubernetes_configmap()
+
+        assert output.index("spark.driver.memory") < output.index("spark.executor.cores")
+        assert output.index("spark.executor.cores") < output.index("spark.executor.memory")
+        assert output.index("spark.executor.memory") < output.index("spark.sql.shuffle.partitions")
+
+    def test_export_aws_emr(self, sample_result: OptimizationResult) -> None:
+        """Test AWS EMR configurations JSON export."""
+        exporter = ConfigExporter(sample_result, "local")
+        output = exporter.export_aws_emr()
+
+        data = json.loads(output)
+        assert isinstance(data, list)
+        assert data[0]["Classification"] == "spark-defaults"
+        properties = data[0]["Properties"]
+        assert properties["spark.executor.memory"] == "4g"
+        assert properties["spark.sql.shuffle.partitions"] == "200"
+        # All values must be strings for the EMR API
+        assert all(isinstance(v, str) for v in properties.values())
+
+    @pytest.mark.parametrize(
+        ("format_type", "marker"),
+        [
+            ("airflow", "with DAG("),
+            ("kubernetes", "kind: ConfigMap"),
+            ("emr", '"Classification": "spark-defaults"'),
+        ],
+    )
+    def test_save_to_file_new_formats(
+        self,
+        sample_result: OptimizationResult,
+        tmp_path: Path,
+        format_type: str,
+        marker: str,
+    ) -> None:
+        """Test save_to_file routing for the new export formats."""
+        exporter = ConfigExporter(sample_result, "local")
+        output_file = tmp_path / f"config.{format_type}"
+
+        exporter.save_to_file(output_file, format_type)
+
+        assert output_file.exists()
+        assert marker in output_file.read_text()
 
     def test_databricks_autoscaling(self, sample_result: OptimizationResult) -> None:
         """Test Databricks export with autoscaling enabled."""
@@ -182,9 +282,7 @@ class TestDisplayResults:
             platform_specific={},
         )
 
-    def test_display_results_table(
-        self, sample_result: OptimizationResult, capsys: pytest.CaptureFixture
-    ) -> None:
+    def test_display_results_table(self, sample_result: OptimizationResult, capsys: pytest.CaptureFixture) -> None:
         """Test that display_results_table runs without errors."""
         # This mainly tests that the function doesn't raise exceptions
         # since Rich output is hard to capture

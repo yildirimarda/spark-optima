@@ -309,10 +309,7 @@ class VersionLoader:
             True if min_version <= version <= max_version.
 
         """
-        return (
-            self.compare_versions(version, min_version) >= 0
-            and self.compare_versions(version, max_version) <= 0
-        )
+        return self.compare_versions(version, min_version) >= 0 and self.compare_versions(version, max_version) <= 0
 
     def get_parameters_introduced_in(self, since_version: str) -> dict[str, list[str]]:
         """Get parameters introduced since a specific version.
@@ -331,9 +328,7 @@ class VersionLoader:
                 config_set = self.database.get_config_set(avail_version)
                 if config_set:
                     new_params = [
-                        name
-                        for name, param in config_set.parameters.items()
-                        if param.since_version == avail_version
+                        name for name, param in config_set.parameters.items() if param.since_version == avail_version
                     ]
                     if new_params:
                         result[avail_version] = new_params

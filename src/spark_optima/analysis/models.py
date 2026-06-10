@@ -80,6 +80,7 @@ class SparkOperation:
         arguments: List of argument representations.
         location: Source code location.
         chain_position: Position in the transformation chain.
+        in_loop: Whether the operation occurs inside a for/while loop body.
 
     """
 
@@ -89,6 +90,7 @@ class SparkOperation:
     arguments: list[str] = field(default_factory=list)
     location: CodeLocation | None = None
     chain_position: int = 0
+    in_loop: bool = False
 
     def __str__(self) -> str:
         """Return string representation of operation."""

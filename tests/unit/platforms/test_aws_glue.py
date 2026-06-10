@@ -537,15 +537,19 @@ class TestAWSGlueBoto3Methods:
         """Test submit_job raises RuntimeError when boto3 missing."""
         platform = AWSGluePlatform()
         import sys
+
         # Remove boto3 from sys.modules to simulate missing import
         monkeypatch.setitem(sys.modules, "boto3", None)
         # Patch the import inside submit_job to raise ImportError
         import builtins
+
         real_import = builtins.__import__
+
         def mock_import(name, *args, **kwargs):
             if name == "boto3":
                 raise ImportError("No module named 'boto3'")
             return real_import(name, *args, **kwargs)
+
         monkeypatch.setattr(builtins, "__import__", mock_import)
         with pytest.raises(RuntimeError, match="boto3 is required"):
             platform.submit_job("test.py")
@@ -554,15 +558,19 @@ class TestAWSGlueBoto3Methods:
         """Test get_job_status raises RuntimeError when boto3 missing."""
         platform = AWSGluePlatform()
         import sys
+
         # Mock boto3 as missing
         monkeypatch.setitem(sys.modules, "boto3", None)
 
         import builtins
+
         real_import = builtins.__import__
+
         def mock_import(name, *args, **kwargs):
             if name == "boto3":
                 raise ImportError("No module named 'boto3'")
             return real_import(name, *args, **kwargs)
+
         monkeypatch.setattr(builtins, "__import__", mock_import)
 
         with pytest.raises(RuntimeError, match="boto3 is required"):
@@ -572,15 +580,19 @@ class TestAWSGlueBoto3Methods:
         """Test get_job_results raises RuntimeError when boto3 missing."""
         platform = AWSGluePlatform()
         import sys
+
         # Mock boto3 as missing
         monkeypatch.setitem(sys.modules, "boto3", None)
 
         import builtins
+
         real_import = builtins.__import__
+
         def mock_import(name, *args, **kwargs):
             if name == "boto3":
                 raise ImportError("No module named 'boto3'")
             return real_import(name, *args, **kwargs)
+
         monkeypatch.setattr(builtins, "__import__", mock_import)
 
         with pytest.raises(RuntimeError, match="boto3 is required"):

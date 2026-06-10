@@ -208,9 +208,7 @@ class TestCLIErrorHandling:
 
         assert result.exit_code != 0
         assert (
-            "invalid" in result.output.lower()
-            or "error" in result.output.lower()
-            or "usage" in result.output.lower()
+            "invalid" in result.output.lower() or "error" in result.output.lower() or "usage" in result.output.lower()
         )
 
     def test_invalid_option(self, runner: CliRunner) -> None:
@@ -223,9 +221,7 @@ class TestCLIErrorHandling:
 class TestCLIOptimizeCommandFull:
     """Test cases for the optimize command with full coverage."""
 
-    def test_optimize_with_code_path_option(
-        self, runner: CliRunner, sample_code_file: Path
-    ) -> None:
+    def test_optimize_with_code_path_option(self, runner: CliRunner, sample_code_file: Path) -> None:
         """Test optimize with --code-path option."""
         result = runner.invoke(
             app,
@@ -547,9 +543,7 @@ class TestCLIAnalyzeCommandFull:
         assert result.exit_code != 0
 
     @patch("spark_optima.analysis.recommender.analyze_code")
-    def test_analyze_error_handling(
-        self, mock_analyze: MagicMock, runner: CliRunner, sample_code_file: Path
-    ) -> None:
+    def test_analyze_error_handling(self, mock_analyze: MagicMock, runner: CliRunner, sample_code_file: Path) -> None:
         """Test analyze handles errors."""
         mock_analyze.side_effect = Exception("Analysis failed")
 
@@ -602,9 +596,7 @@ class TestCLIPlatformsCommandFull:
     """Test cases for the platforms command with full coverage."""
 
     @patch("spark_optima.platforms.get_platform")
-    def test_platforms_list_with_platform_info(
-        self, mock_get_platform: MagicMock, runner: CliRunner
-    ) -> None:
+    def test_platforms_list_with_platform_info(self, mock_get_platform: MagicMock, runner: CliRunner) -> None:
         """Test platforms list shows platform details."""
         mock_instance = MagicMock()
         mock_instance.name = "local"
@@ -617,9 +609,7 @@ class TestCLIPlatformsCommandFull:
         assert result.exit_code in [0, 1, 2]
 
     @patch("spark_optima.platforms.get_platform")
-    def test_platforms_list_platform_error(
-        self, mock_get_platform: MagicMock, runner: CliRunner
-    ) -> None:
+    def test_platforms_list_platform_error(self, mock_get_platform: MagicMock, runner: CliRunner) -> None:
         """Test platforms list handles platform errors."""
         mock_get_platform.side_effect = Exception("Platform error")
 
@@ -831,9 +821,7 @@ class TestCLIWizardCommandV2:
     """Test cases for the wizard command."""
 
     @patch("spark_optima.cli.wizard.run_wizard")
-    def test_wizard_command(
-        self, mock_wizard: MagicMock, runner: CliRunner, sample_code_file: Path
-    ) -> None:
+    def test_wizard_command(self, mock_wizard: MagicMock, runner: CliRunner, sample_code_file: Path) -> None:
         """Test wizard command execution."""
         mock_wizard.return_value = {
             "code_path": str(sample_code_file),
@@ -995,3 +983,425 @@ class TestCLIWizardCommandV2:
 
         assert result.exit_code == 0
         mock_exporter_instance.export_yaml.assert_called_once()
+
+
+# =============================================================================
+# v1.1 — history / compare / explain commands
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _isolated_history_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the history store at a temporary database for every CLI test.
+
+    This keeps the optimize command's auto-save from touching the real
+    ~/.spark_optima/history.db during the test run.
+    """
+    db_path = tmp_path / "history.db"
+    monkeypatch.setenv("SPARK_OPTIMA_HISTORY_DB", str(db_path))
+    return db_path
+
+
+@pytest.fixture
+def history_db(_isolated_history_db: Path) -> Path:
+    """Expose the isolated history database path to tests that need it."""
+    return _isolated_history_db
+
+
+@pytest.fixture
+def sample_result_dict() -> dict:
+    """Create a sample optimization result dictionary."""
+    return {
+        "configuration": {
+            "spark.executor.memory": "4g",
+            "spark.executor.cores": 4,
+            "spark.sql.shuffle.partitions": 200,
+        },
+        "estimated_time_minutes": 12.5,
+        "confidence_score": 0.85,
+        "code_suggestions": [],
+        "platform_specific": {"platform": "local", "spark_version": "3.5.0"},
+        "metadata": {"platform": "local", "spark_version": "3.5.0"},
+    }
+
+
+def _seed_history(platform: str = "local") -> int:
+    """Insert one history entry using the env-configured database."""
+    from spark_optima.core.history import OptimizationHistory
+
+    with OptimizationHistory() as store:
+        return store.save(
+            {
+                "configuration": {"spark.executor.memory": "4g"},
+                "estimated_time_minutes": 10.0,
+                "confidence_score": 0.9,
+            },
+            platform=platform,
+            spark_version="3.5.0",
+            mode="simulation",
+            code_path="/tmp/job.py",
+        )
+
+
+class TestCLIHistoryCommand:
+    """Test cases for the history command."""
+
+    def test_history_command_help(self, runner: CliRunner) -> None:
+        """Test history command help."""
+        result = runner.invoke(app, ["history", "--help"])
+
+        assert result.exit_code == 0
+        assert "history" in result.output.lower()
+
+    def test_history_empty(self, runner: CliRunner, history_db: Path) -> None:
+        """Test history with no stored entries."""
+        result = runner.invoke(app, ["history"])
+
+        assert result.exit_code == 0
+        assert "No optimization history" in result.output
+
+    def test_history_lists_entries(self, runner: CliRunner, history_db: Path) -> None:
+        """Test history lists saved entries."""
+        entry_id = _seed_history()
+
+        result = runner.invoke(app, ["history"])
+
+        assert result.exit_code == 0
+        assert str(entry_id) in result.output
+        assert "local" in result.output
+        assert "3.5.0" in result.output
+
+    def test_history_platform_filter(self, runner: CliRunner, history_db: Path) -> None:
+        """Test history filters by platform."""
+        _seed_history(platform="local")
+        _seed_history(platform="databricks")
+
+        result = runner.invoke(app, ["history", "--platform", "databricks"])
+
+        assert result.exit_code == 0
+        assert "databricks" in result.output
+
+        result = runner.invoke(app, ["history", "--platform", "aws_glue"])
+
+        assert result.exit_code == 0
+        assert "No optimization history" in result.output
+
+    def test_history_show_entry(self, runner: CliRunner, history_db: Path) -> None:
+        """Test history --show prints full entry details."""
+        entry_id = _seed_history()
+
+        result = runner.invoke(app, ["history", "--show", str(entry_id)])
+
+        assert result.exit_code == 0
+        assert "spark.executor.memory" in result.output
+        assert "4g" in result.output
+        assert "/tmp/job.py" in result.output
+
+    def test_history_show_missing_entry(self, runner: CliRunner, history_db: Path) -> None:
+        """Test history --show errors for unknown ids."""
+        result = runner.invoke(app, ["history", "--show", "999"])
+
+        assert result.exit_code == 1
+        assert "no history entry" in result.output
+
+    def test_history_clear_with_yes(self, runner: CliRunner, history_db: Path) -> None:
+        """Test history --clear --yes deletes all entries."""
+        _seed_history()
+        _seed_history()
+
+        result = runner.invoke(app, ["history", "--clear", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Deleted 2" in result.output
+
+        result = runner.invoke(app, ["history"])
+        assert "No optimization history" in result.output
+
+    def test_history_clear_aborted(self, runner: CliRunner, history_db: Path) -> None:
+        """Test history --clear keeps entries when confirmation is declined."""
+        entry_id = _seed_history()
+
+        result = runner.invoke(app, ["history", "--clear"], input="n\n")
+
+        assert result.exit_code == 0
+        assert "Aborted" in result.output
+
+        result = runner.invoke(app, ["history"])
+        assert str(entry_id) in result.output
+
+    def test_history_invalid_limit(self, runner: CliRunner, history_db: Path) -> None:
+        """Test history with an invalid limit errors cleanly."""
+        result = runner.invoke(app, ["history", "--limit", "0"])
+
+        assert result.exit_code == 1
+        assert "limit" in result.output.lower()
+
+
+class TestCLICompareCommand:
+    """Test cases for the compare command."""
+
+    @staticmethod
+    def _write_result(path: Path, data: dict) -> Path:
+        """Write a result dictionary to a JSON file."""
+        path.write_text(json.dumps(data))
+        return path
+
+    def test_compare_command_help(self, runner: CliRunner) -> None:
+        """Test compare command help."""
+        result = runner.invoke(app, ["compare", "--help"])
+
+        assert result.exit_code == 0
+        assert "compare" in result.output.lower()
+
+    def test_compare_table_output(self, runner: CliRunner, tmp_path: Path, sample_result_dict: dict) -> None:
+        """Test compare shows differing and one-sided parameters."""
+        result_a = dict(sample_result_dict)
+        result_b = json.loads(json.dumps(sample_result_dict))
+        result_b["configuration"]["spark.executor.memory"] = "8g"
+        result_b["configuration"]["spark.new.param"] = "true"
+        del result_b["configuration"]["spark.executor.cores"]
+
+        file_a = self._write_result(tmp_path / "a.json", result_a)
+        file_b = self._write_result(tmp_path / "b.json", result_b)
+
+        result = runner.invoke(app, ["compare", "-a", str(file_a), "-b", str(file_b)])
+
+        assert result.exit_code == 0
+        assert "spark.executor.memory" in result.output
+        assert "spark.new.param" in result.output
+        assert "spark.executor.cores" in result.output
+
+    def test_compare_identical_configs(self, runner: CliRunner, tmp_path: Path, sample_result_dict: dict) -> None:
+        """Test compare reports identical configurations."""
+        file_a = self._write_result(tmp_path / "a.json", sample_result_dict)
+        file_b = self._write_result(tmp_path / "b.json", sample_result_dict)
+
+        result = runner.invoke(app, ["compare", "-a", str(file_a), "-b", str(file_b)])
+
+        assert result.exit_code == 0
+        assert "identical" in result.output.lower()
+
+    def test_compare_json_output(self, runner: CliRunner, tmp_path: Path, sample_result_dict: dict) -> None:
+        """Test compare with machine-readable JSON output."""
+        result_a = sample_result_dict
+        result_b = json.loads(json.dumps(sample_result_dict))
+        result_b["configuration"]["spark.executor.memory"] = "8g"
+        result_b["estimated_time_minutes"] = 10.0
+
+        file_a = self._write_result(tmp_path / "a.json", result_a)
+        file_b = self._write_result(tmp_path / "b.json", result_b)
+
+        result = runner.invoke(
+            app,
+            ["compare", "-a", str(file_a), "-b", str(file_b), "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        diff = json.loads(result.output)
+        assert diff["changed"]["spark.executor.memory"] == {"a": "4g", "b": "8g"}
+        assert diff["only_in_a"] == {}
+        assert diff["only_in_b"] == {}
+        assert diff["metrics"]["estimated_time_minutes"]["delta"] == pytest.approx(-2.5)
+        assert diff["metrics"]["confidence_score"]["delta"] == pytest.approx(0.0)
+
+    def test_compare_includes_cost_metric(self, runner: CliRunner, tmp_path: Path, sample_result_dict: dict) -> None:
+        """Test compare includes cost when present in both results."""
+        result_a = json.loads(json.dumps(sample_result_dict))
+        result_b = json.loads(json.dumps(sample_result_dict))
+        result_a["metadata"]["estimated_cost"] = 5.0
+        result_b["metadata"]["estimated_cost"] = 7.5
+
+        file_a = self._write_result(tmp_path / "a.json", result_a)
+        file_b = self._write_result(tmp_path / "b.json", result_b)
+
+        result = runner.invoke(
+            app,
+            ["compare", "-a", str(file_a), "-b", str(file_b), "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        diff = json.loads(result.output)
+        assert diff["metrics"]["estimated_cost"]["delta"] == pytest.approx(2.5)
+
+    def test_compare_missing_file(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test compare errors on a missing input file."""
+        existing = self._write_result(tmp_path / "a.json", {"configuration": {}})
+
+        result = runner.invoke(
+            app,
+            ["compare", "-a", str(existing), "-b", str(tmp_path / "missing.json")],
+        )
+
+        assert result.exit_code == 1
+        assert "Error loading result file" in result.output
+
+    def test_compare_invalid_json(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test compare errors on malformed JSON input."""
+        bad_file = tmp_path / "bad.json"
+        bad_file.write_text("{not json")
+        good_file = self._write_result(tmp_path / "good.json", {"configuration": {}})
+
+        result = runner.invoke(app, ["compare", "-a", str(bad_file), "-b", str(good_file)])
+
+        assert result.exit_code == 1
+        assert "Error loading result file" in result.output
+
+    def test_compare_missing_required_options(self, runner: CliRunner) -> None:
+        """Test compare requires both result file options."""
+        result = runner.invoke(app, ["compare"])
+
+        assert result.exit_code != 0
+
+
+class TestCLIExplainCommand:
+    """Test cases for the explain command."""
+
+    def test_explain_command_help(self, runner: CliRunner) -> None:
+        """Test explain command help."""
+        result = runner.invoke(app, ["explain", "--help"])
+
+        assert result.exit_code == 0
+        assert "explain" in result.output.lower()
+
+    def test_explain_outputs_rationale(self, runner: CliRunner, tmp_path: Path, sample_result_dict: dict) -> None:
+        """Test explain shows heuristic rationale and Bayesian fallback."""
+        result_data = json.loads(json.dumps(sample_result_dict))
+        result_data["configuration"]["spark.custom.unknown"] = "x"
+        result_file = tmp_path / "result.json"
+        result_file.write_text(json.dumps(result_data))
+
+        result = runner.invoke(app, ["explain", "-r", str(result_file)])
+
+        assert result.exit_code == 0
+        assert "spark.executor.memory" in result.output
+        # Known parameter resolves to a heuristic rule
+        assert "heuristic" in result.output
+        # Unknown parameter falls back to the Bayesian note
+        assert "bayesian" in result.output
+
+    def test_explain_empty_configuration(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test explain with an empty configuration."""
+        result_file = tmp_path / "result.json"
+        result_file.write_text(json.dumps({"configuration": {}}))
+
+        result = runner.invoke(app, ["explain", "-r", str(result_file)])
+
+        assert result.exit_code == 0
+        assert "no configuration" in result.output.lower()
+
+    def test_explain_missing_file(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test explain errors on a missing result file."""
+        result = runner.invoke(app, ["explain", "-r", str(tmp_path / "missing.json")])
+
+        assert result.exit_code == 1
+        assert "Error loading result file" in result.output
+
+    def test_explain_missing_required_option(self, runner: CliRunner) -> None:
+        """Test explain requires the result file option."""
+        result = runner.invoke(app, ["explain"])
+
+        assert result.exit_code != 0
+
+
+class TestCLIOptimizeAutoSave:
+    """Test cases for the optimize command's history auto-save."""
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_optimize_saves_to_history(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+        history_db: Path,
+        sample_result_dict: dict,
+    ) -> None:
+        """Test a successful optimize run is persisted to history."""
+        from spark_optima.core.history import OptimizationHistory
+        from spark_optima.core.result import OptimizationResult
+
+        real_result = OptimizationResult(
+            configuration=sample_result_dict["configuration"],
+            estimated_time_minutes=12.5,
+            confidence_score=0.85,
+            platform_specific={"platform": "local"},
+        )
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = real_result
+        mock_optimizer.return_value = mock_instance
+
+        result = runner.invoke(
+            app,
+            ["optimize", "--code-path", str(sample_code_file), "--platform", "local"],
+        )
+
+        assert result.exit_code == 0
+        assert "Saved to history" in result.output
+
+        with OptimizationHistory() as store:
+            entries = store.list_entries()
+            assert len(entries) == 1
+            assert entries[0].platform == "local"
+            assert entries[0].configuration == sample_result_dict["configuration"]
+
+    @patch("spark_optima.core.history.OptimizationHistory.save")
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_optimize_history_failure_is_non_fatal(
+        self,
+        mock_optimizer: MagicMock,
+        mock_save: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+        history_db: Path,
+        sample_result_dict: dict,
+    ) -> None:
+        """Test that a history save failure never breaks the optimize flow."""
+        from spark_optima.core.result import OptimizationResult
+
+        mock_save.side_effect = RuntimeError("disk full")
+        real_result = OptimizationResult(
+            configuration=sample_result_dict["configuration"],
+            estimated_time_minutes=12.5,
+            confidence_score=0.85,
+            platform_specific={"platform": "local"},
+        )
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = real_result
+        mock_optimizer.return_value = mock_instance
+
+        result = runner.invoke(
+            app,
+            ["optimize", "--code-path", str(sample_code_file), "--platform", "local"],
+        )
+
+        assert result.exit_code == 0
+        assert "Saved to history" not in result.output
+
+
+class TestCLIAnalyzeRealFile:
+    """Regression tests: analyze must read file contents, not parse the path string."""
+
+    def test_analyze_reads_file_contents(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test analyze detects smells from the actual file contents."""
+        code_file = tmp_path / "job_with_smells.py"
+        code_file.write_text(
+            "df = spark.read.parquet('s3://bucket/a/')\n"
+            "other = spark.read.parquet('s3://bucket/b/')\n"
+            "joined = df.crossJoin(other)\n"
+            "pdf = joined.toPandas()\n",
+        )
+
+        result = runner.invoke(app, ["analyze", "--code-path", str(code_file), "--output", "json"])
+
+        assert result.exit_code == 0
+        assert "cartesian_join" in result.output
+        assert "topandas_usage" in result.output
+
+    def test_analyze_clean_file_exits_zero(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test analyze succeeds on a syntactically valid file with no smells."""
+        code_file = tmp_path / "clean_job.py"
+        code_file.write_text("x = 1\n")
+
+        result = runner.invoke(app, ["analyze", "--code-path", str(code_file)])
+
+        assert result.exit_code == 0
+        assert "Syntax error" not in result.output

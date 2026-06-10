@@ -370,9 +370,7 @@ class TestOptimizationResultEdgeCases:
 
     def test_many_suggestions(self) -> None:
         """Test result with many suggestions."""
-        suggestions = [
-            CodeSuggestion(i, f"type{i}", f"desc{i}", f"sugg{i}", "medium") for i in range(100)
-        ]
+        suggestions = [CodeSuggestion(i, f"type{i}", f"desc{i}", f"sugg{i}", "medium") for i in range(100)]
         result = OptimizationResult(code_suggestions=suggestions)
 
         assert len(result.code_suggestions) == 100

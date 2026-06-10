@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from spark_optima.core.config_engine.models import ParameterCategory
+from spark_optima.core.heuristics.evaluator import FormulaEvaluator
 from spark_optima.core.heuristics.rules import HeuristicRuleDef, RuleRegistry
 
 
@@ -149,3 +150,179 @@ class TestRuleRegistry:
 
         assert len(rules) > 0
         assert all(r.category == ParameterCategory.MEMORY for r in rules)
+
+
+class TestSpeculationRules:
+    """Test cases for speculative execution rules."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.registry = RuleRegistry()
+        self.evaluator = FormulaEvaluator()
+
+    def test_speculation_rule_present(self):
+        """Test spark.speculation rule exists with skew/long-running condition."""
+        rule = self.registry.get_rule("spark.speculation")
+
+        assert rule is not None
+        assert rule.category == ParameterCategory.SCHEDULER
+        assert rule.priority == "medium"
+        assert rule.conditions == {"large_shuffles": True}
+        assert self.evaluator.evaluate(rule.formula) is True
+
+    def test_speculation_quantile_rule(self):
+        """Test spark.speculation.quantile rule evaluates to 0.75."""
+        rule = self.registry.get_rule("spark.speculation.quantile")
+
+        assert rule is not None
+        assert rule.priority == "medium"
+        assert rule.conditions == {"large_shuffles": True}
+        assert self.evaluator.evaluate(rule.formula) == 0.75
+
+    def test_speculation_multiplier_rule(self):
+        """Test spark.speculation.multiplier rule evaluates to 1.5."""
+        rule = self.registry.get_rule("spark.speculation.multiplier")
+
+        assert rule is not None
+        assert rule.priority == "medium"
+        assert rule.conditions == {"large_shuffles": True}
+        assert self.evaluator.evaluate(rule.formula) == 1.5
+
+    def test_speculation_rules_apply_on_all_platforms(self):
+        """Test speculation rules apply to all default platforms."""
+        rule = self.registry.get_rule("spark.speculation")
+
+        assert rule is not None
+        for platform in ("local", "databricks", "aws_glue", "azure_synapse"):
+            assert rule.can_apply(set(), platform, "3.5.0")
+
+
+class TestDataAwareDynamicAllocationRules:
+    """Test cases for data-aware dynamic allocation bounds."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.registry = RuleRegistry()
+        self.evaluator = FormulaEvaluator()
+
+    def _data_aware_rule(self) -> HeuristicRuleDef:
+        """Return the data-size scaled maxExecutors rule."""
+        rules = [
+            r
+            for r in self.registry.get_all_rules()
+            if r.param_name == "spark.dynamicAllocation.maxExecutors" and "data_size_gb" in r.depends_on
+        ]
+        assert len(rules) == 1
+        return rules[0]
+
+    def test_data_aware_max_executors_present(self):
+        """Test the data-aware maxExecutors rule exists alongside the capacity rule."""
+        all_max = [r for r in self.registry.get_all_rules() if r.param_name == "spark.dynamicAllocation.maxExecutors"]
+        assert len(all_max) == 2
+
+        rule = self._data_aware_rule()
+        assert rule.priority == "high"
+        assert rule.conditions == {"data_size_gb": ">0"}
+        assert rule.applies_to == ["databricks", "aws_glue", "aws_emr", "azure_synapse"]
+
+    def test_data_aware_max_executors_formula_scales_with_data(self):
+        """Test formula scales with data size: ceil(data_size_gb / 4)."""
+        rule = self._data_aware_rule()
+
+        assert self.evaluator.evaluate(rule.formula, {"data_size_gb": 100}) == 25
+        assert self.evaluator.evaluate(rule.formula, {"data_size_gb": 101}) == 26
+
+    def test_data_aware_max_executors_formula_bounds(self):
+        """Test formula is bounded to the 10-128 range."""
+        rule = self._data_aware_rule()
+
+        # Lower bound: tiny data still keeps 10 executors available
+        assert self.evaluator.evaluate(rule.formula, {"data_size_gb": 1}) == 10
+        # Upper bound: huge data is capped at 128 executors
+        assert self.evaluator.evaluate(rule.formula, {"data_size_gb": 10000}) == 128
+
+    def test_data_aware_max_executors_platform_filter(self):
+        """Test the rule only applies on cloud platforms with data size known."""
+        rule = self._data_aware_rule()
+
+        assert rule.can_apply({"data_size_gb"}, "databricks", "3.5.0")
+        assert not rule.can_apply({"data_size_gb"}, "local", "3.5.0")
+        assert not rule.can_apply(set(), "databricks", "3.5.0")
+
+
+class TestAqeFineTuningRules:
+    """Test cases for AQE fine-tuning rules."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.registry = RuleRegistry()
+        self.evaluator = FormulaEvaluator()
+
+    def test_advisory_partition_size_rule_present(self):
+        """Test advisoryPartitionSizeInBytes rule exists with sane metadata."""
+        rule = self.registry.get_rule("spark.sql.adaptive.advisoryPartitionSizeInBytes")
+
+        assert rule is not None
+        assert rule.category == ParameterCategory.SQL
+        assert rule.min_version == "3.0.0"
+        assert rule.base_value == "64m"
+        assert "data_size_gb" in rule.depends_on
+
+    def test_advisory_partition_size_formula_data_aware(self):
+        """Test advisory partition size stays in the 64-128MB byte range."""
+        rule = self.registry.get_rule("spark.sql.adaptive.advisoryPartitionSizeInBytes")
+        assert rule is not None
+
+        # Large data: clamped to 128MB upper bound
+        value = self.evaluator.evaluate(
+            rule.formula,
+            {"data_size_gb": 100, "spark_sql_shuffle_partitions": 400},
+        )
+        assert value == 128 * 1024 * 1024
+
+        # Small data: clamped to 64MB lower bound
+        value = self.evaluator.evaluate(
+            rule.formula,
+            {"data_size_gb": 1, "spark_sql_shuffle_partitions": 200},
+        )
+        assert value == 64 * 1024 * 1024
+
+        # Mid-range data lands between the bounds
+        value = self.evaluator.evaluate(
+            rule.formula,
+            {"data_size_gb": 20, "spark_sql_shuffle_partitions": 200},
+        )
+        assert 64 * 1024 * 1024 <= value <= 128 * 1024 * 1024
+
+    def test_skewed_partition_factor_rules(self):
+        """Test default and skew-conditioned skewedPartitionFactor rules."""
+        rules = [
+            r
+            for r in self.registry.get_all_rules()
+            if r.param_name == "spark.sql.adaptive.skewJoin.skewedPartitionFactor"
+        ]
+        assert len(rules) == 2
+
+        default_rules = [r for r in rules if not r.conditions]
+        skewed_rules = [r for r in rules if r.conditions]
+        assert len(default_rules) == 1
+        assert len(skewed_rules) == 1
+
+        # Default stays at 5x median
+        assert self.evaluator.evaluate(default_rules[0].formula) == 5.0
+
+        # Skewed data lowers the threshold to 3x median
+        skewed = skewed_rules[0]
+        assert skewed.conditions == {"skew_factor": ">1.5"}
+        assert skewed.priority == "high"
+        assert self.evaluator.evaluate(skewed.formula) == 3.0
+
+    def test_skewed_partition_threshold_rule(self):
+        """Test skewedPartitionThresholdInBytes is set to 256m."""
+        rule = self.registry.get_rule(
+            "spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes",
+        )
+
+        assert rule is not None
+        assert rule.base_value == "256m"
+        assert rule.min_version == "3.0.0"

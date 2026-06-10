@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Example: Generate sample data for testing."""
 
-from spark_optima.data.generators import DataGenerator, DataGeneratorConfig, ColumnSpec
+from spark_optima.data.generators import ColumnSpec, DataGenerator, DataGeneratorConfig
+
 
 def main():
     """Generate sample data for Spark optimization testing."""

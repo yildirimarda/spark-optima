@@ -240,9 +240,7 @@ class TestMLPredictorWithMock:
             from spark_optima.core.simulation.predictor import MLPerformancePredictor
 
             predictor = MLPerformancePredictor()
-            trials = [
-                {"configuration": {}, "data_profile": {}, "resource_spec": {}} for _ in range(5)
-            ]
+            trials = [{"configuration": {}, "data_profile": {}, "resource_spec": {}} for _ in range(5)]
 
             result = predictor.train(trials)
             assert result["r2_score"] == 0.0
@@ -374,9 +372,7 @@ class TestMLPredictorWithMock:
         try:
             from spark_optima.core.simulation.predictor import MLPerformancePredictor
 
-            predictor = MLPerformancePredictor(
-                use_ensemble=False, model_path=str(tmp_path / "model.pkl")
-            )
+            predictor = MLPerformancePredictor(use_ensemble=False, model_path=str(tmp_path / "model.pkl"))
 
             # Train first
             trials = []
@@ -700,9 +696,7 @@ class TestMLPredictorWithMock:
             predictor._calculate_feature_importance()
 
             # No feature_importance should be set
-            assert (
-                not hasattr(predictor, "_feature_importance") or predictor._feature_importance == {}
-            )
+            assert not hasattr(predictor, "_feature_importance") or predictor._feature_importance == {}
         except RuntimeError:
             pytest.skip("scikit-learn not available")
 

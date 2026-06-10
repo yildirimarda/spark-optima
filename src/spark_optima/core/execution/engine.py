@@ -276,7 +276,10 @@ class ExecutionEngine:
             import tempfile
 
             with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".py", delete=False, encoding="utf-8",
+                mode="w",
+                suffix=".py",
+                delete=False,
+                encoding="utf-8",
             ) as f:
                 f.write(code)
                 code_path = f.name
@@ -360,7 +363,7 @@ class ExecutionEngine:
 
                 if status in ("completed", "failed", "timeout", "stopped", "error"):
                     # Get final results
-                    results = self._platform_adapter.get_job_results(job_id)  # type: ignore[union-attr]
+                    results: dict[str, Any] = self._platform_adapter.get_job_results(job_id)  # type: ignore[union-attr]
                     return results
 
                 logger.debug(f"Job {job_id} status: {status}. Waiting...")
@@ -396,9 +399,11 @@ class ExecutionEngine:
 
         # Try to get worker type from platform adapter
         worker_type = None
-        if hasattr(self._platform_adapter, "get_worker_type"):
+        if self._platform_adapter is not None and hasattr(self._platform_adapter, "get_worker_type"):
             # Use medium worker as default
-            worker_type = self._platform_adapter.get_worker_type("G.2X") or self._platform_adapter.get_worker_type("m5.xlarge")
+            worker_type = self._platform_adapter.get_worker_type("G.2X") or self._platform_adapter.get_worker_type(
+                "m5.xlarge"
+            )
 
         if worker_type is None:
             # Create a default worker type
@@ -619,9 +624,7 @@ class ExecutionEngine:
         return {
             "available": self._platform_adapter is not None,
             "platform": self._platform_name,
-            "platform_info": (
-                self._platform_adapter.get_worker_types() if self._platform_adapter else []
-            ),
+            "platform_info": (self._platform_adapter.get_worker_types() if self._platform_adapter else []),
         }
 
     def add_monitoring_callback(self, callback: Any) -> None:

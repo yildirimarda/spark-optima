@@ -258,6 +258,19 @@ PLATFORM_METADATA: dict[str, dict[str, Any]] = {
             "simulation_mode",
         ],
     },
+    "aws_emr": {
+        "display_name": "AWS EMR",
+        "description": "Amazon EMR managed Spark clusters on EC2",
+        "supported_spark_versions": ["3.3.0", "3.4.1", "3.5.0", "3.5.2"],
+        "supported_features": [
+            "heuristic_optimization",
+            "bayesian_optimization",
+            "code_analysis",
+            "simulation_mode",
+            "cost_estimation",
+            "cluster_autoscaling",
+        ],
+    },
 }
 
 

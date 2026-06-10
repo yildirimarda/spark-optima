@@ -387,3 +387,80 @@ df.show()
         result = AnalysisResult(recommendations=recs)
         priority = engine.get_priority_recommendations(result, max_recommendations=2)
         assert len(priority) == 2
+
+
+class TestNewSmellRecommendations:
+    """Tests for recommendation generators of the v1.1 smells."""
+
+    @pytest.mark.parametrize(
+        ("smell_type", "severity", "expected_text"),
+        [
+            ("cartesian_join", SeverityLevel.HIGH, "join"),
+            ("topandas_usage", SeverityLevel.HIGH, "toPandas"),
+            ("count_for_empty_check", SeverityLevel.MEDIUM, "isEmpty"),
+            ("single_partition_write", SeverityLevel.MEDIUM, "coalesce"),
+            ("infer_schema", SeverityLevel.MEDIUM, "schema"),
+            ("withcolumn_in_loop", SeverityLevel.HIGH, "select"),
+            ("select_star", SeverityLevel.LOW, "column"),
+            ("orderby_without_limit", SeverityLevel.MEDIUM, "limit"),
+            ("pandas_udf_usage", SeverityLevel.MEDIUM, "built-in"),
+            ("large_collect", SeverityLevel.MEDIUM, "limit"),
+        ],
+    )
+    def test_generator_registered_with_code_examples(self, smell_type, severity, expected_text):
+        """Test that each new smell type has a generator with before/after code."""
+        engine = RecommendationEngine()
+        smell = CodeSmell(smell_type=smell_type, description="Test", severity=severity)
+        recs = engine._generate_recommendations([smell])
+        assert len(recs) == 1
+        rec = recs[0]
+        # A dedicated generator (not the generic fallback) must be registered
+        assert smell_type in engine._recommendation_generators
+        assert rec.before_code
+        assert rec.after_code
+        assert rec.explanation
+        combined = (rec.suggestion + rec.before_code + rec.after_code + rec.explanation).lower()
+        assert expected_text.lower() in combined
+
+    def test_cross_join_end_to_end(self):
+        """Test that crossJoin code yields a cartesian join recommendation."""
+        code = """
+result = df1.crossJoin(df2)
+result.show()
+"""
+        result = analyze_code(code)
+        recs = [r for r in result.recommendations if r.smell.smell_type == "cartesian_join"]
+        assert len(recs) == 1
+        assert "broadcast" in recs[0].after_code or "join" in recs[0].after_code
+
+    def test_topandas_end_to_end(self):
+        """Test that toPandas code yields a limit/sampling recommendation."""
+        code = """
+pdf = df.toPandas()
+"""
+        result = analyze_code(code)
+        recs = [r for r in result.recommendations if r.smell.smell_type == "topandas_usage"]
+        assert len(recs) == 1
+        assert "limit" in recs[0].after_code or "sample" in recs[0].after_code
+
+    def test_withcolumn_loop_end_to_end(self):
+        """Test that withColumn-in-loop code yields a select() recommendation."""
+        code = """
+for c in columns:
+    df = df.withColumn(c, df[c] * 2)
+"""
+        result = analyze_code(code)
+        recs = [r for r in result.recommendations if r.smell.smell_type == "withcolumn_in_loop"]
+        assert len(recs) == 1
+        assert "select" in recs[0].after_code
+
+    def test_pandas_udf_recommendation_distinct_from_plain_udf(self):
+        """Test that pandas_udf gets its own MEDIUM-severity recommendation."""
+        code = """
+my_pudf = pandas_udf(lambda s: s * 2, "double")
+"""
+        result = analyze_code(code)
+        pandas_recs = [r for r in result.recommendations if r.smell.smell_type == "pandas_udf_usage"]
+        assert len(pandas_recs) == 1
+        assert pandas_recs[0].smell.severity == SeverityLevel.MEDIUM
+        assert "built-in" in pandas_recs[0].suggestion.lower()

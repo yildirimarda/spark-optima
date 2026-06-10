@@ -496,9 +496,7 @@ class TestAzureSynapsePlatformSparkPoolProperties:
             spark_version="3.5.0",
         )
 
-        pool_properties = platform.get_spark_pool_properties(
-            cluster_config, pool_name="my-custom-pool"
-        )
+        pool_properties = platform.get_spark_pool_properties(cluster_config, pool_name="my-custom-pool")
 
         assert pool_properties["name"] == "my-custom-pool"
 

@@ -2,8 +2,10 @@
 """Example: Optimize Spark configuration for AWS Glue."""
 
 import json
+
 from spark_optima import Optimizer
 from spark_optima.platforms.models import ResourceSpec
+
 
 def main():
     """Run optimization for AWS Glue platform."""
@@ -44,7 +46,7 @@ def main():
         objectives=["minimize_time", "minimize_cost"],
     )
 
-    print(f"\n🔧 Optimal Configuration for AWS Glue (G.2X):")
+    print("\n🔧 Optimal Configuration for AWS Glue (G.2X):")
     print("-" * 70)
     for key in ["spark.executor.memory", "spark.executor.cores", "spark.sql.shuffle.partitions"]:
         if key in result.configuration:
@@ -55,8 +57,9 @@ def main():
 
     # Export for Glue job
     from spark_optima.cli.formatters import format_config_for_glue
+
     glue_config = format_config_for_glue(result.configuration)
-    print(f"\n📋 Glue Job Configuration:")
+    print("\n📋 Glue Job Configuration:")
     print(json.dumps(glue_config, indent=2))
 
 

@@ -9,7 +9,7 @@ Spark Optima is a professional tool that automatically finds the optimal Apache 
 ## Key Features
 
 - 🧠 **Hybrid Optimization**: Combines Spark best practices with intelligent Bayesian search
-- 🎯 **Multi-Platform Support**: Local, AWS Glue, Databricks, Azure Synapse
+- 🎯 **Multi-Platform Support**: Local, AWS Glue, AWS EMR, Databricks, Azure Synapse
 - 📊 **Code Analysis**: Detects Spark code smells and suggests improvements
 - 🚀 **Dual Mode**: Fast simulation mode or real execution mode with actual measurements
 - 📋 **200+ Config Parameters**: Comprehensive coverage of Spark 3.x and 4.x configurations

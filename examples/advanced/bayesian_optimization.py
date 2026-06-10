@@ -5,6 +5,7 @@ from spark_optima import Optimizer
 from spark_optima.core.bayesian import SearchSpace
 from spark_optima.platforms.models import ResourceSpec
 
+
 def main():
     """Run advanced Bayesian optimization."""
     print("=" * 70)
@@ -42,8 +43,8 @@ def main():
         objectives=["minimize_time"],
     )
 
-    print(f"\n📈 Bayesian Optimization Results:")
-    print(f"  Trials: 100")
+    print("\n📈 Bayesian Optimization Results:")
+    print("  Trials: 100")
     print(f"  Best time: {result.estimated_time_minutes:.1f} minutes")
     print(f"  Confidence: {result.confidence_score:.0%}")
 

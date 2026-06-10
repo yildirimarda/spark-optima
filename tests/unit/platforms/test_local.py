@@ -332,9 +332,11 @@ class TestLocalPlatformEdgeCases:
 
     def test_detect_resources_with_zero_values(self) -> None:
         """Test resource detection with zero/edge values."""
-        with patch("psutil.cpu_count") as mock_cpu, patch(
-            "psutil.virtual_memory"
-        ) as mock_memory, patch("psutil.disk_usage") as mock_disk:
+        with (
+            patch("psutil.cpu_count") as mock_cpu,
+            patch("psutil.virtual_memory") as mock_memory,
+            patch("psutil.disk_usage") as mock_disk,
+        ):
             mock_cpu.return_value = 1
             mock_memory.return_value = MagicMock(total=1024**3)  # 1 GB
             mock_disk.return_value = MagicMock(total=10 * 1024**3)  # 10 GB

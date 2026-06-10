@@ -198,9 +198,7 @@ class TestEvaluationContext:
 
     def test_to_variables(self) -> None:
         """Test to_variables method returns all expected keys."""
-        resources = ResourceSpec(
-            cpu_cores=16, memory_gb=64, disk_gb=200, gpu_count=2, network_gbps=25.0
-        )
+        resources = ResourceSpec(cpu_cores=16, memory_gb=64, disk_gb=200, gpu_count=2, network_gbps=25.0)
         data_profile = DataProfile(size_gb=50.0, num_files=100, avg_file_size_mb=128.0)
         context = EvaluationContext(
             resources=resources,

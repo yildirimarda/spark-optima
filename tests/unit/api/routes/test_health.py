@@ -129,9 +129,7 @@ class TestReadinessEndpoint:
         assert response.status_code == 405  # Method Not Allowed
 
     @patch("spark_optima.api.routes.health.get_optimization_service")
-    def test_readiness_check_not_ready(
-        self, mock_get_service: MagicMock, client: TestClient
-    ) -> None:
+    def test_readiness_check_not_ready(self, mock_get_service: MagicMock, client: TestClient) -> None:
         """Test readiness check when service is not ready."""
         # Make get_optimization_service raise an AttributeError directly
         mock_get_service.side_effect = AttributeError("Database not available")

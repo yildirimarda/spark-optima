@@ -261,9 +261,7 @@ class DatabricksPlatform(Platform):
         # Filter by storage-optimized preference
         if prefer_storage_optimized:
             if self.cloud_provider == "aws":
-                storage_types = [
-                    w for w in candidates if w.name.startswith("i3") or w.name.startswith("i4i")
-                ]
+                storage_types = [w for w in candidates if w.name.startswith("i3") or w.name.startswith("i4i")]
             else:
                 storage_types = [w for w in candidates if w.name.startswith("Standard_L")]
 
@@ -356,9 +354,7 @@ class DatabricksPlatform(Platform):
 
         config = {
             # Databricks cluster config
-            "spark.databricks.cluster.profile": (
-                "singleNode" if cluster_config.worker_count == 0 else "multiNode"
-            ),
+            "spark.databricks.cluster.profile": ("singleNode" if cluster_config.worker_count == 0 else "multiNode"),
             # Executor configuration
             "spark.executor.instances": str(cluster_config.worker_count * num_executors),
             "spark.executor.cores": str(executor_cores),
@@ -446,9 +442,7 @@ class DatabricksPlatform(Platform):
             "spark_version": cluster_config.spark_version,
             "node_type_id": cluster_config.worker_type.name,
             "driver_node_type_id": (
-                cluster_config.driver_type.name
-                if cluster_config.driver_type
-                else cluster_config.worker_type.name
+                cluster_config.driver_type.name if cluster_config.driver_type else cluster_config.worker_type.name
             ),
             "num_workers": cluster_config.worker_count,
             "autoscale": {

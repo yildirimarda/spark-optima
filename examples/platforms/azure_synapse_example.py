@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Example: Optimize Spark configuration for Azure Synapse."""
 
-import json
 from spark_optima import Optimizer
 from spark_optima.platforms.models import ResourceSpec
+
 
 def main():
     """Run optimization for Azure Synapse platform."""
@@ -44,7 +44,7 @@ def main():
         objectives=["minimize_time"],
     )
 
-    print(f"\n🔧 Optimal Configuration for Azure Synapse:")
+    print("\n🔧 Optimal Configuration for Azure Synapse:")
     print("-" * 70)
     for key in result.configuration:
         if "spark.executor" in key or "spark.driver" in key:
@@ -54,7 +54,7 @@ def main():
     print(f"💰 Estimated Cost: ${result.metadata.get('estimated_cost', 0):.2f}")
 
     # Export for Synapse pipeline
-    print(f"\n📋 Synapse Pipeline Configuration:")
+    print("\n📋 Synapse Pipeline Configuration:")
     print("  Add these to your Synapse Spark pool configuration")
 
 

@@ -170,9 +170,7 @@ class TrialResult:
     ) -> None:
         """Initialize with support for config alias and error message."""
         # Use config if configuration not provided (for test compatibility)
-        actual_config = (
-            configuration if configuration is not None else (config if config is not None else {})
-        )
+        actual_config = configuration if configuration is not None else (config if config is not None else {})
 
         self.trial_number = trial_number
         self.configuration = actual_config
@@ -433,10 +431,7 @@ class BayesianOptimizationResult:
             self.all_trials,
             key=lambda t: t.objective_values.get(objective, float("inf")),
         )
-        return [
-            (t.configuration, t.objective_values.get(objective, float("inf")))
-            for t in sorted_trials[:n]
-        ]
+        return [(t.configuration, t.objective_values.get(objective, float("inf"))) for t in sorted_trials[:n]]
 
     def get_config_by_trial(self, trial_number: int) -> dict[str, Any] | None:
         """Get configuration for a specific trial.

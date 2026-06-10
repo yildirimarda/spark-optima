@@ -92,9 +92,7 @@ class RandomSampler(Sampler):
             raise RuntimeError("PySpark required")
 
         if self.spark is None:
-            self.spark = (
-                SparkSession.builder.appName("SparkOptimaSampler").master("local[*]").getOrCreate()
-            )
+            self.spark = SparkSession.builder.appName("SparkOptimaSampler").master("local[*]").getOrCreate()
             self._own_spark = True
 
         data_path = Path(data_path)
@@ -176,9 +174,7 @@ class StratifiedSampler(Sampler):
             raise ValueError("stratify_column required for stratified sampling")
 
         if self.spark is None:
-            self.spark = (
-                SparkSession.builder.appName("SparkOptimaSampler").master("local[*]").getOrCreate()
-            )
+            self.spark = SparkSession.builder.appName("SparkOptimaSampler").master("local[*]").getOrCreate()
             self._own_spark = True
 
         data_path = Path(data_path)
@@ -268,9 +264,7 @@ class ReservoirSampler(Sampler):
             raise ValueError("Reservoir sampling requires sample_size >= 1 (absolute count)")
 
         if self.spark is None:
-            self.spark = (
-                SparkSession.builder.appName("SparkOptimaSampler").master("local[*]").getOrCreate()
-            )
+            self.spark = SparkSession.builder.appName("SparkOptimaSampler").master("local[*]").getOrCreate()
             self._own_spark = True
 
         data_path = Path(data_path)
