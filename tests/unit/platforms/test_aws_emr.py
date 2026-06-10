@@ -21,6 +21,7 @@ from spark_optima.platforms.models import (
     ResourceSpec,
     WorkerType,
 )
+from spark_optima.platforms.pricing import REGION_MULTIPLIERS
 
 
 class TestAWSEMRPlatformInitialization:
@@ -744,3 +745,67 @@ class TestAWSEMRBoto3Methods:
 
         assert result["status"] == "failed"
         assert result["error_message"] == "Out of memory"
+
+
+class TestAWSEMRPlatformRegionalPricing:
+    """Test cases for regional pricing multipliers in cost estimation."""
+
+    def _get_cluster_config(self) -> ClusterConfig:
+        """Build a cluster config for regional pricing tests."""
+        platform = AWSEMRPlatform()
+        return platform.recommend_config(
+            resources=ResourceSpec(cpu_cores=16, memory_gb=64.0),
+            spark_version="3.5.0",
+        )
+
+    def test_estimate_cost_non_baseline_region_scales_by_multiplier(self) -> None:
+        """Test that a non-baseline region scales cost by the table multiplier."""
+        cluster_config = self._get_cluster_config()
+        multiplier = REGION_MULTIPLIERS["aws_emr"]["sa-east-1"]
+        assert multiplier != 1.0  # Sanity: must be a non-baseline region
+
+        baseline_cost = AWSEMRPlatform(region="us-east-1").estimate_cost(cluster_config, duration_hours=2.0)
+        regional_cost = AWSEMRPlatform(region="sa-east-1").estimate_cost(cluster_config, duration_hours=2.0)
+
+        assert regional_cost["total_cost"] == pytest.approx(baseline_cost["total_cost"] * multiplier)
+
+    def test_estimate_cost_regional_breakdown_stays_consistent(self) -> None:
+        """Test that the master/worker and EC2/surcharge splits still sum to the total."""
+        cluster_config = self._get_cluster_config()
+        platform = AWSEMRPlatform(region="eu-central-1")
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=3.0)
+        breakdown = cost["breakdown"]
+
+        assert cost["total_cost"] == pytest.approx(breakdown["master_cost"] + breakdown["worker_cost"])
+        assert cost["total_cost"] == pytest.approx(breakdown["ec2_cost"] + breakdown["emr_surcharge"])
+
+    def test_estimate_cost_breakdown_contains_region_keys(self) -> None:
+        """Test that the breakdown includes region and region_multiplier."""
+        cluster_config = self._get_cluster_config()
+        platform = AWSEMRPlatform(region="eu-central-1")
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=1.0)
+
+        assert cost["breakdown"]["region"] == "eu-central-1"
+        assert cost["breakdown"]["region_multiplier"] == REGION_MULTIPLIERS["aws_emr"]["eu-central-1"]
+
+    def test_estimate_cost_default_region_is_baseline(self) -> None:
+        """Test that the default region uses the baseline multiplier 1.0."""
+        cluster_config = self._get_cluster_config()
+        platform = AWSEMRPlatform()
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=1.0)
+
+        assert cost["breakdown"]["region"] == "us-east-1"
+        assert cost["breakdown"]["region_multiplier"] == 1.0
+
+    def test_estimate_cost_unknown_region_falls_back_to_baseline(self) -> None:
+        """Test that an unknown region falls back to multiplier 1.0 without raising."""
+        cluster_config = self._get_cluster_config()
+
+        baseline_cost = AWSEMRPlatform().estimate_cost(cluster_config, duration_hours=1.0)
+        unknown_cost = AWSEMRPlatform(region="mars-north-1").estimate_cost(cluster_config, duration_hours=1.0)
+
+        assert unknown_cost["breakdown"]["region_multiplier"] == 1.0
+        assert unknown_cost["total_cost"] == pytest.approx(baseline_cost["total_cost"])

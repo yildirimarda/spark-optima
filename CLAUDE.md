@@ -6,7 +6,7 @@ Spark Optima is an intelligent Apache Spark configuration optimization tool. It 
 
 Key components:
 - `src/spark_optima/core/` — optimizer pipeline (heuristics → Bayesian → result)
-- `src/spark_optima/platforms/` — platform adapters (Local, AWS Glue, AWS EMR, Databricks, Azure Synapse)
+- `src/spark_optima/platforms/` — platform adapters (Local, AWS Glue, AWS EMR, Databricks, Azure Synapse, GCP Dataproc, Spark-on-K8s)
 - `src/spark_optima/analysis/` — AST-based Spark code smell detection
 - `src/spark_optima/api/` — FastAPI REST API
 - `src/spark_optima/cli/` — Typer CLI + interactive wizard
@@ -98,6 +98,9 @@ src/spark_optima/
 │   ├── local.py              # Local mode
 │   ├── aws_glue.py           # AWS Glue
 │   ├── aws_emr.py            # AWS EMR on EC2
+│   ├── gcp_dataproc.py       # Google Cloud Dataproc
+│   ├── spark_k8s.py          # Spark on Kubernetes (Spark Operator)
+│   ├── pricing.py            # Static regional price multipliers
 │   ├── databricks.py         # Databricks
 │   └── azure_synapse.py      # Azure Synapse Analytics
 ├── analysis/

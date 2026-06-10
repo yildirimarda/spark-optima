@@ -865,7 +865,7 @@ sorted_df = df.orderBy("x")
 
 
 class TestSqlStringAnalysis:
-    """Tests for lightweight SQL string analysis in spark.sql() calls."""
+    """Tests for sqlglot-based SQL analysis of spark.sql() string literals."""
 
     def test_sql_select_star(self) -> None:
         """Test detection of SELECT * inside a SQL literal."""
@@ -921,6 +921,153 @@ df = spark.sql("SELECT id, name FROM users JOIN orders ON users.id = orders.user
         result = SmellDetector().analyze_source(code)
         assert result.get_smells_by_type("select_star") == []
         assert result.get_smells_by_type("cartesian_join") == []
+
+    def test_sql_count_star_not_flagged(self) -> None:
+        """Test that COUNT(*) inside a SQL literal is not flagged as select_star."""
+        code = """
+df = spark.sql("SELECT COUNT(*) FROM events")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("select_star") == []
+
+    def test_sql_comma_join_without_where_flagged(self) -> None:
+        """Test that an implicit comma join without WHERE yields cartesian_join."""
+        code = """
+df = spark.sql("SELECT a.id FROM a, b")
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("cartesian_join")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.HIGH
+
+    def test_sql_comma_join_with_where_not_flagged(self) -> None:
+        """Test that a comma join constrained by a WHERE clause is not flagged."""
+        code = """
+df = spark.sql("SELECT a.id FROM a, b WHERE a.id = b.id")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("cartesian_join") == []
+
+    def test_sql_orderby_without_limit(self) -> None:
+        """Test that ORDER BY without LIMIT in SQL yields its own smell type."""
+        code = """
+df = spark.sql("SELECT id FROM t ORDER BY id")
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("sql_orderby_without_limit")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.MEDIUM
+
+    def test_sql_orderby_with_limit_not_flagged(self) -> None:
+        """Test that ORDER BY with LIMIT in SQL is not flagged."""
+        code = """
+df = spark.sql("SELECT id FROM t ORDER BY id LIMIT 10")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("sql_orderby_without_limit") == []
+
+    def test_sql_union_distinct_flagged(self) -> None:
+        """Test that UNION (distinct) in SQL yields a low-severity advisory smell."""
+        code = """
+df = spark.sql("SELECT id FROM a UNION SELECT id FROM b")
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("sql_union_instead_of_union_all")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.LOW
+
+    def test_sql_union_all_not_flagged(self) -> None:
+        """Test that UNION ALL in SQL is not flagged."""
+        code = """
+df = spark.sql("SELECT id FROM a UNION ALL SELECT id FROM b")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("sql_union_instead_of_union_all") == []
+
+    def test_sql_leading_wildcard_like_flagged(self) -> None:
+        """Test that a leading-wildcard LIKE pattern in SQL is flagged."""
+        code = """
+df = spark.sql("SELECT id FROM t WHERE name LIKE '%abc'")
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("sql_leading_wildcard_like")
+        assert len(smells) == 1
+
+    def test_sql_prefix_like_not_flagged(self) -> None:
+        """Test that a prefix LIKE pattern in SQL is not flagged."""
+        code = """
+df = spark.sql("SELECT id FROM t WHERE name LIKE 'abc%'")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("sql_leading_wildcard_like") == []
+
+    def test_sql_in_subquery_flagged(self) -> None:
+        """Test that IN (SELECT ...) in SQL yields a low-severity advisory smell."""
+        code = """
+df = spark.sql("SELECT id FROM orders WHERE user_id IN (SELECT id FROM vips)")
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("sql_in_subquery")
+        assert len(smells) == 1
+        assert smells[0].severity == SeverityLevel.LOW
+
+    def test_sql_in_literal_list_not_flagged(self) -> None:
+        """Test that IN with a literal list in SQL is not flagged."""
+        code = """
+df = spark.sql("SELECT id FROM orders WHERE status IN (1, 2, 3)")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert result.get_smells_by_type("sql_in_subquery") == []
+
+    def test_sql_unparseable_literal_skipped(self) -> None:
+        """Test that an unparseable SQL literal is skipped without crashing."""
+        code = """
+df = spark.sql("this is not valid sql at all ???")
+"""
+        result = SmellDetector().analyze_source(code)
+        sql_types = {
+            "select_star",
+            "cartesian_join",
+            "sql_orderby_without_limit",
+            "sql_union_instead_of_union_all",
+            "sql_leading_wildcard_like",
+            "sql_in_subquery",
+        }
+        assert [s for s in result.smells if s.smell_type in sql_types] == []
+
+    def test_sql_smell_location_is_call_line(self) -> None:
+        """Test that SQL smells carry the location of the spark.sql() call."""
+        code = """
+x = 1
+df = spark.sql("SELECT * FROM events")
+"""
+        result = SmellDetector().analyze_source(code)
+        smells = result.get_smells_by_type("select_star")
+        assert len(smells) == 1
+        assert smells[0].location is not None
+        assert smells[0].location.line == 3
+
+    def test_sql_multiple_statements_in_literal(self) -> None:
+        """Test that all statements of a multi-statement literal are analyzed."""
+        code = """
+df = spark.sql("SELECT * FROM a; SELECT id FROM b UNION SELECT id FROM c")
+"""
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("select_star")) == 1
+        assert len(result.get_smells_by_type("sql_union_instead_of_union_all")) == 1
+
+    def test_sql_multiline_literal_analyzed(self) -> None:
+        """Test that a triple-quoted multiline SQL literal is analyzed."""
+        code = '''
+df = spark.sql("""
+    SELECT *
+    FROM events
+    ORDER BY event_time
+""")
+'''
+        result = SmellDetector().analyze_source(code)
+        assert len(result.get_smells_by_type("select_star")) == 1
+        assert len(result.get_smells_by_type("sql_orderby_without_limit")) == 1
 
 
 class TestUdfDiscrimination:

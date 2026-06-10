@@ -20,10 +20,12 @@ from fastapi import APIRouter, HTTPException, status
 
 from spark_optima.analysis import RecommendationEngine
 from spark_optima.api.dependencies import get_optimization_service
+from spark_optima.api.jobs import get_job_store
 from spark_optima.api.models import (
     AnalysisRequest,
     AnalysisResponse,
     CodeSuggestionResponse,
+    JobSubmittedResponse,
     OptimizationMetadataResponse,
     OptimizationRequest,
     OptimizationResponse,
@@ -67,54 +69,24 @@ def _convert_code_suggestions(suggestions: list[CodeSuggestion]) -> list[CodeSug
     ]
 
 
-@router.post(
-    "/optimize",
-    response_model=OptimizationResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Optimize Spark configuration",
-    description="Run configuration optimization for Spark code.",
-    responses={
-        200: {
-            "description": "Optimization completed successfully",
-            "model": OptimizationResponse,
-        },
-        400: {"description": "Invalid request parameters"},
-        422: {"description": "Validation error"},
-        500: {"description": "Internal server error"},
-    },
-)
-async def optimize(request: OptimizationRequest) -> OptimizationResponse:
-    """Optimize Spark configuration for the provided code.
+def _execute_optimization(request: OptimizationRequest, optimization_id: str) -> OptimizationResponse:
+    """Run the full optimization pipeline synchronously.
 
-    This endpoint runs the full optimization pipeline including:
-    - Code analysis
-    - Heuristic configuration generation
-    - Bayesian optimization (if enabled)
-    - Performance estimation
+    This is the shared implementation behind both the synchronous
+    ``POST /optimize`` endpoint and the asynchronous job-based
+    ``POST /optimize/async`` endpoint.
 
     Args:
         request: Optimization request with code, platform, and parameters.
+        optimization_id: Identifier to attach to the resulting response.
 
     Returns:
-        OptimizationResponse with recommended configuration.
+        OptimizationResponse with the recommended configuration.
 
-    Example:
-        ```python
-        import requests
-
-        response = requests.post("http://localhost:8000/api/v1/optimize", json={
-            "code": "from pyspark.sql import SparkSession...",
-            "platform": "databricks",
-            "spark_version": "3.5.0",
-            "resources": {"cpu_cores": 8, "memory_gb": 32},
-            "data_profile": {"size_gb": 100, "format": "parquet"}
-        })
-        result = response.json()
-        ```
+    Raises:
+        HTTPException: 400 for an unsupported Spark version, 500 when the
+            optimization pipeline fails.
     """
-    optimization_id = _generate_optimization_id()
-    logger.info(f"Starting optimization {optimization_id} for platform {request.platform}")
-
     try:
         # Get optimization service
         service = get_optimization_service()
@@ -141,7 +113,7 @@ async def optimize(request: OptimizationRequest) -> OptimizationResponse:
             data_profile = {
                 "size_gb": request.data_profile.size_gb,
                 "format": request.data_profile.format.value,
-                "schema": request.data_profile.schema,
+                "schema": request.data_profile.schema_info,
                 "compression": request.data_profile.compression,
                 "partitioning": request.data_profile.partitioning,
             }
@@ -229,6 +201,130 @@ async def optimize(request: OptimizationRequest) -> OptimizationResponse:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Optimization failed: {e!s}",
         ) from e
+
+
+@router.post(
+    "/optimize",
+    response_model=OptimizationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Optimize Spark configuration",
+    description="Run configuration optimization for Spark code.",
+    responses={
+        200: {
+            "description": "Optimization completed successfully",
+            "model": OptimizationResponse,
+        },
+        400: {"description": "Invalid request parameters"},
+        422: {"description": "Validation error"},
+        500: {"description": "Internal server error"},
+    },
+)
+async def optimize(request: OptimizationRequest) -> OptimizationResponse:
+    """Optimize Spark configuration for the provided code.
+
+    This endpoint runs the full optimization pipeline including:
+    - Code analysis
+    - Heuristic configuration generation
+    - Bayesian optimization (if enabled)
+    - Performance estimation
+
+    Args:
+        request: Optimization request with code, platform, and parameters.
+
+    Returns:
+        OptimizationResponse with recommended configuration.
+
+    Example:
+        ```python
+        import requests
+
+        response = requests.post("http://localhost:8000/api/v1/optimize", json={
+            "code": "from pyspark.sql import SparkSession...",
+            "platform": "databricks",
+            "spark_version": "3.5.0",
+            "resources": {"cpu_cores": 8, "memory_gb": 32},
+            "data_profile": {"size_gb": 100, "format": "parquet"}
+        })
+        result = response.json()
+        ```
+    """
+    optimization_id = _generate_optimization_id()
+    logger.info(f"Starting optimization {optimization_id} for platform {request.platform}")
+    return _execute_optimization(request, optimization_id)
+
+
+@router.post(
+    "/optimize/async",
+    response_model=JobSubmittedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Submit an asynchronous optimization job",
+    description="Queue an optimization run and return a job id for polling.",
+    responses={
+        202: {
+            "description": "Optimization job accepted",
+            "model": JobSubmittedResponse,
+        },
+        400: {"description": "Invalid request parameters"},
+        422: {"description": "Validation error"},
+    },
+)
+async def optimize_async(request: OptimizationRequest) -> JobSubmittedResponse:
+    """Submit an optimization run as an asynchronous background job.
+
+    The request is validated and queued on a small worker pool; the
+    response returns immediately with a job id. Poll
+    ``GET /api/v1/jobs/{job_id}`` until the job status is "completed"
+    (the full optimization result is included) or "failed".
+
+    Args:
+        request: Optimization request with code, platform, and parameters.
+
+    Returns:
+        JobSubmittedResponse with the job id and polling URL.
+
+    Raises:
+        HTTPException: 400 for an unsupported Spark version.
+
+    Example:
+        ```python
+        import requests
+
+        response = requests.post("http://localhost:8000/api/v1/optimize/async", json={...})
+        job = response.json()
+        status = requests.get(f"http://localhost:8000{job['status_url']}").json()
+        ```
+    """
+    # Validate upfront so obviously broken requests fail fast with 400
+    # instead of being queued and failing later.
+    service = get_optimization_service()
+    if not service.validate_spark_version(request.spark_version):
+        available = service.get_available_spark_versions()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported Spark version: {request.spark_version}. Available: {available}",
+        )
+
+    optimization_id = _generate_optimization_id()
+
+    def _work() -> dict[str, Any]:
+        """Run the optimization and return the response payload."""
+        try:
+            return _execute_optimization(request, optimization_id).model_dump()
+        except HTTPException as exc:
+            # Unwrap HTTP errors into plain messages for the job record
+            raise RuntimeError(str(exc.detail)) from exc
+
+    store = get_job_store()
+    job_id = store.submit(_work, platform=request.platform.value, spark_version=request.spark_version)
+    job = store.get(job_id)
+    current_status = job.status if job is not None else "pending"
+    logger.info(f"Accepted async optimization job {job_id} (optimization {optimization_id})")
+
+    return JobSubmittedResponse(
+        job_id=job_id,
+        status=current_status,
+        status_url=f"/api/v1/jobs/{job_id}",
+    )
 
 
 @router.post(

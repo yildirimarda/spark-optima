@@ -74,7 +74,15 @@ class Optimizer:
             ValueError: If platform or optimization_mode is invalid.
 
         """
-        valid_platforms = ["local", "databricks", "aws_glue", "aws_emr", "azure_synapse"]
+        valid_platforms = [
+            "local",
+            "databricks",
+            "aws_glue",
+            "aws_emr",
+            "azure_synapse",
+            "gcp_dataproc",
+            "kubernetes",
+        ]
         valid_modes = ["simulation", "execution"]
 
         if platform not in valid_platforms:
@@ -471,6 +479,19 @@ class Optimizer:
             )
         elif self.platform == "azure_synapse":
             platform_config["spark_pool_version"] = self.spark_version
+        elif self.platform == "gcp_dataproc":
+            from spark_optima.platforms.gcp_dataproc import GCPDataprocPlatform
+
+            platform_config["dataproc_image_version"] = GCPDataprocPlatform.match_image_version(self.spark_version)
+        elif self.platform == "kubernetes":
+            from spark_optima.platforms.spark_k8s import SparkOnK8sPlatform
+
+            platform_config["kubernetes"] = {
+                "namespace": "default",
+                "container_image_placeholder": SparkOnK8sPlatform.CONTAINER_IMAGE_TEMPLATE.format(
+                    spark_version=self.spark_version,
+                ),
+            }
 
         # Add relevant Spark configurations
         relevant_keys = [

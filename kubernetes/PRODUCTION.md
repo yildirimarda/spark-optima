@@ -216,6 +216,15 @@ kubectl describe ingress -n spark-optima
 kubectl logs -n ingress-nginx deployment/ingress-nginx-controller
 ```
 
+## 🔐 API Security & Async Jobs (v1.2)
+
+The API supports opt-in security via environment variables (set them in the Deployment/Helm values):
+
+- `SPARK_OPTIMA_API_KEYS` — comma-separated API keys; when set, `/api/v1/*` requires an `X-API-Key` header (health probes stay open).
+- `SPARK_OPTIMA_RATE_LIMIT` — requests/minute per client; unset or `0` disables limiting.
+
+**Important:** the async job store (`POST /api/v1/optimize/async` + `GET /api/v1/jobs/{id}`) is **process-local**. With multiple replicas, job polling will randomly hit replicas that don't know the job. Either run a single API replica, enable sticky sessions on the ingress, or keep using the synchronous `POST /api/v1/optimize` endpoint when scaling out.
+
 ## 📞 Support
 
 For issues and questions:

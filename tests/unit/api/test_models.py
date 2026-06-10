@@ -33,11 +33,13 @@ class TestPlatformEnum:
         assert Platform.AWS_EMR == "aws_emr"
         assert Platform.DATABRICKS == "databricks"
         assert Platform.AZURE_SYNAPSE == "azure_synapse"
+        assert Platform.GCP_DATAPROC == "gcp_dataproc"
+        assert Platform.KUBERNETES == "kubernetes"
 
     def test_platform_enum_count(self) -> None:
         """Test that all expected platforms are defined."""
         platforms = list(Platform)
-        assert len(platforms) == 5
+        assert len(platforms) == 7
 
 
 class TestDataFormatEnum:

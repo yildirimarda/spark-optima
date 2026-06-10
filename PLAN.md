@@ -316,14 +316,66 @@ No persistence of optimization results exists; every run is lost. CLI lacks comp
 | I3 | Quality gates: ruff, mypy, bandit, pytest (80%+ coverage), mkdocs build --strict | ✅ Done |
 | I4 | Update CHANGELOG.md | ✅ Done |
 
-### Backlog (v1.2+) — identified but deliberately deferred
+## v1.2 Improvement Plan (2026-06-10)
 
-- **Spark event log / History Server integration** — parse real metrics instead of stubs in `metrics_collector.py` (GC time, CPU utilization, shuffle metrics are currently hardcoded zeros)
-- **Async job-based API** — `POST /optimize/async` + job polling; current endpoints block on long optimizations
-- **API auth + rate limiting** — required before any public deployment
+Scope drawn from the v1.1 backlog. Five parallel workstreams.
+
+### Workstream F — Spark Event Log Analyzer
+
+Real metrics instead of stubs: parse Spark event logs to extract stage/task metrics, GC time, shuffle volumes, spill, and skew indicators, and feed them back into optimization.
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| F1 | `core/execution/event_log.py` | `EventLogParser` for JSON-lines event logs (plain + gzip), `EventLogSummary` with stage/GC/shuffle/skew metrics | ✅ Done |
+| F2 | Context bridge | Map summary onto heuristic context hints (data size, skew factor, large shuffles) | ✅ Done |
+| F3 | `spark-optima analyze-log` CLI | Summary + tuning hints, `--output json` | ✅ Done |
+| F4 | `optimize --event-log` | Enrich the heuristic context from a real past run | ✅ Done |
+| F5 | Replace metrics stubs | `metrics_collector.py` GC/shuffle/CPU stubs populated from event log when available | ✅ Done |
+
+### Workstream G — API: Async Jobs, Auth, Rate Limiting
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| G1 | Async job API | `POST /api/v1/optimize/async` (202 + job id), `GET /api/v1/jobs/{id}`, `GET /api/v1/jobs` — thread-pool execution, in-memory job store | ✅ Done |
+| G2 | API key auth | Optional `X-API-Key` enforcement via `SPARK_OPTIMA_API_KEYS` env (open when unset — current behavior) | ✅ Done |
+| G3 | Rate limiting | In-memory per-client limiter, `SPARK_OPTIMA_RATE_LIMIT` env (req/min, 0 = disabled), 429 responses | ✅ Done |
+
+### Workstream H — New Platform Adapters: Google Dataproc + Spark-on-K8s
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| H1 | `platforms/gcp_dataproc.py` | n2 machine types, Compute Engine + Dataproc fee cost model, optional preemptible workers, `clusters.create` config export | ✅ Done |
+| H2 | `platforms/spark_k8s.py` | Pod size presets, `spark.kubernetes.*` config translation, SparkApplication CRD (Spark Operator) export, user-provided $/vCPU-hour cost | ✅ Done |
+| H3 | Wiring + tests + docs | Registry, optimizer, heuristic `applies_to`, docs pages, mkdocs nav (API enum/metadata wired at integration) | ✅ Done |
+
+### Workstream J — Full SQL Analysis (sqlglot)
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| J1 | `analysis/sql_analyzer.py` | sqlglot (spark dialect) AST analysis of `spark.sql()` literals | ✅ Done |
+| J2 | SQL smells | select *, cartesian (explicit + comma joins), ORDER BY w/o LIMIT, UNION vs UNION ALL, leading-wildcard LIKE, IN (subquery) | ✅ Done |
+| J3 | Integration | Replaces the v1.1 lightweight literal scan; findings flow through existing CodeSmell/recommendation pipeline | ✅ Done |
+
+### Workstream K — Regional Pricing
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| K1 | `platforms/pricing.py` | Curated static region multiplier tables per platform + `get_region_multiplier()` (default 1.0, warn on unknown) | ✅ Done |
+| K2 | Wire `region` into cost | `estimate_cost()` in aws_glue / aws_emr / databricks / azure_synapse applies the multiplier; region + multiplier in breakdown | ✅ Done |
+
+### Integration & Cleanup (v1.2)
+
+| # | Item | Status |
+|---|------|--------|
+| I5 | API Platform enum + PLATFORM_METADATA for dataproc/k8s (after G & H land) | ✅ Done |
+| I6 | CLI help text platform list | ✅ Done |
+| I7 | Quality gates + end-to-end smoke + CHANGELOG | ✅ Done |
+
+### Backlog (v1.3+) — identified but deliberately deferred
+
 - **ML predictor end-to-end** — `MLPerformancePredictor` exists but is not wired into the simulation pipeline
-- **Google Dataproc + Spark-on-K8s platform adapters**
-- **Live/regional pricing** — all cost models are hardcoded single-region; `region` constructor params are accepted but unused
-- **Full SQL analysis** — proper SQL parser for `spark.sql()` strings (v1.1 ships a lightweight literal scan only)
+- **Live pricing APIs** — v1.2 ships static regional multipliers; live AWS/Azure/GCP pricing API integration with caching remains deferred
+- **REST API reference docs page** — endpoints are self-documented via OpenAPI (/docs); a dedicated MkDocs page for endpoints + auth/rate-limit env vars is still missing
+- **Distributed job store** — the async API job store is process-local; multi-replica deployments need Redis/DB-backed jobs or sticky sessions (noted in kubernetes/PRODUCTION.md)
 - **Pareto frontier export/visualization** for multi-objective runs
 - **Performance model improvements** — GC modeling, network bandwidth, task straggler/skew distribution modeling

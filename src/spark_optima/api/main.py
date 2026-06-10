@@ -13,13 +13,14 @@ import logging
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from spark_optima import __version__
 from spark_optima.api.dependencies import APIMetadata
-from spark_optima.api.routes import health_router, optimize_router, platforms_router
+from spark_optima.api.routes import health_router, jobs_router, optimize_router, platforms_router
+from spark_optima.api.security import enforce_api_security
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -89,6 +90,10 @@ def create_app() -> FastAPI:
                 "description": "Spark configuration optimization endpoints",
             },
             {
+                "name": "Jobs",
+                "description": "Asynchronous optimization job status endpoints",
+            },
+            {
                 "name": "Platforms",
                 "description": "Platform information and configuration endpoints",
             },
@@ -104,10 +109,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Include routers
+    # Include routers. Health endpoints stay open; all /api/v1/* routers
+    # enforce the opt-in API-key auth and rate limiting (no-ops unless the
+    # SPARK_OPTIMA_API_KEYS / SPARK_OPTIMA_RATE_LIMIT env vars are set).
+    v1_security = [Depends(enforce_api_security)]
     app.include_router(health_router)
-    app.include_router(optimize_router)
-    app.include_router(platforms_router)
+    app.include_router(optimize_router, dependencies=v1_security)
+    app.include_router(jobs_router, dependencies=v1_security)
+    app.include_router(platforms_router, dependencies=v1_security)
 
     # Add exception handlers
     @app.exception_handler(Exception)

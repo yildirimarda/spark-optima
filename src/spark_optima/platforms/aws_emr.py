@@ -8,6 +8,10 @@ including representative EC2 instance types across the general purpose (m5),
 memory-optimized (r5), and compute-optimized (c5) families, YARN-oriented
 Spark configuration translation, and an EC2 + EMR surcharge cost model.
 
+Cost estimates apply a curated regional price multiplier (relative to the
+us-east-1 baseline) based on the configured region; see
+:mod:`spark_optima.platforms.pricing`.
+
 EMR release to Spark version mapping used by this adapter:
 
 | EMR release  | Spark version |
@@ -32,6 +36,7 @@ from spark_optima.platforms.models import (
     ResourceSpec,
     WorkerType,
 )
+from spark_optima.platforms.pricing import get_region_multiplier
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -46,7 +51,8 @@ class AWSEMRPlatform(Platform):
     - A representative set of EC2 instance types: m5 (general purpose),
       r5 (memory-optimized), and c5 (compute-optimized) families.
     - Pricing as on-demand us-east-1 EC2 hourly price plus the EMR surcharge
-      (modeled as ~25% of the EC2 price).
+      (modeled as ~25% of the EC2 price), scaled by a curated regional price
+      multiplier for the configured region.
     - One master node in addition to the core (worker) nodes.
 
     Note:
@@ -478,7 +484,9 @@ class AWSEMRPlatform(Platform):
     ) -> dict[str, Any]:
         """Estimate cost for an EMR cluster.
 
-        Total cost is (master + workers) x (EC2 price + EMR surcharge) x hours.
+        Total cost is (master + workers) x (EC2 price + EMR surcharge) x hours,
+        scaled by a curated regional price multiplier (relative to the
+        us-east-1 baseline) for the configured region.
 
         Args:
             cluster_config: Cluster configuration.
@@ -491,9 +499,11 @@ class AWSEMRPlatform(Platform):
         worker = cluster_config.worker_type
         master = cluster_config.driver_type or self.get_worker_type(self.DEFAULT_MASTER_INSTANCE_TYPE) or worker
 
-        # Per-node costs already include the EMR surcharge
-        worker_cost = worker.cost.calculate(duration_hours, cluster_config.worker_count)
-        master_cost = master.cost.calculate(duration_hours, cluster_config.driver_count)
+        # Per-node costs already include the EMR surcharge;
+        # the regional multiplier scales the baseline (us-east-1) prices
+        region_multiplier = get_region_multiplier(self.name, self.region)
+        worker_cost = worker.cost.calculate(duration_hours, cluster_config.worker_count) * region_multiplier
+        master_cost = master.cost.calculate(duration_hours, cluster_config.driver_count) * region_multiplier
         total_cost = worker_cost + master_cost
 
         # Split the total into EC2 and EMR surcharge portions
@@ -516,8 +526,11 @@ class AWSEMRPlatform(Platform):
                 "ec2_cost": ec2_cost,
                 "emr_surcharge": emr_surcharge,
                 "emr_surcharge_rate": self.emr_surcharge_rate,
+                "region": self.region,
+                "region_multiplier": region_multiplier,
             },
-            "notes": "Cost estimate based on on-demand EC2 pricing plus the EMR surcharge",
+            "notes": "Cost estimate based on on-demand EC2 pricing plus the EMR surcharge, "
+            "with a curated regional multiplier",
         }
 
     def get_emr_cluster_config(

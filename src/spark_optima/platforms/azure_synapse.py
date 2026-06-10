@@ -6,6 +6,10 @@
 This module provides the AzureSynapsePlatform class for Azure Synapse
 Spark pools, including support for different node sizes and
 autoscale configurations.
+
+Cost estimates apply a curated regional price multiplier (relative to the
+eastus baseline) based on the configured region; see
+:mod:`spark_optima.platforms.pricing`.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from spark_optima.platforms.models import (
     ResourceSpec,
     WorkerType,
 )
+from spark_optima.platforms.pricing import get_region_multiplier
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +36,9 @@ class AzureSynapsePlatform(Platform):
     """Azure Synapse Analytics platform for Spark workloads.
 
     Azure Synapse provides dedicated Spark pools with predefined node sizes.
-    Pricing is based on vCore-hours with autoscale support.
+    Pricing is based on vCore-hours with autoscale support. Cost estimates
+    scale the vCore cost by a curated regional price multiplier (relative
+    to the eastus baseline) for the configured region.
 
     Attributes:
         name: Platform identifier "azure_synapse".
@@ -325,7 +332,11 @@ class AzureSynapsePlatform(Platform):
         cluster_config: ClusterConfig,
         duration_hours: float,
     ) -> dict[str, Any]:
-        """Estimate cost for Azure Synapse Spark pool."""
+        """Estimate cost for Azure Synapse Spark pool.
+
+        The vCore cost is scaled by a curated regional price multiplier
+        (relative to the eastus baseline) for the configured region.
+        """
         worker = cluster_config.worker_type
         spec = self.NODE_SIZES.get(worker.name, {})
         vcores = spec.get("vcores", 8)
@@ -333,8 +344,10 @@ class AzureSynapsePlatform(Platform):
         total_vcores = vcores * cluster_config.worker_count
         vcore_hours = total_vcores * duration_hours
 
-        # Calculate cost
-        cost = worker.cost.calculate(duration_hours, cluster_config.worker_count)
+        # Calculate cost; the regional multiplier scales the baseline
+        # (eastus) vCore rate
+        region_multiplier = get_region_multiplier(self.name, self.region)
+        cost = worker.cost.calculate(duration_hours, cluster_config.worker_count) * region_multiplier
 
         return {
             "platform": self.name,
@@ -348,8 +361,10 @@ class AzureSynapsePlatform(Platform):
                 "node_count": cluster_config.worker_count,
                 "node_size": worker.name,
                 "vcores_per_node": vcores,
+                "region": self.region,
+                "region_multiplier": region_multiplier,
             },
-            "notes": "Cost estimate based on vCore-hour pricing (Pay-as-you-go)",
+            "notes": "Cost estimate based on vCore-hour pricing (Pay-as-you-go) with a curated regional multiplier",
         }
 
     def get_spark_pool_properties(

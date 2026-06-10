@@ -8,6 +8,7 @@ and collecting detailed performance metrics for optimization trials.
 """
 
 from spark_optima.core.execution.engine import ExecutionEngine
+from spark_optima.core.execution.event_log import EventLogParser, EventLogSummary, StageSummary
 from spark_optima.core.execution.metrics_collector import MetricsCollector
 from spark_optima.core.execution.monitor import ExecutionMonitor
 from spark_optima.core.execution.spark_runner import SparkRunner
@@ -17,4 +18,7 @@ __all__ = [
     "SparkRunner",
     "MetricsCollector",
     "ExecutionMonitor",
+    "EventLogParser",
+    "EventLogSummary",
+    "StageSummary",
 ]

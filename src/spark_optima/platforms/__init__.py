@@ -4,8 +4,8 @@
 """Platform adapters for Spark Optima.
 
 This module provides platform-specific implementations for different
-Spark deployment environments including Local, AWS Glue, Databricks,
-and Azure Synapse.
+Spark deployment environments including Local, AWS Glue, AWS EMR,
+Databricks, Azure Synapse, GCP Dataproc, and Spark on Kubernetes.
 
 Example:
     >>> from spark_optima.platforms import LocalPlatform, AWSGluePlatform
@@ -28,6 +28,7 @@ from spark_optima.platforms.aws_glue import AWSGluePlatform
 from spark_optima.platforms.azure_synapse import AzureSynapsePlatform
 from spark_optima.platforms.base import LocalPlatformBase, Platform
 from spark_optima.platforms.databricks import DatabricksPlatform
+from spark_optima.platforms.gcp_dataproc import GCPDataprocPlatform
 from spark_optima.platforms.local import LocalPlatform
 from spark_optima.platforms.models import (
     ClusterConfig,
@@ -37,6 +38,7 @@ from spark_optima.platforms.models import (
     ResourceSpec,
     WorkerType,
 )
+from spark_optima.platforms.spark_k8s import SparkOnK8sPlatform
 
 # Platform registry for dynamic lookup
 PLATFORM_REGISTRY: dict[str, type[Platform]] = {
@@ -45,6 +47,8 @@ PLATFORM_REGISTRY: dict[str, type[Platform]] = {
     "aws_emr": AWSEMRPlatform,
     "databricks": DatabricksPlatform,
     "azure_synapse": AzureSynapsePlatform,
+    "gcp_dataproc": GCPDataprocPlatform,
+    "kubernetes": SparkOnK8sPlatform,
 }
 
 
@@ -52,7 +56,8 @@ def get_platform(name: str, **kwargs: object) -> Platform:
     """Get a platform instance by name.
 
     Args:
-        name: Platform identifier (local, aws_glue, aws_emr, databricks, azure_synapse).
+        name: Platform identifier (local, aws_glue, aws_emr, databricks,
+            azure_synapse, gcp_dataproc, kubernetes).
         **kwargs: Additional arguments passed to platform constructor.
 
     Returns:
@@ -119,6 +124,8 @@ __all__ = [
     "AWSGluePlatform",
     "DatabricksPlatform",
     "AzureSynapsePlatform",
+    "GCPDataprocPlatform",
+    "SparkOnK8sPlatform",
     # Models
     "ClusterConfig",
     "CostModel",

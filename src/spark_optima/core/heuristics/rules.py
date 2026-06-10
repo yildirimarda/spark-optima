@@ -47,6 +47,8 @@ class HeuristicRuleDef:
             "aws_glue",
             "aws_emr",
             "azure_synapse",
+            "gcp_dataproc",
+            "kubernetes",
         ],
     )
     description: str = ""
@@ -565,7 +567,7 @@ class RuleRegistry:
                 formula="true",
                 base_value=True,
                 priority="high",
-                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse", "gcp_dataproc", "kubernetes"],
                 description="Enable for cost optimization and elasticity (cloud platforms)",
             ),
             HeuristicRuleDef(
@@ -583,7 +585,7 @@ class RuleRegistry:
                 formula="2",
                 base_value=2,
                 priority="medium",
-                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse", "gcp_dataproc", "kubernetes"],
                 description="Keep 2 executors minimum for quick startup",
             ),
             HeuristicRuleDef(
@@ -593,7 +595,7 @@ class RuleRegistry:
                 base_value=20,
                 priority="high",
                 depends_on=["total_cores", "executor_cores"],
-                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse", "gcp_dataproc", "kubernetes"],
                 description="Scale with available cluster capacity",
             ),
             HeuristicRuleDef(
@@ -604,7 +606,7 @@ class RuleRegistry:
                 priority="high",
                 depends_on=["data_size_gb"],
                 conditions={"data_size_gb": ">0"},
-                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse", "gcp_dataproc", "kubernetes"],
                 description=(
                     "Data-aware executor ceiling: roughly one executor per 4GB of input, bounded to a sane 10-128 range"
                 ),
@@ -616,7 +618,7 @@ class RuleRegistry:
                 base_value=2,
                 priority="low",
                 depends_on=["spark_dynamicAllocation_minExecutors"],
-                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse", "gcp_dataproc", "kubernetes"],
                 description="Start with minimum executors",
             ),
             HeuristicRuleDef(
@@ -625,7 +627,7 @@ class RuleRegistry:
                 formula="300",
                 base_value="300s",
                 priority="medium",
-                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse", "gcp_dataproc", "kubernetes"],
                 description="5 minutes idle before removal for cost savings",
             ),
             HeuristicRuleDef(
@@ -634,7 +636,7 @@ class RuleRegistry:
                 formula='"infinity"',
                 base_value="infinity",
                 priority="low",
-                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse", "gcp_dataproc", "kubernetes"],
                 description="Keep executors with cached data indefinitely",
             ),
             HeuristicRuleDef(
@@ -643,7 +645,7 @@ class RuleRegistry:
                 formula="5",
                 base_value="5s",
                 priority="medium",
-                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse"],
+                applies_to=["databricks", "aws_glue", "aws_emr", "azure_synapse", "gcp_dataproc", "kubernetes"],
                 description="Wait 5s of backlog before scaling up",
             ),
             HeuristicRuleDef(
@@ -653,6 +655,10 @@ class RuleRegistry:
                 base_value=True,
                 priority="high",
                 conditions={"dynamic_allocation_enabled": True},
+                # Kubernetes is deliberately excluded: there is no external shuffle
+                # service on K8s — spark.dynamicAllocation.shuffleTracking.enabled
+                # replaces it (set by the SparkOnK8sPlatform adapter).
+                applies_to=["local", "databricks", "aws_glue", "aws_emr", "azure_synapse", "gcp_dataproc"],
                 description="Required for dynamic allocation with shuffle",
             ),
         ]

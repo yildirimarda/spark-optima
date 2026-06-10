@@ -17,6 +17,7 @@ from spark_optima.platforms.models import (
     ResourceSpec,
     WorkerType,
 )
+from spark_optima.platforms.pricing import REGION_MULTIPLIERS
 
 
 class TestAWSGluePlatformInitialization:
@@ -697,3 +698,56 @@ class TestAWSGlueBoto3Methods:
         assert result["job_name"] == "test-job"
         assert result["status"] == "completed"
         assert result["execution_time"] == 120.5
+
+
+class TestAWSGluePlatformRegionalPricing:
+    """Test cases for regional pricing multipliers in cost estimation."""
+
+    def _get_cluster_config(self) -> ClusterConfig:
+        """Build a cluster config for regional pricing tests."""
+        platform = AWSGluePlatform()
+        return platform.recommend_config(
+            resources=ResourceSpec(cpu_cores=8, memory_gb=32.0),
+            spark_version="3.5.0",
+        )
+
+    def test_estimate_cost_non_baseline_region_scales_by_multiplier(self) -> None:
+        """Test that a non-baseline region scales cost by the table multiplier."""
+        cluster_config = self._get_cluster_config()
+        multiplier = REGION_MULTIPLIERS["aws_glue"]["eu-west-1"]
+        assert multiplier != 1.0  # Sanity: must be a non-baseline region
+
+        baseline_cost = AWSGluePlatform(region="us-east-1").estimate_cost(cluster_config, duration_hours=2.0)
+        regional_cost = AWSGluePlatform(region="eu-west-1").estimate_cost(cluster_config, duration_hours=2.0)
+
+        assert regional_cost["total_cost"] == pytest.approx(baseline_cost["total_cost"] * multiplier)
+
+    def test_estimate_cost_breakdown_contains_region_keys(self) -> None:
+        """Test that the breakdown includes region and region_multiplier."""
+        cluster_config = self._get_cluster_config()
+        platform = AWSGluePlatform(region="eu-west-1")
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=1.0)
+
+        assert cost["breakdown"]["region"] == "eu-west-1"
+        assert cost["breakdown"]["region_multiplier"] == REGION_MULTIPLIERS["aws_glue"]["eu-west-1"]
+
+    def test_estimate_cost_default_region_is_baseline(self) -> None:
+        """Test that the default region uses the baseline multiplier 1.0."""
+        cluster_config = self._get_cluster_config()
+        platform = AWSGluePlatform()
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=1.0)
+
+        assert cost["breakdown"]["region"] == "us-east-1"
+        assert cost["breakdown"]["region_multiplier"] == 1.0
+
+    def test_estimate_cost_unknown_region_falls_back_to_baseline(self) -> None:
+        """Test that an unknown region falls back to multiplier 1.0 without raising."""
+        cluster_config = self._get_cluster_config()
+
+        baseline_cost = AWSGluePlatform().estimate_cost(cluster_config, duration_hours=1.0)
+        unknown_cost = AWSGluePlatform(region="mars-north-1").estimate_cost(cluster_config, duration_hours=1.0)
+
+        assert unknown_cost["breakdown"]["region_multiplier"] == 1.0
+        assert unknown_cost["total_cost"] == pytest.approx(baseline_cost["total_cost"])

@@ -1405,3 +1405,237 @@ class TestCLIAnalyzeRealFile:
 
         assert result.exit_code == 0
         assert "Syntax error" not in result.output
+
+
+# =============================================================================
+# v1.2 — analyze-log / optimize --event-log (Workstream F)
+# =============================================================================
+
+_GB = 1024**3
+
+
+def _sample_event_log_events() -> list[dict]:
+    """Build synthetic Spark event log events for CLI tests.
+
+    Expected aggregates: 60 s app duration, 3 tasks, skew ratio 10.0,
+    0.25 GB spill, 10 GB input data.
+    """
+
+    def task_end(launch: int, finish: int, run_time: int, spill: int, input_bytes: int) -> dict:
+        return {
+            "Event": "SparkListenerTaskEnd",
+            "Stage ID": 0,
+            "Task End Reason": {"Reason": "Success"},
+            "Task Info": {"Launch Time": launch, "Finish Time": finish, "Failed": False},
+            "Task Metrics": {
+                "Executor Run Time": run_time,
+                "JVM GC Time": 200,
+                "Memory Bytes Spilled": spill,
+                "Disk Bytes Spilled": 0,
+                "Peak Execution Memory": _GB,
+                "Shuffle Read Metrics": {"Remote Bytes Read": _GB, "Local Bytes Read": 0},
+                "Shuffle Write Metrics": {"Shuffle Bytes Written": _GB // 2},
+                "Input Metrics": {"Bytes Read": input_bytes},
+            },
+        }
+
+    return [
+        {"Event": "SparkListenerApplicationStart", "App Name": "cli-test-app", "Timestamp": 1_000_000},
+        {
+            "Event": "SparkListenerEnvironmentUpdate",
+            "Spark Properties": {"spark.executor.memory": "4g"},
+        },
+        {"Event": "SparkListenerExecutorAdded", "Executor ID": "1", "Timestamp": 1_000_000},
+        task_end(1_000_000, 1_001_000, 1000, _GB // 4, 5 * _GB),
+        task_end(1_000_000, 1_001_000, 1000, 0, 5 * _GB),
+        task_end(1_000_000, 1_010_000, 10_000, 0, 0),
+        {
+            "Event": "SparkListenerStageCompleted",
+            "Stage Info": {
+                "Stage ID": 0,
+                "Stage Name": "cli stage",
+                "Number of Tasks": 3,
+                "Submission Time": 1_000_000,
+                "Completion Time": 1_010_000,
+                "Accumulables": [],
+            },
+        },
+        {"Event": "SparkListenerApplicationEnd", "Timestamp": 1_060_000},
+    ]
+
+
+@pytest.fixture
+def sample_event_log(tmp_path: Path) -> Path:
+    """Write a synthetic event log to a temporary file."""
+    log_file = tmp_path / "eventlog"
+    log_file.write_text(
+        "\n".join(json.dumps(event) for event in _sample_event_log_events()) + "\n",
+        encoding="utf-8",
+    )
+    return log_file
+
+
+class TestCLIAnalyzeLogCommand:
+    """Test cases for the analyze-log command."""
+
+    def test_analyze_log_command_help(self, runner: CliRunner) -> None:
+        """Test analyze-log command help."""
+        result = runner.invoke(app, ["analyze-log", "--help"])
+
+        assert result.exit_code == 0
+        assert "event log" in result.output.lower()
+
+    def test_analyze_log_table_output(self, runner: CliRunner, sample_event_log: Path) -> None:
+        """Test analyze-log table output shows summary, stages, and hints."""
+        result = runner.invoke(app, ["analyze-log", "--log-path", str(sample_event_log)])
+
+        assert result.exit_code == 0
+        assert "Spark Event Log Analysis" in result.output
+        assert "cli-test-app" in result.output
+        assert "Run Summary" in result.output
+        assert "Stages by Duration" in result.output
+        assert "Tuning Hints" in result.output
+        # Skew ratio 10.0 should be flagged as severe with AQE advice
+        assert "skew" in result.output.lower()
+
+    def test_analyze_log_json_output(self, runner: CliRunner, sample_event_log: Path) -> None:
+        """Test analyze-log JSON output is valid, complete, and unwrapped."""
+        result = runner.invoke(
+            app,
+            ["analyze-log", "--log-path", str(sample_event_log), "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["app_name"] == "cli-test-app"
+        assert payload["app_duration_seconds"] == pytest.approx(60.0)
+        assert payload["total_tasks"] == 3
+        assert payload["input_data_gb"] == pytest.approx(10.0)
+        assert payload["spark_conf"]["spark.executor.memory"] == "4g"
+        assert payload["tuning_hints"]["skew_factor"] == pytest.approx(10.0)
+        assert payload["tuning_hints"]["spill_detected"] is True
+        assert payload["tuning_hints"]["data_size_gb"] == pytest.approx(10.0)
+
+    def test_analyze_log_missing_file(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test analyze-log errors cleanly for a missing log file."""
+        result = runner.invoke(app, ["analyze-log", "--log-path", str(tmp_path / "missing")])
+
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_analyze_log_requires_log_path(self, runner: CliRunner) -> None:
+        """Test analyze-log requires the --log-path option."""
+        result = runner.invoke(app, ["analyze-log"])
+
+        assert result.exit_code != 0
+
+
+class TestCLIOptimizeEventLog:
+    """Test cases for optimize --event-log enrichment."""
+
+    @staticmethod
+    def _mock_result() -> object:
+        """Build a real OptimizationResult for the mocked optimizer."""
+        from spark_optima.core.result import OptimizationResult
+
+        return OptimizationResult(
+            configuration={"spark.executor.memory": "4g"},
+            estimated_time_minutes=10.0,
+            confidence_score=0.9,
+            platform_specific={"platform": "local"},
+        )
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_optimize_event_log_infers_data_size(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+        sample_event_log: Path,
+    ) -> None:
+        """Test --event-log infers data size and merges tuning hints."""
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = self._mock_result()
+        mock_optimizer.return_value = mock_instance
+
+        result = runner.invoke(
+            app,
+            [
+                "optimize",
+                "--code-path",
+                str(sample_code_file),
+                "--platform",
+                "local",
+                "--event-log",
+                str(sample_event_log),
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Inferred from event log" in result.output
+
+        _, kwargs = mock_instance.optimize.call_args
+        assert kwargs["data_profile"]["size_gb"] == pytest.approx(10.0)
+        assert kwargs["resource_constraints"]["skew_factor"] == pytest.approx(10.0)
+        assert kwargs["resource_constraints"]["spill_detected"] is True
+        assert kwargs["resource_constraints"]["memory_intensive"] is True
+        # data_size_gb must flow through the data profile, not the constraints
+        assert "data_size_gb" not in kwargs["resource_constraints"]
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_optimize_event_log_explicit_data_size_wins(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+        sample_event_log: Path,
+    ) -> None:
+        """Test an explicit --data-size is not overridden by the event log."""
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = self._mock_result()
+        mock_optimizer.return_value = mock_instance
+
+        result = runner.invoke(
+            app,
+            [
+                "optimize",
+                "--code-path",
+                str(sample_code_file),
+                "--platform",
+                "local",
+                "--data-size",
+                "55.0",
+                "--event-log",
+                str(sample_event_log),
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        _, kwargs = mock_instance.optimize.call_args
+        assert kwargs["data_profile"]["size_gb"] == pytest.approx(55.0)
+        # Hints are still merged even when the data size was explicit
+        assert kwargs["resource_constraints"]["skew_factor"] == pytest.approx(10.0)
+
+    def test_optimize_event_log_missing_file(
+        self,
+        runner: CliRunner,
+        sample_code_file: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Test optimize errors cleanly when the event log does not exist."""
+        result = runner.invoke(
+            app,
+            [
+                "optimize",
+                "--code-path",
+                str(sample_code_file),
+                "--platform",
+                "local",
+                "--event-log",
+                str(tmp_path / "missing-log"),
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "not found" in result.output

@@ -582,3 +582,119 @@ class TestMetricsCollectorWithSpark:
         # Should return ExecutionMetrics with success=False
         assert metrics.success is False
         assert "Spark error" in metrics.error_message
+
+
+class TestMetricsCollectorEventLog:
+    """Tests for collecting metrics from a Spark event log (v1.2)."""
+
+    @staticmethod
+    def _write_event_log(directory) -> str:
+        """Write a small synthetic event log and return its path."""
+        import json
+
+        gb = 1024**3
+        events = [
+            {"Event": "SparkListenerApplicationStart", "App Name": "log-app", "Timestamp": 1_000_000},
+            {
+                "Event": "SparkListenerTaskEnd",
+                "Stage ID": 0,
+                "Task End Reason": {"Reason": "Success"},
+                "Task Info": {"Launch Time": 1_000_000, "Finish Time": 1_002_000, "Failed": False},
+                "Task Metrics": {
+                    "Executor Run Time": 2000,
+                    "JVM GC Time": 500,
+                    "Memory Bytes Spilled": 0,
+                    "Disk Bytes Spilled": 0,
+                    "Peak Execution Memory": 2 * gb,
+                    "Shuffle Read Metrics": {"Remote Bytes Read": 2 * gb, "Local Bytes Read": 0},
+                    "Shuffle Write Metrics": {"Shuffle Bytes Written": gb},
+                    "Input Metrics": {"Bytes Read": 4 * gb},
+                },
+            },
+            {
+                "Event": "SparkListenerTaskEnd",
+                "Stage ID": 0,
+                "Task End Reason": {"Reason": "Success"},
+                "Task Info": {"Launch Time": 1_000_000, "Finish Time": 1_004_000, "Failed": False},
+                "Task Metrics": {
+                    "Executor Run Time": 4000,
+                    "JVM GC Time": 500,
+                    "Memory Bytes Spilled": 0,
+                    "Disk Bytes Spilled": 0,
+                    "Peak Execution Memory": gb,
+                    "Shuffle Read Metrics": {"Remote Bytes Read": 0, "Local Bytes Read": 0},
+                    "Shuffle Write Metrics": {"Shuffle Bytes Written": gb},
+                    "Input Metrics": {"Bytes Read": 0},
+                },
+            },
+            {
+                "Event": "SparkListenerStageCompleted",
+                "Stage Info": {
+                    "Stage ID": 0,
+                    "Stage Name": "stage zero",
+                    "Number of Tasks": 2,
+                    "Submission Time": 1_000_000,
+                    "Completion Time": 1_010_000,
+                    "Accumulables": [],
+                },
+            },
+            {"Event": "SparkListenerApplicationEnd", "Timestamp": 1_060_000},
+        ]
+        log_path = directory / "eventlog"
+        log_path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+        return str(log_path)
+
+    def test_collect_from_event_log_populates_stubbed_metrics(self, tmp_path) -> None:
+        """Test GC and shuffle metrics are populated from the log, not zeros."""
+        import pytest
+
+        collector = MetricsCollector()
+        metrics = collector.collect_from_event_log(self._write_event_log(tmp_path))
+
+        assert isinstance(metrics, ExecutionMetrics)
+        assert metrics.success is True
+        assert metrics.execution_time_seconds == pytest.approx(60.0)
+        assert metrics.gc_time_seconds == pytest.approx(1.0)
+        assert metrics.shuffle_read_gb == pytest.approx(2.0)
+        assert metrics.shuffle_write_gb == pytest.approx(2.0)
+        assert metrics.memory_peak_gb == pytest.approx(2.0)
+
+    def test_collect_from_event_log_populates_job_and_stage_summaries(self, tmp_path) -> None:
+        """Test parsed stages flow into the existing summary helpers."""
+        import pytest
+
+        collector = MetricsCollector()
+        metrics = collector.collect_from_event_log(self._write_event_log(tmp_path))
+
+        assert len(metrics.jobs) == 1
+        assert metrics.jobs[0].job_name == "log-app"
+        assert metrics.jobs[0].total_tasks == 2
+        assert metrics.jobs[0].failed_tasks == 0
+
+        stage_summary = collector.get_stage_summary()
+        assert 0 in stage_summary
+        assert stage_summary[0]["stage_name"] == "stage zero"
+        assert stage_summary[0]["num_tasks"] == 2
+
+        shuffle_summary = collector.get_shuffle_summary()
+        assert shuffle_summary["total_read_gb"] == pytest.approx(2.0)
+        assert shuffle_summary["total_write_gb"] == pytest.approx(2.0)
+
+    def test_collect_from_event_log_missing_file(self, tmp_path) -> None:
+        """Test a missing event log raises FileNotFoundError."""
+        import pytest
+
+        collector = MetricsCollector()
+        with pytest.raises(FileNotFoundError):
+            collector.collect_from_event_log(tmp_path / "missing-log")
+
+    def test_collect_from_event_log_does_not_change_live_collection(self, tmp_path) -> None:
+        """Test live collection still returns its defaults after a log import."""
+        collector = MetricsCollector(spark=None)
+        collector.collect_from_event_log(self._write_event_log(tmp_path))
+
+        live_metrics = collector.collect_metrics()
+
+        # Without a Spark session live collection keeps its previous behavior
+        assert live_metrics.gc_time_seconds == 0.0
+        assert live_metrics.shuffle_read_gb == 0.0

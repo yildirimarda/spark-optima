@@ -99,6 +99,10 @@ class RecommendationEngine:
             "withcolumn_in_loop": self._gen_withcolumn_loop_recommendation,
             "select_star": self._gen_select_star_recommendation,
             "orderby_without_limit": self._gen_orderby_limit_recommendation,
+            "sql_orderby_without_limit": self._gen_sql_orderby_limit_recommendation,
+            "sql_union_instead_of_union_all": self._gen_sql_union_all_recommendation,
+            "sql_leading_wildcard_like": self._gen_sql_leading_wildcard_recommendation,
+            "sql_in_subquery": self._gen_sql_in_subquery_recommendation,
         }
 
     def _generate_recommendations(
@@ -700,6 +704,120 @@ class RecommendationEngine:
                 "entirely."
             ),
             effort="low",
+        )
+
+    def _gen_sql_orderby_limit_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for ORDER BY without LIMIT in SQL.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Add LIMIT to ORDER BY queries or drop the global sort",
+            before_code='spark.sql("SELECT user_id, amount FROM sales ORDER BY amount DESC")',
+            after_code="# Option 1: Top-N — Spark rewrites ORDER BY + LIMIT into TakeOrdered\n"
+            'spark.sql("SELECT user_id, amount FROM sales ORDER BY amount DESC LIMIT 100")\n\n'
+            "# Option 2: Drop ORDER BY when downstream consumers do not need row order\n"
+            'spark.sql("SELECT user_id, amount FROM sales")',
+            explanation=(
+                "ORDER BY performs a global sort: the entire dataset is range-partitioned "
+                "and shuffled across the cluster. With a LIMIT, Spark turns the query into "
+                "a cheap TakeOrdered operation that never sorts the full data. If the "
+                "result feeds another transformation that does not depend on order, the "
+                "sort is pure waste and can be removed."
+            ),
+            effort="low",
+        )
+
+    def _gen_sql_union_all_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for UNION vs UNION ALL in SQL.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Use UNION ALL when duplicates are impossible or acceptable",
+            before_code='spark.sql("SELECT id FROM orders_2023 UNION SELECT id FROM orders_2024")',
+            after_code="# UNION ALL skips the deduplication shuffle entirely\n"
+            'spark.sql("SELECT id FROM orders_2023 UNION ALL SELECT id FROM orders_2024")\n\n'
+            "# If you do need distinct rows, keep UNION (it is equivalent to\n"
+            "# UNION ALL followed by a DISTINCT) — the cost is then intentional.",
+            explanation=(
+                "UNION deduplicates the combined result, which requires shuffling and "
+                "aggregating every row across the cluster. When the two sides cannot "
+                "overlap (e.g. disjoint date partitions) or duplicates are acceptable, "
+                "UNION ALL produces the same data without the extra shuffle. This is "
+                "advisory: keep UNION when distinct semantics are genuinely required."
+            ),
+            effort="low",
+        )
+
+    def _gen_sql_leading_wildcard_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for leading-wildcard LIKE patterns in SQL.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Avoid LIKE patterns that start with % or _",
+            before_code="spark.sql(\"SELECT * FROM users WHERE email LIKE '%@example.com'\")",
+            after_code="# Option 1: Anchor the pattern with a literal prefix when possible\n"
+            "spark.sql(\"SELECT * FROM users WHERE email LIKE 'alice@%'\")\n\n"
+            "# Option 2: Precompute a pushdown-friendly column for suffix matches\n"
+            "# (e.g. store the email domain separately and filter on equality)\n"
+            "spark.sql(\"SELECT * FROM users WHERE email_domain = 'example.com'\")",
+            explanation=(
+                "A LIKE pattern with a literal prefix can be rewritten into a range "
+                "filter and pushed down to the data source. A pattern that starts with "
+                "% or _ cannot: every row must be read and matched, so the predicate "
+                "provides no I/O savings. Restructure the data (e.g. a derived column) "
+                "or anchor the pattern to restore pushdown."
+            ),
+            effort="medium",
+        )
+
+    def _gen_sql_in_subquery_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for IN (subquery) predicates in SQL.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Consider EXISTS or an explicit JOIN instead of IN (subquery)",
+            before_code='spark.sql("SELECT * FROM orders WHERE user_id IN (SELECT id FROM vip_users)")',
+            after_code="# Option 1: EXISTS — short-circuits per row and handles NULLs predictably\n"
+            'spark.sql("SELECT * FROM orders o WHERE EXISTS '
+            '(SELECT 1 FROM vip_users v WHERE v.id = o.user_id)")\n\n'
+            "# Option 2: Explicit semi join — clearest plan, easy to broadcast\n"
+            'spark.sql("SELECT o.* FROM orders o LEFT SEMI JOIN vip_users v ON o.user_id = v.id")',
+            explanation=(
+                "Spark usually plans uncorrelated IN-subqueries as semi joins, so this "
+                "is advisory rather than a guaranteed win. EXISTS or an explicit "
+                "LEFT SEMI JOIN make the intent and the plan explicit, and avoid the "
+                "surprising NULL semantics of NOT IN. Compare query plans before and "
+                "after rewriting."
+            ),
+            effort="medium",
         )
 
     def _gen_generic_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
