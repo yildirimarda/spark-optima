@@ -12,9 +12,12 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from spark_optima.core.bayesian.models import TrialMetrics
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +374,59 @@ class MetricsCollector:
         # This would require system-level monitoring
         # Placeholder implementation
         return 0.0
+
+    def collect_from_event_log(self, log_path: str | Path) -> ExecutionMetrics:
+        """Collect execution metrics from a Spark event log file.
+
+        Unlike live collection (collect_metrics), which can only report zeros
+        for GC and shuffle metrics without a SparkListener, this populates
+        those metrics from a completed run's event log. The parsed stages are
+        also stored internally so get_stage_summary() and get_shuffle_summary()
+        reflect the run. Live-collection behavior is unchanged.
+
+        Args:
+            log_path: Path to the Spark event log file (plain or ``.gz``).
+
+        Returns:
+            ExecutionMetrics populated from the event log.
+
+        Raises:
+            FileNotFoundError: If the event log file does not exist.
+
+        """
+        from spark_optima.core.execution.event_log import BYTES_PER_GB, EventLogParser
+
+        summary = EventLogParser(log_path).parse()
+
+        stage_metrics = [
+            StageMetrics(
+                stage_id=stage.stage_id,
+                stage_name=stage.name,
+                num_tasks=stage.num_tasks,
+                executor_run_time=int(stage.duration_seconds * 1000),
+                shuffle_read_bytes=int(stage.shuffle_read_gb * BYTES_PER_GB),
+                shuffle_write_bytes=int(stage.shuffle_write_gb * BYTES_PER_GB),
+            )
+            for stage in summary.stages
+        ]
+        job = JobMetrics(
+            job_id=0,
+            job_name=summary.app_name,
+            stage_metrics=stage_metrics,
+            total_tasks=summary.total_tasks,
+            failed_tasks=summary.failed_tasks,
+        )
+        self._job_metrics = [job]
+
+        return ExecutionMetrics(
+            execution_time_seconds=summary.app_duration_seconds,
+            memory_peak_gb=summary.peak_execution_memory_gb,
+            shuffle_read_gb=summary.total_shuffle_read_gb,
+            shuffle_write_gb=summary.total_shuffle_write_gb,
+            jobs=[job],
+            gc_time_seconds=summary.total_gc_time_seconds,
+            success=True,
+        )
 
     def get_stage_summary(self) -> dict[int, dict[str, Any]]:
         """Get summary of all stages.

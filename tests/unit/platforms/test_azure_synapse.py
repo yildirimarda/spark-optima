@@ -9,12 +9,15 @@ resource management and Synapse-specific configuration.
 
 from __future__ import annotations
 
+import pytest
+
 from spark_optima.platforms.azure_synapse import AzureSynapsePlatform
 from spark_optima.platforms.models import (
     ClusterConfig,
     ResourceSpec,
     WorkerType,
 )
+from spark_optima.platforms.pricing import REGION_MULTIPLIERS
 
 
 class TestAzureSynapsePlatformInitialization:
@@ -562,3 +565,56 @@ class TestAzureSynapsePlatformFormatSparkConfig:
         # Should have 3 lines
         lines = formatted.split("\n")
         assert len(lines) == 3
+
+
+class TestAzureSynapsePlatformRegionalPricing:
+    """Test cases for regional pricing multipliers in cost estimation."""
+
+    def _get_cluster_config(self) -> ClusterConfig:
+        """Build a cluster config for regional pricing tests."""
+        platform = AzureSynapsePlatform()
+        return platform.recommend_config(
+            resources=ResourceSpec(cpu_cores=16, memory_gb=64.0),
+            spark_version="3.4.0",
+        )
+
+    def test_estimate_cost_non_baseline_region_scales_by_multiplier(self) -> None:
+        """Test that a non-baseline region scales cost by the table multiplier."""
+        cluster_config = self._get_cluster_config()
+        multiplier = REGION_MULTIPLIERS["azure_synapse"]["brazilsouth"]
+        assert multiplier != 1.0  # Sanity: must be a non-baseline region
+
+        baseline_cost = AzureSynapsePlatform(region="eastus").estimate_cost(cluster_config, duration_hours=2.0)
+        regional_cost = AzureSynapsePlatform(region="brazilsouth").estimate_cost(cluster_config, duration_hours=2.0)
+
+        assert regional_cost["total_cost"] == pytest.approx(baseline_cost["total_cost"] * multiplier)
+
+    def test_estimate_cost_breakdown_contains_region_keys(self) -> None:
+        """Test that the breakdown includes region and region_multiplier."""
+        cluster_config = self._get_cluster_config()
+        platform = AzureSynapsePlatform(region="westeurope")
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=1.0)
+
+        assert cost["breakdown"]["region"] == "westeurope"
+        assert cost["breakdown"]["region_multiplier"] == REGION_MULTIPLIERS["azure_synapse"]["westeurope"]
+
+    def test_estimate_cost_default_region_is_baseline(self) -> None:
+        """Test that the default region uses the baseline multiplier 1.0."""
+        cluster_config = self._get_cluster_config()
+        platform = AzureSynapsePlatform()
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=1.0)
+
+        assert cost["breakdown"]["region"] == "eastus"
+        assert cost["breakdown"]["region_multiplier"] == 1.0
+
+    def test_estimate_cost_unknown_region_falls_back_to_baseline(self) -> None:
+        """Test that an unknown region falls back to multiplier 1.0 without raising."""
+        cluster_config = self._get_cluster_config()
+
+        baseline_cost = AzureSynapsePlatform().estimate_cost(cluster_config, duration_hours=1.0)
+        unknown_cost = AzureSynapsePlatform(region="atlantis").estimate_cost(cluster_config, duration_hours=1.0)
+
+        assert unknown_cost["breakdown"]["region_multiplier"] == 1.0
+        assert unknown_cost["total_cost"] == pytest.approx(baseline_cost["total_cost"])

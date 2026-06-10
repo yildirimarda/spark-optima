@@ -6,6 +6,10 @@
 This module provides the AWSGluePlatform class for AWS Glue ETL jobs,
 including support for all worker types (G.025X through G.16X) and
 Glue 2.0/3.0/4.0/5.0 versions.
+
+Cost estimates apply a curated regional price multiplier (relative to the
+us-east-1 baseline) based on the configured region; see
+:mod:`spark_optima.platforms.pricing`.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from spark_optima.platforms.models import (
     ResourceSpec,
     WorkerType,
 )
+from spark_optima.platforms.pricing import get_region_multiplier
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -419,6 +424,9 @@ class AWSGluePlatform(Platform):
     ) -> dict[str, Any]:
         """Estimate cost for AWS Glue job.
 
+        The DPU cost is scaled by a curated regional price multiplier
+        (relative to the us-east-1 baseline) for the configured region.
+
         Args:
             cluster_config: Cluster configuration.
             duration_hours: Expected runtime in hours.
@@ -434,8 +442,10 @@ class AWSGluePlatform(Platform):
         total_dpus = dpu_per_worker * cluster_config.worker_count
         dpu_hours = total_dpus * duration_hours
 
-        # AWS Glue bills per second with 1-minute minimum
-        cost = worker.cost.calculate(duration_hours, cluster_config.worker_count)
+        # AWS Glue bills per second with 1-minute minimum;
+        # the regional multiplier scales the baseline (us-east-1) DPU rate
+        region_multiplier = get_region_multiplier(self.name, self.region)
+        cost = worker.cost.calculate(duration_hours, cluster_config.worker_count) * region_multiplier
 
         return {
             "platform": self.name,
@@ -449,8 +459,10 @@ class AWSGluePlatform(Platform):
                 "worker_count": cluster_config.worker_count,
                 "worker_type": worker.name,
                 "dpu_per_worker": dpu_per_worker,
+                "region": self.region,
+                "region_multiplier": region_multiplier,
             },
-            "notes": "Cost estimate based on DPU-hour pricing",
+            "notes": "Cost estimate based on DPU-hour pricing with a curated regional multiplier",
         }
 
     def get_glue_job_properties(

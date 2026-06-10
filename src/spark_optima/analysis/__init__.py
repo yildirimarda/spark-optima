@@ -36,6 +36,10 @@ from spark_optima.analysis.smell_detector import (
     SmellDetector,
     detect_smells,
 )
+from spark_optima.analysis.sql_analyzer import (
+    SQLAnalyzer,
+    SQLFinding,
+)
 
 __all__ = [
     # Models
@@ -53,6 +57,9 @@ __all__ = [
     # Smell Detection
     "SmellDetector",
     "detect_smells",
+    # SQL Analysis
+    "SQLAnalyzer",
+    "SQLFinding",
     # Recommendations
     "RecommendationEngine",
     "analyze_code",

@@ -97,6 +97,8 @@ nav:
       - Local: platforms/local.md
       - AWS Glue: platforms/aws-glue.md
       - AWS EMR: platforms/aws-emr.md
+      - GCP Dataproc: platforms/gcp-dataproc.md
+      - Spark on Kubernetes: platforms/spark-k8s.md
       - Databricks: platforms/databricks.md
       - Azure Synapse: platforms/azure-synapse.md
   - API Reference:

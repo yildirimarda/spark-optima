@@ -405,6 +405,10 @@ class TestNewSmellRecommendations:
             ("orderby_without_limit", SeverityLevel.MEDIUM, "limit"),
             ("pandas_udf_usage", SeverityLevel.MEDIUM, "built-in"),
             ("large_collect", SeverityLevel.MEDIUM, "limit"),
+            ("sql_orderby_without_limit", SeverityLevel.MEDIUM, "LIMIT"),
+            ("sql_union_instead_of_union_all", SeverityLevel.LOW, "UNION ALL"),
+            ("sql_leading_wildcard_like", SeverityLevel.MEDIUM, "LIKE"),
+            ("sql_in_subquery", SeverityLevel.LOW, "EXISTS"),
         ],
     )
     def test_generator_registered_with_code_examples(self, smell_type, severity, expected_text):
@@ -432,6 +436,29 @@ result.show()
         recs = [r for r in result.recommendations if r.smell.smell_type == "cartesian_join"]
         assert len(recs) == 1
         assert "broadcast" in recs[0].after_code or "join" in recs[0].after_code
+
+    def test_sql_findings_end_to_end(self):
+        """Test that SQL anti-patterns in spark.sql() literals yield recommendations."""
+        code = """
+df = spark.sql("SELECT id FROM a UNION SELECT id FROM b ORDER BY id")
+"""
+        result = analyze_code(code)
+        union_recs = [r for r in result.recommendations if r.smell.smell_type == "sql_union_instead_of_union_all"]
+        order_recs = [r for r in result.recommendations if r.smell.smell_type == "sql_orderby_without_limit"]
+        assert len(union_recs) == 1
+        assert "UNION ALL" in union_recs[0].after_code
+        assert len(order_recs) == 1
+        assert "LIMIT" in order_recs[0].after_code
+
+    def test_sql_select_star_end_to_end_uses_existing_generator(self):
+        """Test that SELECT * in SQL flows through the existing select_star generator."""
+        code = """
+df = spark.sql("SELECT * FROM events")
+"""
+        result = analyze_code(code)
+        recs = [r for r in result.recommendations if r.smell.smell_type == "select_star"]
+        assert len(recs) == 1
+        assert "select" in recs[0].after_code.lower()
 
     def test_topandas_end_to_end(self):
         """Test that toPandas code yields a limit/sampling recommendation."""

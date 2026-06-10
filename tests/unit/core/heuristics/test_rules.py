@@ -223,7 +223,7 @@ class TestDataAwareDynamicAllocationRules:
         rule = self._data_aware_rule()
         assert rule.priority == "high"
         assert rule.conditions == {"data_size_gb": ">0"}
-        assert rule.applies_to == ["databricks", "aws_glue", "aws_emr", "azure_synapse"]
+        assert rule.applies_to == ["databricks", "aws_glue", "aws_emr", "azure_synapse", "gcp_dataproc", "kubernetes"]
 
     def test_data_aware_max_executors_formula_scales_with_data(self):
         """Test formula scales with data size: ceil(data_size_gb / 4)."""

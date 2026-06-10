@@ -10,7 +10,7 @@ allowing users to run configuration optimization from the terminal.
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
@@ -19,6 +19,9 @@ from rich.table import Table
 
 from spark_optima import __version__
 from spark_optima.core.optimizer import Optimizer
+
+if TYPE_CHECKING:
+    from spark_optima.core.execution.event_log import EventLogSummary
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +69,7 @@ def optimize(
         "local",
         "--platform",
         "-p",
-        help="Target platform (local, databricks, aws_glue, aws_emr, azure_synapse)",
+        help="Target platform (local, databricks, aws_glue, aws_emr, azure_synapse, gcp_dataproc, kubernetes)",
     ),
     spark_version: str = typer.Option(
         "3.5.0",
@@ -108,6 +111,12 @@ def optimize(
         "--bayesian-trials",
         help="Number of Bayesian optimization trials",
     ),
+    event_log: str = typer.Option(
+        "",
+        "--event-log",
+        "-e",
+        help="Path to a Spark event log from a past run to enrich optimization inputs",
+    ),
 ) -> None:
     """Optimize Spark configuration for the given code.
 
@@ -138,6 +147,25 @@ def optimize(
 
     # Convert to Path
     code_path_obj = Path(actual_code_path)
+
+    # Parse the event log early so inferred values feed the input summary
+    event_summary = None
+    data_size_inferred = False
+    if event_log:
+        from spark_optima.core.execution.event_log import EventLogParser
+
+        try:
+            event_summary = EventLogParser(event_log).parse()
+        except FileNotFoundError:
+            console.print(f"[bold red]Error:[/bold red] event log not found: {event_log}")
+            raise typer.Exit(1) from None
+        except (OSError, ValueError) as e:
+            console.print(f"[bold red]Error parsing event log:[/bold red] {e}")
+            raise typer.Exit(1) from e
+
+        if data_size_gb is None and event_summary.input_data_gb > 0:
+            data_size_gb = round(event_summary.input_data_gb, 2)
+            data_size_inferred = True
 
     # Display header
     console.print(
@@ -179,9 +207,30 @@ def optimize(
         data_profile["size_gb"] = data_size_gb
 
     # Prepare resource constraints
-    resource_constraints = {}
+    resource_constraints: dict[str, Any] = {}
     if max_memory_gb:
         resource_constraints["max_memory_gb"] = max_memory_gb
+
+    # Enrich inputs with tuning hints derived from the event log
+    if event_summary is not None:
+        hints = event_summary.to_tuning_hints()
+        hint_size = hints.pop("data_size_gb", None)
+        if "size_gb" not in data_profile and hint_size:
+            data_profile["size_gb"] = hint_size
+        for key, value in hints.items():
+            resource_constraints.setdefault(key, value)
+
+        notes = []
+        if data_size_inferred:
+            notes.append(f"data size {data_size_gb} GB")
+        notes.append(f"skew factor {hints['skew_factor']:.1f}")
+        if hints["gc_pressure"]:
+            notes.append(f"high GC pressure ({hints['gc_time_fraction']:.0%} of executor time)")
+        if hints["spill_detected"]:
+            notes.append(f"spill detected ({hints['spill_gb']:.2f} GB)")
+        if hints["large_shuffles"]:
+            notes.append(f"large shuffles ({hints['shuffle_total_gb']:.1f} GB)")
+        console.print(f"[dim]Inferred from event log: {', '.join(notes)}[/dim]\n")
 
     # Run optimization
     with console.status("[bold green]Running optimization..."):
@@ -322,6 +371,189 @@ def analyze(
                 line_number = smell.location.line if smell.location is not None else "Unknown"
                 smell_table.add_row(str(line_number), smell.smell_type, str(smell.severity))
             console.print(smell_table)
+
+
+def _build_tuning_advice(summary: "EventLogSummary", hints: dict[str, Any]) -> list[tuple[str, str]]:
+    """Translate event log findings into plain-language tuning advice.
+
+    Args:
+        summary: Parsed event log summary.
+        hints: Tuning hints produced by EventLogSummary.to_tuning_hints().
+
+    Returns:
+        List of (finding, advice) pairs; empty when no bottleneck was found.
+
+    """
+    from spark_optima.core.execution.event_log import SKEW_MODERATE_THRESHOLD, SKEW_SEVERE_THRESHOLD
+
+    advice: list[tuple[str, str]] = []
+    if hints["gc_pressure"]:
+        advice.append(
+            (
+                f"High GC time ({hints['gc_time_fraction']:.0%} of executor run time)",
+                "Increase executor memory or switch to G1GC (-XX:+UseG1GC)",
+            ),
+        )
+    skew = hints["skew_factor"]
+    if skew > SKEW_SEVERE_THRESHOLD:
+        advice.append(
+            (
+                f"Severe task skew (max/median duration ratio {skew:.1f})",
+                "Enable AQE skew join handling (spark.sql.adaptive.skewJoin.enabled=true)",
+            ),
+        )
+    elif skew > SKEW_MODERATE_THRESHOLD:
+        advice.append(
+            (
+                f"Moderate task skew (max/median duration ratio {skew:.1f})",
+                "Review partitioning keys; AQE skew join handling can split hot partitions",
+            ),
+        )
+    if hints["spill_detected"]:
+        advice.append(
+            (
+                f"{hints['spill_gb']:.2f} GB spilled to memory/disk",
+                "Increase executor memory or raise spark.sql.shuffle.partitions to shrink per-task data",
+            ),
+        )
+    if hints["large_shuffles"]:
+        advice.append(
+            (
+                f"Large shuffle volume ({hints['shuffle_total_gb']:.1f} GB)",
+                "Increase shuffle partitions and enable AQE partition coalescing",
+            ),
+        )
+    if summary.failed_tasks > 0:
+        advice.append(
+            (
+                f"{summary.failed_tasks} failed task(s)",
+                "Check executor logs; repeated task failures often indicate memory pressure",
+            ),
+        )
+    return advice
+
+
+@app.command("analyze-log")
+def analyze_log(
+    log_path: str = typer.Option(
+        ...,
+        "--log-path",
+        "-l",
+        help="Path to a Spark event log file (plain JSON lines or .gz)",
+    ),
+    output_format: str = typer.Option(
+        "table",
+        "--output",
+        "-o",
+        help="Output format (table, json)",
+    ),
+    top_stages: int = typer.Option(
+        10,
+        "--top-stages",
+        "-n",
+        help="Number of slowest stages to display in table mode",
+    ),
+) -> None:
+    """Analyze a Spark event log from a past run and derive tuning hints.
+
+    Parses the event log (JSON lines, optionally gzip-compressed) and reports
+    application, stage, GC, shuffle, spill, and skew metrics, together with
+    plain-language tuning advice.
+
+    Example:
+        $ spark-optima analyze-log -l ./application_1234_eventlog
+        $ spark-optima analyze-log -l ./eventlog.gz --output json
+
+    """
+    from spark_optima.core.execution.event_log import EventLogParser
+
+    log_path_obj = Path(log_path)
+    if not log_path_obj.is_file():
+        console.print(f"[bold red]Error:[/bold red] event log not found: {log_path_obj}")
+        raise typer.Exit(1)
+
+    try:
+        summary = EventLogParser(log_path_obj).parse()
+    except (OSError, ValueError) as e:
+        console.print(f"[bold red]Error parsing event log:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    hints = summary.to_tuning_hints()
+
+    if output_format == "json":
+        payload = summary.to_dict()
+        payload["tuning_hints"] = hints
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    # Table mode
+    console.print(
+        Panel.fit(
+            f"[bold blue]📊 Spark Event Log Analysis[/bold blue]\n[dim]{summary.app_name or log_path_obj.name}[/dim]",
+            border_style="blue",
+        ),
+    )
+
+    summary_table = Table(title="Run Summary", show_header=False)
+    summary_table.add_column("Metric", style="cyan")
+    summary_table.add_column("Value", style="green")
+    summary_table.add_row("Application", summary.app_name or "-")
+    summary_table.add_row("Duration", f"{summary.app_duration_seconds:.1f} s")
+    summary_table.add_row("Total Tasks", str(summary.total_tasks))
+    summary_table.add_row("Failed Tasks", str(summary.failed_tasks))
+    summary_table.add_row("Max Executors", str(summary.executor_count_max))
+    summary_table.add_row("Input Data", f"{summary.input_data_gb:.2f} GB")
+    summary_table.add_row("Shuffle Read", f"{summary.total_shuffle_read_gb:.2f} GB")
+    summary_table.add_row("Shuffle Write", f"{summary.total_shuffle_write_gb:.2f} GB")
+    summary_table.add_row("Spill (memory+disk)", f"{summary.total_spill_gb:.2f} GB")
+    summary_table.add_row("Peak Execution Memory", f"{summary.peak_execution_memory_gb:.2f} GB")
+    summary_table.add_row("GC Time", f"{summary.total_gc_time_seconds:.1f} s")
+    summary_table.add_row("GC Fraction", f"{summary.gc_time_fraction:.1%}")
+    summary_table.add_row("Max Skew Ratio", f"{summary.max_skew_ratio:.1f}")
+    summary_table.add_row("Spark Conf Entries", str(len(summary.spark_conf)))
+    if summary.skipped_lines:
+        summary_table.add_row("Skipped Lines", str(summary.skipped_lines))
+    console.print(summary_table)
+
+    if summary.stages:
+        slowest = sorted(summary.stages, key=lambda stage: stage.duration_seconds, reverse=True)[:top_stages]
+        stage_table = Table(title=f"Top {len(slowest)} Stages by Duration")
+        stage_table.add_column("ID", style="cyan", justify="right")
+        stage_table.add_column("Name", style="dim", max_width=40)
+        stage_table.add_column("Duration (s)", justify="right")
+        stage_table.add_column("Tasks", justify="right")
+        stage_table.add_column("Shuffle R (GB)", justify="right")
+        stage_table.add_column("Shuffle W (GB)", justify="right")
+        stage_table.add_column("Spill (GB)", justify="right")
+        stage_table.add_column("Skew", justify="right")
+        for stage in slowest:
+            stage_table.add_row(
+                str(stage.stage_id),
+                stage.name or "-",
+                f"{stage.duration_seconds:.1f}",
+                str(stage.num_tasks),
+                f"{stage.shuffle_read_gb:.2f}",
+                f"{stage.shuffle_write_gb:.2f}",
+                f"{stage.spill_gb:.2f}",
+                f"{stage.skew_ratio:.1f}",
+            )
+        console.print(stage_table)
+
+    advice = _build_tuning_advice(summary, hints)
+    if advice:
+        hints_table = Table(title="Tuning Hints")
+        hints_table.add_column("Finding", style="yellow")
+        hints_table.add_column("Advice", style="green")
+        for finding, recommendation in advice:
+            hints_table.add_row(finding, recommendation)
+        console.print(hints_table)
+    else:
+        console.print("[green]No obvious bottlenecks detected in this run.[/green]")
+
+    console.print(
+        "\n[dim]Tip: feed this run into optimization with: "
+        f"spark-optima optimize -c <code.py> --event-log {log_path_obj}[/dim]",
+    )
 
 
 # Create platforms subgroup

@@ -18,7 +18,9 @@ from spark_optima.platforms import (
     AWSGluePlatform,
     AzureSynapsePlatform,
     DatabricksPlatform,
+    GCPDataprocPlatform,
     LocalPlatform,
+    SparkOnK8sPlatform,
     get_platform,
     get_platform_info,
     list_platforms,
@@ -53,6 +55,16 @@ class TestGetPlatform:
         """Test getting azure_synapse platform."""
         platform = get_platform("azure_synapse")
         assert isinstance(platform, AzureSynapsePlatform)
+
+    def test_get_platform_gcp_dataproc(self) -> None:
+        """Test getting gcp_dataproc platform."""
+        platform = get_platform("gcp_dataproc")
+        assert isinstance(platform, GCPDataprocPlatform)
+
+    def test_get_platform_kubernetes(self) -> None:
+        """Test getting kubernetes platform."""
+        platform = get_platform("kubernetes")
+        assert isinstance(platform, SparkOnK8sPlatform)
 
     def test_get_platform_case_insensitive(self) -> None:
         """Test that platform name is case insensitive."""
@@ -95,12 +107,14 @@ class TestListPlatforms:
         assert "aws_emr" in platforms
         assert "databricks" in platforms
         assert "azure_synapse" in platforms
+        assert "gcp_dataproc" in platforms
+        assert "kubernetes" in platforms
 
     def test_list_platforms_no_unexpected(self) -> None:
         """Test that list_platforms doesn't contain unexpected platforms."""
         platforms = list_platforms()
-        # Should only contain the 5 known platforms
-        assert len(platforms) == 5
+        # Should only contain the 7 known platforms
+        assert len(platforms) == 7
 
     def test_list_platforms_returns_copy(self) -> None:
         """Test that list_platforms returns a copy (not the original)."""
@@ -127,6 +141,8 @@ class TestGetPlatformInfo:
         assert "aws_emr" in info
         assert "databricks" in info
         assert "azure_synapse" in info
+        assert "gcp_dataproc" in info
+        assert "kubernetes" in info
 
     def test_get_platform_info_structure(self) -> None:
         """Test that each platform info has correct structure."""
@@ -196,3 +212,17 @@ class TestGetPlatformInfo:
         synapse_info = info["azure_synapse"]
         assert synapse_info["name"] == "azure_synapse"
         assert isinstance(synapse_info["display_name"], str)
+
+    def test_get_platform_info_gcp_dataproc_platform(self) -> None:
+        """Test get_platform_info for GCP Dataproc platform specifically."""
+        info = get_platform_info()
+        dataproc_info = info["gcp_dataproc"]
+        assert dataproc_info["name"] == "gcp_dataproc"
+        assert isinstance(dataproc_info["display_name"], str)
+
+    def test_get_platform_info_kubernetes_platform(self) -> None:
+        """Test get_platform_info for Spark-on-Kubernetes platform specifically."""
+        info = get_platform_info()
+        k8s_info = info["kubernetes"]
+        assert k8s_info["name"] == "kubernetes"
+        assert isinstance(k8s_info["display_name"], str)

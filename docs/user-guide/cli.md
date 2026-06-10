@@ -389,6 +389,50 @@ spark-optima optimize -c job.py -p local -o json | \
 watch -n 30 'spark-optima optimize -c job.py -p local -d 10 2>&1 | tail -20'
 ```
 
+### `history` - Past Optimizations
+
+Every successful `optimize` run is saved to a local SQLite history (`~/.spark_optima/history.db`, override with `SPARK_OPTIMA_HISTORY_DB`).
+
+```bash
+spark-optima history                 # list recent runs
+spark-optima history --platform aws_emr --limit 10
+spark-optima history --show 3        # full detail of one entry
+spark-optima history --clear --yes   # wipe the history
+```
+
+### `compare` - Diff Two Results
+
+Compare two optimization result JSON files: differing parameters, parameters present in only one result, and metric deltas.
+
+```bash
+spark-optima compare -a result_local.json -b result_emr.json
+spark-optima compare -a a.json -b b.json --output json   # machine-readable diff
+```
+
+### `explain` - Parameter Rationale
+
+Explain why each parameter in a result was chosen, sourced from the heuristic rule descriptions and the Spark parameter database.
+
+```bash
+spark-optima explain -r result.json
+```
+
+### `analyze-log` - Spark Event Log Analysis
+
+Parse a Spark event log (plain or `.gz`) and report real run metrics — GC time, shuffle volumes, spill, task skew — plus tuning hints.
+
+```bash
+spark-optima analyze-log -l /path/to/eventlog          # summary tables
+spark-optima analyze-log -l eventlog.gz -o json        # pipe-safe JSON
+spark-optima analyze-log -l eventlog --top-stages 20
+```
+
+You can also feed a log directly into optimization — data size, skew, and shuffle pressure are inferred from the real run:
+
+```bash
+spark-optima optimize -c job.py -p databricks --event-log /path/to/eventlog
+```
+
 ## Troubleshooting CLI Issues
 
 ### Issue: Command not found
@@ -446,6 +490,10 @@ spark-optima --help
 spark-optima optimize --help
 spark-optima wizard --help
 spark-optima export --help
+spark-optima history --help
+spark-optima compare --help
+spark-optima explain --help
+spark-optima analyze-log --help
 ```
 
 ### Examples

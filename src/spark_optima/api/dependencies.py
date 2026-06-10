@@ -161,6 +161,7 @@ class APIMetadata:
 
     This API provides endpoints for:
     - Optimizing Spark configurations for specific workloads
+    - Submitting optimizations as asynchronous jobs and polling their status
     - Analyzing Spark code for optimization opportunities
     - Getting platform-specific recommendations
 
@@ -170,16 +171,24 @@ class APIMetadata:
     - **Multi-Platform**: Supports Local, AWS Glue, Databricks, Azure Synapse
     - **Code Analysis**: Detects code smells and suggests improvements
     - **Simulation Mode**: Fast performance predictions without running Spark
+    - **Async Jobs**: `POST /api/v1/optimize/async` returns a job id; poll
+      `GET /api/v1/jobs/{job_id}` for status and results
 
     ## Authentication
 
-    Currently, the API does not require authentication. In production,
-    API key or OAuth2 authentication should be implemented.
+    API-key authentication is opt-in. Set the `SPARK_OPTIMA_API_KEYS`
+    environment variable to a comma-separated list of accepted keys to
+    require an `X-API-Key` header on every `/api/v1/*` endpoint (requests
+    without a matching key receive 401). When the variable is unset the
+    API is fully open. Health endpoints never require a key.
 
     ## Rate Limiting
 
-    Production deployments should implement rate limiting to prevent
-    abuse and ensure fair usage.
+    Rate limiting is opt-in. Set the `SPARK_OPTIMA_RATE_LIMIT` environment
+    variable to a requests-per-minute budget to enable a fixed-window
+    limiter on `/api/v1/*` endpoints, keyed by API key when authentication
+    is enabled and by client IP otherwise. Requests over the limit receive
+    429 with a `Retry-After` header. Unset or `0` disables rate limiting.
     """
     VERSION = "0.1.0"
     CONTACT = {
@@ -262,6 +271,32 @@ PLATFORM_METADATA: dict[str, dict[str, Any]] = {
         "display_name": "AWS EMR",
         "description": "Amazon EMR managed Spark clusters on EC2",
         "supported_spark_versions": ["3.3.0", "3.4.1", "3.5.0", "3.5.2"],
+        "supported_features": [
+            "heuristic_optimization",
+            "bayesian_optimization",
+            "code_analysis",
+            "simulation_mode",
+            "cost_estimation",
+            "cluster_autoscaling",
+        ],
+    },
+    "gcp_dataproc": {
+        "display_name": "GCP Dataproc",
+        "description": "Google Cloud Dataproc managed Spark clusters on Compute Engine",
+        "supported_spark_versions": ["3.1.0", "3.1.3", "3.3.0", "3.3.2", "3.5.0", "3.5.3"],
+        "supported_features": [
+            "heuristic_optimization",
+            "bayesian_optimization",
+            "code_analysis",
+            "simulation_mode",
+            "cost_estimation",
+            "cluster_autoscaling",
+        ],
+    },
+    "kubernetes": {
+        "display_name": "Spark on Kubernetes",
+        "description": "Self-hosted Apache Spark running natively on Kubernetes",
+        "supported_spark_versions": ["3.0.0", "3.1.0", "3.2.0", "3.3.0", "3.4.0", "3.5.0", "4.0.0", "4.1.0"],
         "supported_features": [
             "heuristic_optimization",
             "bayesian_optimization",

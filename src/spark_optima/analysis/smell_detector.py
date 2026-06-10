@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import ast
 import logging
-import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -29,6 +28,7 @@ from spark_optima.analysis.parser import (
     ParseResult,
     SparkCodeParser,
 )
+from spark_optima.analysis.sql_analyzer import SQLAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +54,13 @@ _WRITE_CHAIN_METHODS: frozenset[str] = frozenset({"write", "writeStream", "save"
 # Argument representations that select every column (as produced by the parser)
 _STAR_ARGUMENTS: frozenset[str] = frozenset({"'*'", '"*"', "col('*')", 'col("*")'})
 
-# Regexes for lightweight SQL string analysis (case-insensitive)
-_SQL_SELECT_STAR_RE = re.compile(r"\bSELECT\s+\*", re.IGNORECASE)
-_SQL_CROSS_JOIN_RE = re.compile(r"\bCROSS\s+JOIN\b", re.IGNORECASE)
+# SQL findings that overlap with existing DataFrame-API smells keep the
+# established smell types so downstream consumers continue to work; the
+# genuinely new findings flow through under their own sql_* identifiers.
+_SQL_FINDING_TO_SMELL_TYPE: dict[str, str] = {
+    "sql_select_star": "select_star",
+    "sql_cartesian_join": "cartesian_join",
+}
 
 
 class SmellDetector:
@@ -81,6 +85,7 @@ class SmellDetector:
     def __init__(self) -> None:
         """Initialize the smell detector."""
         self.parser = SparkCodeParser()
+        self.sql_analyzer = SQLAnalyzer()
         self.detected_smells: list[CodeSmell] = []
         self._detection_rules: list[Callable[[ParseResult], list[CodeSmell]]] = [
             self._detect_missing_broadcast_hints,
@@ -1017,8 +1022,10 @@ class SmellDetector:
         """Inspect spark.sql() string literals for SQL anti-patterns.
 
         Only plain string literals are analyzed; f-strings, variables, and
-        concatenations are skipped gracefully. Detects ``SELECT *`` (column
-        pruning) and ``CROSS JOIN`` (cartesian product), case-insensitively.
+        concatenations are skipped gracefully. The SQL is parsed with sqlglot
+        (Spark dialect) and checked for SELECT *, cartesian joins, ORDER BY
+        without LIMIT, UNION vs UNION ALL, leading-wildcard LIKE patterns,
+        and IN (subquery) predicates. Unparseable SQL is skipped silently.
 
         Args:
             parse_result: Parse result to analyze.
@@ -1036,44 +1043,21 @@ class SmellDetector:
                 continue
 
             line = op.location.line if op.location else "unknown"
+            findings = self.sql_analyzer.analyze(sql_text)
+            if self.sql_analyzer.parse_failed:
+                logger.debug(f"spark.sql() literal at line {line} could not be parsed; skipping SQL analysis")
+                continue
 
-            if _SQL_SELECT_STAR_RE.search(sql_text):
+            for finding in findings:
+                smell_type = _SQL_FINDING_TO_SMELL_TYPE.get(finding.finding_type, finding.finding_type)
                 smells.append(
                     CodeSmell(
-                        smell_type="select_star",
-                        description=(
-                            f"SELECT * in spark.sql() at line {line} reads every column. "
-                            "List only the columns you need so Spark can prune the rest."
-                        ),
-                        severity=SeverityLevel.LOW,
+                        smell_type=smell_type,
+                        description=(f"{finding.description} In spark.sql() at line {line}: {finding.fragment}"),
+                        severity=finding.severity,
                         location=op.location,
                         affected_operation=op,
-                        impact=(
-                            "SELECT * prevents column pruning, increasing I/O, memory, "
-                            "and shuffle volume — especially costly for wide tables "
-                            "stored in columnar formats like Parquet."
-                        ),
-                    )
-                )
-
-            if _SQL_CROSS_JOIN_RE.search(sql_text):
-                smells.append(
-                    CodeSmell(
-                        smell_type="cartesian_join",
-                        description=(
-                            f"CROSS JOIN in spark.sql() at line {line} produces a "
-                            "cartesian product. Result size is the product of both "
-                            "input row counts."
-                        ),
-                        severity=SeverityLevel.HIGH,
-                        location=op.location,
-                        affected_operation=op,
-                        impact=(
-                            "A cartesian product multiplies the row counts of both "
-                            "inputs, causing massive shuffle volumes, executor OOM, and "
-                            "runaway execution times. Use an equi-join with a key "
-                            "whenever possible."
-                        ),
+                        impact=finding.suggestion,
                     )
                 )
 

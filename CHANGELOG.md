@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (v1.2)
+- **Spark event log analyzer** (`core/execution/event_log.py`): parses real event logs (plain/gzip) into stage/task metrics — GC time, shuffle volumes, spill, task skew. New `spark-optima analyze-log` command and `optimize --event-log` to enrich optimization with real run data. `MetricsCollector.collect_from_event_log()` replaces the previously stubbed GC/shuffle metrics.
+- **Async job API**: `POST /api/v1/optimize/async` (202 + job id), `GET /api/v1/jobs/{id}`, `GET /api/v1/jobs` — thread-pool execution with an in-memory TTL job store.
+- **API security (opt-in)**: `SPARK_OPTIMA_API_KEYS` enables X-API-Key auth on `/api/v1/*`; `SPARK_OPTIMA_RATE_LIMIT` enables per-client rate limiting (429 + Retry-After). Both off by default.
+- **GCP Dataproc platform adapter**: n2-standard/highmem machine types, Compute Engine + $0.01/vCPU-h Dataproc fee cost model, optional preemptible workers, `clusters.create` config export.
+- **Spark-on-Kubernetes platform adapter**: pod size presets, `spark.kubernetes.*` config translation with shuffle-tracking dynamic allocation (no external shuffle service), SparkApplication CRD export (Spark Operator), user-supplied $/vCPU-hour pricing.
+- **Full SQL analysis** via sqlglot (spark dialect): replaces the v1.1 substring scan. Six AST-based findings — select *, cartesian joins (explicit CROSS JOIN and implicit comma joins without WHERE), ORDER BY without LIMIT, UNION vs UNION ALL, leading-wildcard LIKE, IN (subquery).
+- **Regional pricing**: the previously ignored `region` parameter now scales cost estimates via curated static multiplier tables (AWS, Azure, GCP regions); breakdowns include `region` and `region_multiplier`.
+
+### Fixed (v1.2)
+- The sync optimize endpoint passed Pydantic's deprecated `schema` classmethod instead of the `schema_info` field into the data profile.
+- `DatabricksPlatform(cloud_provider="azure")` defaulted to the AWS region name `us-east-1`; the default region is now per-cloud (`eastus` for Azure).
+
 ### Added (v1.1)
 - **AWS EMR platform adapter** (`platforms/aws_emr.py`): m5/r5/c5 worker types, YARN-style config translation, EC2 + EMR surcharge cost model, `run_job_flow` cluster config export, optional boto3 job submission. Registered across CLI, API, optimizer, and heuristic rules.
 - **Optimization history** (`core/history.py`): SQLite-backed persistence of every CLI optimization (auto-saved, best-effort). New `spark-optima history` command (list / `--show` / `--clear`).

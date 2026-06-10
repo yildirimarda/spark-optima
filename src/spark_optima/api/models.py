@@ -23,6 +23,8 @@ class Platform(str, Enum):
     AWS_EMR = "aws_emr"
     DATABRICKS = "databricks"
     AZURE_SYNAPSE = "azure_synapse"
+    GCP_DATAPROC = "gcp_dataproc"
+    KUBERNETES = "kubernetes"
 
 
 class DataFormat(str, Enum):
@@ -302,3 +304,61 @@ class ErrorResponse(BaseModel):
     error: str = Field(..., description="Error code")
     message: str = Field(..., description="Error message")
     details: dict[str, Any] | None = Field(None, description="Error details")
+
+
+class JobSubmittedResponse(BaseModel):
+    """Response returned when an asynchronous optimization job is accepted.
+
+    Attributes:
+        job_id: Unique job identifier for status polling.
+        status: Current job status at submission time.
+        status_url: Relative URL to poll for the job status and result.
+    """
+
+    job_id: str = Field(..., description="Unique job identifier")
+    status: str = Field(..., description="Current job status")
+    status_url: str = Field(..., description="URL to poll for job status")
+
+
+class JobSummaryResponse(BaseModel):
+    """Summary information about an asynchronous optimization job.
+
+    Attributes:
+        job_id: Unique job identifier.
+        status: Job status (pending, running, completed, failed).
+        submitted_at: UTC ISO timestamp when the job was accepted.
+        started_at: UTC ISO timestamp when execution began, if started.
+        finished_at: UTC ISO timestamp when execution ended, if finished.
+        platform: Target platform of the optimization request.
+        spark_version: Spark version of the optimization request.
+    """
+
+    job_id: str = Field(..., description="Unique job identifier")
+    status: str = Field(..., description="Job status")
+    submitted_at: str = Field(..., description="Submission timestamp (UTC ISO)")
+    started_at: str | None = Field(None, description="Start timestamp (UTC ISO)")
+    finished_at: str | None = Field(None, description="Finish timestamp (UTC ISO)")
+    platform: str = Field(..., description="Requested platform")
+    spark_version: str = Field(..., description="Requested Spark version")
+
+
+class JobDetailResponse(JobSummaryResponse):
+    """Full job details including result or error payload.
+
+    Attributes:
+        result: Optimization result payload when the job completed.
+        error: Failure message when the job failed.
+    """
+
+    result: dict[str, Any] | None = Field(None, description="Optimization result when completed")
+    error: str | None = Field(None, description="Error message when failed")
+
+
+class JobListResponse(BaseModel):
+    """Response for the job list endpoint.
+
+    Attributes:
+        jobs: Job summaries ordered newest first.
+    """
+
+    jobs: list[JobSummaryResponse] = Field(default_factory=list, description="Job summaries, newest first")

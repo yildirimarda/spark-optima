@@ -6,6 +6,10 @@
 This module provides the DatabricksPlatform class for Databricks clusters
 on AWS and Azure, including support for various node types and
 DBU (Databricks Unit) pricing.
+
+Cost estimates apply a curated regional price multiplier keyed by the
+compound "<cloud_provider>:<region>" identifier (baselines: aws:us-east-1
+and azure:eastus); see :mod:`spark_optima.platforms.pricing`.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from spark_optima.platforms.models import (
     ResourceSpec,
     WorkerType,
 )
+from spark_optima.platforms.pricing import get_region_multiplier
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +37,9 @@ class DatabricksPlatform(Platform):
 
     Databricks runs on AWS and Azure cloud providers with various
     node instance types. Pricing is based on DBUs (Databricks Units)
-    which vary by instance type and cloud provider.
+    which vary by instance type and cloud provider. Cost estimates scale
+    the DBU cost by a curated regional price multiplier keyed by
+    "<cloud_provider>:<region>" (e.g., "aws:eu-west-1", "azure:westeurope").
 
     Attributes:
         name: Platform identifier "databricks".
@@ -130,14 +137,15 @@ class DatabricksPlatform(Platform):
     def __init__(
         self,
         cloud_provider: str = "aws",
-        region: str = "us-east-1",
+        region: str | None = None,
         dbu_cost_per_hour: float | None = None,
     ) -> None:
         """Initialize the Databricks platform.
 
         Args:
             cloud_provider: "aws" or "azure".
-            region: Cloud region for pricing.
+            region: Cloud region for pricing. Defaults to the cloud's baseline
+                region ("us-east-1" for AWS, "eastus" for Azure).
             dbu_cost_per_hour: Custom DBU cost (uses default if None).
 
         Raises:
@@ -154,7 +162,7 @@ class DatabricksPlatform(Platform):
             raise ValueError(f"Unsupported cloud provider: {cloud_provider}")
 
         self.cloud_provider = cloud_provider
-        self.region = region
+        self.region = region if region is not None else ("us-east-1" if cloud_provider == "aws" else "eastus")
         self.dbu_cost_per_hour = dbu_cost_per_hour or self.DBU_COST_PER_HOUR[cloud_provider]
 
         self._node_types = self.AWS_NODE_TYPES if cloud_provider == "aws" else self.AZURE_NODE_TYPES
@@ -392,7 +400,12 @@ class DatabricksPlatform(Platform):
         cluster_config: ClusterConfig,
         duration_hours: float,
     ) -> dict[str, Any]:
-        """Estimate cost for Databricks cluster."""
+        """Estimate cost for Databricks cluster.
+
+        The DBU cost is scaled by a curated regional price multiplier looked
+        up with the compound "<cloud_provider>:<region>" key (baselines:
+        aws:us-east-1 and azure:eastus).
+        """
         worker = cluster_config.worker_type
         driver = cluster_config.driver_type or worker
 
@@ -407,9 +420,11 @@ class DatabricksPlatform(Platform):
         total_dbu_per_hour = total_worker_dbu + driver_dbu
         total_dbu = total_dbu_per_hour * duration_hours
 
-        # Calculate cost
-        worker_cost = worker.cost.calculate(duration_hours, cluster_config.worker_count)
-        driver_cost = driver.cost.calculate(duration_hours, 1)
+        # Calculate cost; the regional multiplier scales the baseline DBU
+        # rates and is keyed by cloud + region (e.g., "aws:eu-west-1")
+        region_multiplier = get_region_multiplier(self.name, f"{self.cloud_provider}:{self.region}")
+        worker_cost = worker.cost.calculate(duration_hours, cluster_config.worker_count) * region_multiplier
+        driver_cost = driver.cost.calculate(duration_hours, 1) * region_multiplier
         total_cost = worker_cost + driver_cost
 
         return {
@@ -427,8 +442,11 @@ class DatabricksPlatform(Platform):
                 "worker_count": cluster_config.worker_count,
                 "worker_type": worker.name,
                 "driver_type": driver.name,
+                "region": self.region,
+                "region_multiplier": region_multiplier,
             },
-            "notes": "Cost estimate based on DBU pricing (does not include cloud instance costs)",
+            "notes": "Cost estimate based on DBU pricing with a curated regional multiplier "
+            "(does not include cloud instance costs)",
         }
 
     def get_cluster_spec(
