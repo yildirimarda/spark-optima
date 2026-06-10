@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from spark_optima import __version__
 from spark_optima.core.config_engine.database import ConfigDatabase
 from spark_optima.core.optimizer import Optimizer
 
@@ -168,7 +169,8 @@ class APIMetadata:
     ## Key Features
 
     - **Hybrid Optimization**: Combines heuristic rules with Bayesian optimization
-    - **Multi-Platform**: Supports Local, AWS Glue, Databricks, Azure Synapse
+    - **Multi-Platform**: Supports Local, AWS Glue, AWS EMR, Databricks,
+      Azure Synapse, GCP Dataproc, and Spark on Kubernetes
     - **Code Analysis**: Detects code smells and suggests improvements
     - **Simulation Mode**: Fast performance predictions without running Spark
     - **Async Jobs**: `POST /api/v1/optimize/async` returns a job id; poll
@@ -190,7 +192,7 @@ class APIMetadata:
     is enabled and by client IP otherwise. Requests over the limit receive
     429 with a `Retry-After` header. Unset or `0` disables rate limiting.
     """
-    VERSION = "0.1.0"
+    VERSION = __version__
     CONTACT = {
         "name": "Spark Optima Contributors",
         "email": "your-email@example.com",

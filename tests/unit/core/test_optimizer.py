@@ -450,3 +450,108 @@ class TestOptimizerBayesianConfigSetNone:
         # Initializing should fail since config_set will be None
         with pytest.raises(ValueError, match="not available"):
             Optimizer(platform="local", spark_version="3.5.0")
+
+
+class TestOptimizerMultiObjective:
+    """Multi-objective optimization surfaced end-to-end (Workstream N)."""
+
+    @pytest.fixture
+    def sample_code(self, tmp_path: Path) -> Path:
+        """Create a small Spark code file for optimization runs."""
+        code_file = tmp_path / "multi_obj_job.py"
+        code_file.write_text(
+            "from pyspark.sql import SparkSession\n"
+            "spark = SparkSession.builder.getOrCreate()\n"
+            "df = spark.read.parquet('/data/input')\n"
+            "df.groupBy('key').count().write.parquet('/data/output')\n",
+        )
+        return code_file
+
+    def test_multi_objective_run_populates_pareto_metadata(self, sample_code: Path) -> None:
+        """A 2-objective run completes and persists the Pareto frontier in metadata."""
+        optimizer = Optimizer(platform="local", spark_version="3.5.0")
+
+        result = optimizer.optimize(
+            code_path=sample_code,
+            data_profile={"size_gb": 1, "format": "parquet"},
+            use_bayesian=True,
+            bayesian_trials=5,
+            objectives=["minimize_time", "minimize_cost"],
+        )
+
+        # Bayesian must have actually run (no silent heuristic fallback)
+        assert optimizer.get_bayesian_result() is not None
+        assert result.metadata["bayesian_used"] is True
+
+        assert result.metadata["objectives"] == ["minimize_time", "minimize_cost"]
+        frontier = result.metadata["pareto_frontier"]
+        assert isinstance(frontier, list)
+        assert len(frontier) >= 1
+        for point in frontier:
+            assert set(point.keys()) == {"trial_number", "objective_values", "configuration"}
+            assert isinstance(point["trial_number"], int)
+            assert set(point["objective_values"].keys()) == {"minimize_time", "minimize_cost"}
+            assert isinstance(point["configuration"], dict)
+            assert point["configuration"]
+
+    def test_multi_objective_metadata_survives_json_round_trip(self, sample_code: Path) -> None:
+        """Pareto metadata survives result.to_dict() -> JSON -> dict (history/compare path)."""
+        import json
+
+        optimizer = Optimizer(platform="local", spark_version="3.5.0")
+        result = optimizer.optimize(
+            code_path=sample_code,
+            data_profile={"size_gb": 1, "format": "parquet"},
+            use_bayesian=True,
+            bayesian_trials=4,
+            objectives=["minimize_time", "minimize_memory"],
+        )
+
+        round_trip = json.loads(json.dumps(result.to_dict()))
+        assert round_trip["metadata"]["pareto_frontier"] == result.metadata["pareto_frontier"]
+        assert round_trip["metadata"]["objectives"] == ["minimize_time", "minimize_memory"]
+
+    def test_single_objective_run_has_no_pareto_key(self, sample_code: Path) -> None:
+        """Single-objective runs leave metadata unchanged (no pareto_frontier key)."""
+        optimizer = Optimizer(platform="local", spark_version="3.5.0")
+        result = optimizer.optimize(
+            code_path=sample_code,
+            data_profile={"size_gb": 1, "format": "parquet"},
+            use_bayesian=True,
+            bayesian_trials=3,
+        )
+
+        assert "pareto_frontier" not in result.metadata
+
+    def test_pareto_frontier_capped_at_50_points(self) -> None:
+        """The persisted Pareto frontier is capped at MAX_PARETO_POINTS points."""
+        from spark_optima.core.bayesian.models import BayesianOptimizationResult, ParetoPoint
+        from spark_optima.core.optimizer import MAX_PARETO_POINTS
+
+        optimizer = Optimizer(platform="local", spark_version="3.5.0")
+        frontier = [
+            ParetoPoint(
+                trial_number=i,
+                objective_values={"minimize_time": float(i), "minimize_cost": float(100 - i)},
+                configuration={"spark.executor.memory": "4g"},
+            )
+            for i in range(MAX_PARETO_POINTS + 10)
+        ]
+        optimizer._bayesian_result = BayesianOptimizationResult(
+            best_config={"spark.executor.memory": "4g"},
+            pareto_frontier=frontier,
+            metadata={"objectives": ["minimize_time", "minimize_cost"]},
+        )
+
+        result = optimizer._build_result(
+            final_config={"spark.executor.memory": "4g"},
+            heuristic_config={"spark.executor.memory": "4g"},
+            resources=ResourceSpec(cpu_cores=4, memory_gb=16),
+            data_profile=None,
+        )
+
+        persisted = result.metadata["pareto_frontier"]
+        assert len(persisted) == MAX_PARETO_POINTS
+        # First MAX_PARETO_POINTS points are kept, in order
+        assert persisted[0]["trial_number"] == 0
+        assert persisted[-1]["trial_number"] == MAX_PARETO_POINTS - 1

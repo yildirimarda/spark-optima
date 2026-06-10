@@ -223,7 +223,16 @@ The API supports opt-in security via environment variables (set them in the Depl
 - `SPARK_OPTIMA_API_KEYS` — comma-separated API keys; when set, `/api/v1/*` requires an `X-API-Key` header (health probes stay open).
 - `SPARK_OPTIMA_RATE_LIMIT` — requests/minute per client; unset or `0` disables limiting.
 
-**Important:** the async job store (`POST /api/v1/optimize/async` + `GET /api/v1/jobs/{id}`) is **process-local**. With multiple replicas, job polling will randomly hit replicas that don't know the job. Either run a single API replica, enable sticky sessions on the ingress, or keep using the synchronous `POST /api/v1/optimize` endpoint when scaling out.
+**Important:** by default the async job store (`POST /api/v1/optimize/async` + `GET /api/v1/jobs/{id}`) is **in-memory and process-local** — jobs are lost on restart and invisible to other workers/replicas.
+
+For **single-node persistence** (v1.3), switch to the SQLite backend:
+
+- `SPARK_OPTIMA_JOB_STORE` — `memory` (default) or `sqlite`. Any other value logs a warning and falls back to `memory`.
+- `SPARK_OPTIMA_JOB_DB` — SQLite database file path (default `~/.spark_optima/jobs.db`). In Kubernetes, point this at a **PVC-backed path** (e.g. mount a PersistentVolumeClaim at `/data` and set `SPARK_OPTIMA_JOB_DB=/data/jobs.db`), otherwise the database disappears with the pod filesystem.
+
+With the SQLite store, job state survives API restarts and multiple uvicorn workers on the *same node* (same DB file, WAL mode) can see each other's jobs. Note the optimization itself still runs in-process: if the process executing a job dies mid-run, the job is reported as **failed with a "worker lost" error** once it has been unfinished for longer than the staleness window (2 hours).
+
+**Multi-replica deployments:** the SQLite store does **not** make the async API safe across replicas — each pod has its own filesystem (or would contend on a shared file over network storage). With multiple replicas, either enable sticky sessions on the ingress, run a single API replica, or keep using the synchronous `POST /api/v1/optimize` endpoint; a true external job store (e.g. Redis/database-backed) remains future work.
 
 ## 📞 Support
 

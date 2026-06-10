@@ -10,12 +10,18 @@ that learns from historical trial data to improve estimation accuracy.
 from __future__ import annotations
 
 import logging
+import math
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import joblib
 import numpy as np
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +36,196 @@ try:
 except ImportError:
     SKLEARN_AVAILABLE = False
     logger.warning("scikit-learn not available. ML prediction disabled.")
+
+#: Environment variable that overrides the default model persistence directory.
+MODEL_DIR_ENV_VAR = "SPARK_OPTIMA_MODEL_DIR"
+
+#: Fixed feature order for the online surrogate model.
+#: Training and prediction always use this exact order so they can never misalign.
+SURROGATE_FEATURE_NAMES: tuple[str, ...] = (
+    "executor_memory_gb",
+    "driver_memory_gb",
+    "executor_memory_overhead_gb",
+    "executor_cores",
+    "shuffle_partitions",
+    "default_parallelism",
+    "aqe_enabled",
+    "dynamic_allocation_enabled",
+    "data_size_gb",
+)
+
+#: Stable defaults used when a parameter is missing from the configuration or data profile.
+SURROGATE_FEATURE_DEFAULTS: dict[str, float] = {
+    "executor_memory_gb": 4.0,
+    "driver_memory_gb": 2.0,
+    "executor_memory_overhead_gb": 0.4,
+    "executor_cores": 4.0,
+    "shuffle_partitions": 200.0,
+    "default_parallelism": 200.0,
+    "aqe_enabled": 1.0,
+    "dynamic_allocation_enabled": 0.0,
+    "data_size_gb": 10.0,
+}
+
+_MEMORY_PATTERN = re.compile(r"^([\d.]+)\s*([kmgt]?)\s*b?$")
+_MEMORY_MULTIPLIERS = {"k": 1 / (1024 * 1024), "m": 1 / 1024, "g": 1.0, "t": 1024.0}
+
+
+def parse_memory_gb(value: str | int | float, default: float = 4.0) -> float:
+    """Parse a Spark memory value (e.g. ``4g``, ``512m``, ``1t``) to gigabytes.
+
+    Args:
+        value: Memory value as a Spark size string or a plain number (already GB).
+        default: Value returned when the string cannot be parsed.
+
+    Returns:
+        Memory in gigabytes.
+
+    """
+    if isinstance(value, int | float):
+        return float(value)
+
+    match = _MEMORY_PATTERN.match(str(value).strip().lower())
+    if not match:
+        return default
+
+    number = float(match.group(1))
+    unit = match.group(2)
+    return number * _MEMORY_MULTIPLIERS.get(unit, 1.0)
+
+
+def _parse_bool_flag(value: Any, default: bool) -> float:
+    """Parse a Spark boolean config value to 0.0/1.0 with a stable default.
+
+    Args:
+        value: Raw config value (bool, string, or None).
+        default: Default used when the value is missing or unrecognized.
+
+    Returns:
+        1.0 for true, 0.0 for false.
+
+    """
+    if value is None:
+        return 1.0 if default else 0.0
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes"):
+        return 1.0
+    if text in ("false", "0", "no"):
+        return 0.0
+    return 1.0 if default else 0.0
+
+
+def _parse_numeric(value: Any, default: float) -> float:
+    """Parse a numeric config value with a stable default for missing or invalid input.
+
+    Args:
+        value: Raw config value.
+        default: Default used when the value is missing or invalid.
+
+    Returns:
+        Parsed finite float or the default.
+
+    """
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if math.isfinite(parsed) else default
+
+
+def extract_features(
+    config: dict[str, Any],
+    data_profile: dict[str, Any] | None = None,
+) -> list[float]:
+    """Map a Spark configuration and data profile onto a fixed-order numeric feature vector.
+
+    The output order is exactly ``SURROGATE_FEATURE_NAMES`` so that training and
+    prediction can never misalign. Missing parameters fall back to the stable
+    defaults in ``SURROGATE_FEATURE_DEFAULTS``. This function is deterministic and
+    has no scikit-learn dependency.
+
+    Args:
+        config: Spark configuration dictionary (``spark.*`` keys).
+        data_profile: Optional data characteristics (uses ``size_gb``).
+
+    Returns:
+        Feature vector as a list of floats, one entry per ``SURROGATE_FEATURE_NAMES`` name.
+
+    """
+    profile = data_profile or {}
+    defaults = SURROGATE_FEATURE_DEFAULTS
+
+    values: dict[str, float] = {
+        "executor_memory_gb": parse_memory_gb(
+            config.get("spark.executor.memory", defaults["executor_memory_gb"]),
+            default=defaults["executor_memory_gb"],
+        ),
+        "driver_memory_gb": parse_memory_gb(
+            config.get("spark.driver.memory", defaults["driver_memory_gb"]),
+            default=defaults["driver_memory_gb"],
+        ),
+        "executor_memory_overhead_gb": parse_memory_gb(
+            config.get("spark.executor.memoryOverhead", defaults["executor_memory_overhead_gb"]),
+            default=defaults["executor_memory_overhead_gb"],
+        ),
+        "executor_cores": _parse_numeric(config.get("spark.executor.cores"), defaults["executor_cores"]),
+        "shuffle_partitions": _parse_numeric(
+            config.get("spark.sql.shuffle.partitions"),
+            defaults["shuffle_partitions"],
+        ),
+        "default_parallelism": _parse_numeric(
+            config.get("spark.default.parallelism"),
+            defaults["default_parallelism"],
+        ),
+        "aqe_enabled": _parse_bool_flag(config.get("spark.sql.adaptive.enabled"), default=True),
+        "dynamic_allocation_enabled": _parse_bool_flag(
+            config.get("spark.dynamicAllocation.enabled"),
+            default=False,
+        ),
+        "data_size_gb": _parse_numeric(profile.get("size_gb"), defaults["data_size_gb"]),
+    }
+
+    return [values[name] for name in SURROGATE_FEATURE_NAMES]
+
+
+def _sanitize_token(token: str) -> str:
+    """Sanitize a platform or version token for use in a file name.
+
+    Args:
+        token: Raw token string.
+
+    Returns:
+        Token with unsafe characters replaced by hyphens (never empty).
+
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", token.strip())
+    return cleaned or "default"
+
+
+def default_model_path(platform: str = "local", spark_version: str = "default") -> Path:
+    """Build the default persistence path for a surrogate model.
+
+    The directory defaults to ``~/.spark_optima/models`` and can be overridden via
+    the ``SPARK_OPTIMA_MODEL_DIR`` environment variable. The file name is derived
+    from the platform and Spark version so models trained for different targets
+    never collide.
+
+    Args:
+        platform: Platform identifier (e.g. ``local``, ``aws_emr``).
+        spark_version: Spark version string (e.g. ``3.5``).
+
+    Returns:
+        Path to the model file (the file may not exist yet).
+
+    """
+    env_dir = os.environ.get(MODEL_DIR_ENV_VAR)
+    base_dir = Path(env_dir).expanduser() if env_dir else Path.home() / ".spark_optima" / "models"
+    return base_dir / f"surrogate_{_sanitize_token(platform)}_{_sanitize_token(spark_version)}.joblib"
 
 
 @dataclass
@@ -83,16 +279,26 @@ class MLPerformancePredictor:
         "compression_encoded",
     ]
 
+    # Maximum number of online samples kept in memory (oldest are dropped first)
+    MAX_ONLINE_SAMPLES = 5000
+
+    # Persistence payload format version
+    PERSISTENCE_FORMAT_VERSION = 1
+
     def __init__(
         self,
         model_path: str | Path | None = None,
         use_ensemble: bool = True,
+        platform: str = "local",
+        spark_version: str = "default",
     ) -> None:
         """Initialize the ML predictor.
 
         Args:
             model_path: Path to saved model file (optional).
             use_ensemble: Whether to use ensemble of models.
+            platform: Platform identifier used for default persistence naming.
+            spark_version: Spark version used for default persistence naming.
 
         """
         if not SKLEARN_AVAILABLE:
@@ -102,6 +308,8 @@ class MLPerformancePredictor:
 
         self.model_path = Path(model_path) if model_path else None
         self.use_ensemble = use_ensemble
+        self.platform = platform
+        self.spark_version = spark_version
 
         # Initialize models
         self._time_model: Any = None
@@ -115,6 +323,14 @@ class MLPerformancePredictor:
 
         # Feature statistics for normalization
         self._feature_stats: dict[str, dict[str, float]] = {}
+
+        # Online surrogate state: samples accumulated across trials within a run
+        self._online_model: Any = None
+        self._online_r2: float = 0.0
+        self._online_trained_samples: int = 0
+        self._online_features: list[list[float]] = []
+        self._online_targets: list[float] = []
+        self._online_measured: list[bool] = []
 
         # Load existing model if available
         if self.model_path and self.model_path.exists():
@@ -445,28 +661,7 @@ class MLPerformancePredictor:
             Memory in GB.
 
         """
-        if isinstance(value, int | float):
-            return float(value)
-
-        import re
-
-        value = str(value).strip().lower()
-        match = re.match(r"^([\d.]+)\s*([kmgt]?)\s*b?$", value)
-
-        if not match:
-            return 4.0
-
-        number = float(match.group(1))
-        unit = match.group(2)
-
-        multipliers = {
-            "k": 1 / (1024 * 1024),
-            "m": 1 / 1024,
-            "g": 1,
-            "t": 1024,
-        }
-
-        return number * multipliers.get(unit, 1)
+        return parse_memory_gb(value, default=4.0)
 
     def _calculate_feature_importance(self) -> None:
         """Calculate feature importance from trained model."""
@@ -573,3 +768,274 @@ class MLPerformancePredictor:
             "feature_count": len(self.FEATURE_NAMES),
             "feature_names": self.FEATURE_NAMES,
         }
+
+    # ------------------------------------------------------------------
+    # Online surrogate API (v1.3, Workstream L)
+    # ------------------------------------------------------------------
+
+    @property
+    def sample_count(self) -> int:
+        """Number of online samples accumulated so far."""
+        return len(self._online_targets)
+
+    @property
+    def measured_sample_count(self) -> int:
+        """Number of online samples that come from real measured runs."""
+        return sum(1 for measured in self._online_measured if measured)
+
+    @property
+    def measured_fraction(self) -> float:
+        """Fraction of online samples backed by real measurements (0.0-1.0)."""
+        total = self.sample_count
+        return self.measured_sample_count / total if total else 0.0
+
+    @property
+    def online_r2(self) -> float:
+        """Hold-out validation R² from the last online training (0.0 when untrained)."""
+        return self._online_r2
+
+    @property
+    def online_trained_samples(self) -> int:
+        """Sample count at the time of the last online training (0 when untrained)."""
+        return self._online_trained_samples
+
+    def has_online_model(self) -> bool:
+        """Check whether the online surrogate model has been trained.
+
+        Returns:
+            True if an online model is available for prediction.
+
+        """
+        return self._online_model is not None
+
+    def add_sample(
+        self,
+        features: Sequence[float],
+        target_time: float,
+        measured: bool = False,
+    ) -> bool:
+        """Add an online training sample.
+
+        Args:
+            features: Feature vector in ``SURROGATE_FEATURE_NAMES`` order.
+            target_time: Execution time in seconds (analytical or measured).
+            measured: True when the target comes from a real measured run.
+
+        Returns:
+            True if the sample was accepted, False if it was rejected as invalid.
+
+        """
+        try:
+            feature_list = [float(value) for value in features]
+        except (TypeError, ValueError):
+            logger.debug("Rejected online sample: features are not numeric")
+            return False
+
+        if len(feature_list) != len(SURROGATE_FEATURE_NAMES):
+            logger.debug(
+                f"Rejected online sample: expected {len(SURROGATE_FEATURE_NAMES)} features, got {len(feature_list)}",
+            )
+            return False
+        if not all(math.isfinite(value) for value in feature_list):
+            logger.debug("Rejected online sample: non-finite feature value")
+            return False
+        if not isinstance(target_time, int | float) or not math.isfinite(target_time) or target_time <= 0:
+            logger.debug("Rejected online sample: invalid target time")
+            return False
+
+        self._online_features.append(feature_list)
+        self._online_targets.append(float(target_time))
+        self._online_measured.append(measured)
+
+        # Bound memory usage by dropping the oldest samples
+        while len(self._online_targets) > self.MAX_ONLINE_SAMPLES:
+            self._online_features.pop(0)
+            self._online_targets.pop(0)
+            self._online_measured.pop(0)
+
+        return True
+
+    def train_online(
+        self,
+        min_samples: int = 20,
+        validation_split: float = 0.25,
+    ) -> dict[str, Any]:
+        """Train the online surrogate model on accumulated samples.
+
+        A hold-out split is used to compute a validation R² that callers can use
+        to gate how much weight the surrogate prediction receives. The final
+        model is refit on all samples after validation.
+
+        Args:
+            min_samples: Minimum number of samples required for training.
+            validation_split: Fraction of samples held out for validation.
+
+        Returns:
+            Dictionary with ``trained``, ``r2``, ``n_samples`` and (when trained)
+            ``measured_fraction`` keys.
+
+        """
+        n_samples = self.sample_count
+        if n_samples < max(min_samples, 4):
+            logger.debug(f"Online training skipped: {n_samples} samples < {min_samples} required")
+            return {"trained": False, "r2": 0.0, "n_samples": n_samples, "reason": "insufficient_samples"}
+
+        x = np.asarray(self._online_features, dtype=float)
+        y = np.asarray(self._online_targets, dtype=float)
+
+        x_train, x_val, y_train, y_val = train_test_split(
+            x,
+            y,
+            test_size=validation_split,
+            random_state=42,
+        )
+
+        model = RandomForestRegressor(n_estimators=50, max_depth=12, random_state=42, n_jobs=1)
+        model.fit(x_train, y_train)
+
+        if len(y_val) >= 2 and float(np.std(y_val)) > 0.0:
+            r2 = float(r2_score(y_val, model.predict(x_val)))
+            if not math.isfinite(r2):
+                r2 = 0.0
+        else:
+            # R² is undefined for constant or single-point validation targets
+            r2 = 0.0
+
+        # Refit on the full sample set so the deployed model uses all data
+        model.fit(x, y)
+
+        self._online_model = model
+        self._online_r2 = r2
+        self._online_trained_samples = n_samples
+
+        logger.debug(
+            f"Online surrogate trained on {n_samples} samples "
+            f"({self.measured_sample_count} measured), validation R²={r2:.3f}",
+        )
+
+        return {
+            "trained": True,
+            "r2": r2,
+            "n_samples": n_samples,
+            "measured_fraction": self.measured_fraction,
+        }
+
+    def predict_online(self, features: Sequence[float]) -> float | None:
+        """Predict execution time with the online surrogate model.
+
+        Args:
+            features: Feature vector in ``SURROGATE_FEATURE_NAMES`` order.
+
+        Returns:
+            Predicted execution time in seconds, or None when no model is
+            available or the prediction is invalid.
+
+        """
+        if self._online_model is None:
+            return None
+
+        try:
+            x = np.asarray([list(features)], dtype=float)
+            prediction = float(self._online_model.predict(x)[0])
+        except (ValueError, TypeError, AttributeError) as exc:
+            logger.warning(f"Online surrogate prediction failed: {exc}")
+            return None
+
+        if not math.isfinite(prediction) or prediction <= 0:
+            return None
+        return prediction
+
+    # ------------------------------------------------------------------
+    # Persistence (v1.3, Workstream L)
+    # ------------------------------------------------------------------
+
+    def save(self, path: str | Path | None = None) -> Path:
+        """Save the predictor state (online surrogate + legacy models) via joblib.
+
+        Args:
+            path: Target file path. Defaults to ``default_model_path()`` derived
+                from this predictor's platform and Spark version (overridable via
+                the ``SPARK_OPTIMA_MODEL_DIR`` environment variable).
+
+        Returns:
+            The path the model was saved to.
+
+        """
+        target = Path(path) if path is not None else default_model_path(self.platform, self.spark_version)
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        payload = {
+            "format_version": self.PERSISTENCE_FORMAT_VERSION,
+            "feature_names": list(SURROGATE_FEATURE_NAMES),
+            # Online surrogate state
+            "online_model": self._online_model,
+            "online_r2": self._online_r2,
+            "online_trained_samples": self._online_trained_samples,
+            "online_features": self._online_features,
+            "online_targets": self._online_targets,
+            "online_measured": self._online_measured,
+            # Legacy batch-trained state
+            "time_model": self._time_model,
+            "memory_model": self._memory_model,
+            "scaler": self._scaler,
+            "feature_importance": getattr(self, "_feature_importance", {}),
+            "model_version": self._model_version,
+            "training_samples": self._training_samples,
+        }
+
+        joblib.dump(payload, target)
+        logger.info(f"Predictor state saved to {target}")
+        return target
+
+    def load(self, path: str | Path | None = None) -> bool:
+        """Load predictor state previously written by ``save()``.
+
+        Args:
+            path: Source file path. Defaults to ``default_model_path()`` derived
+                from this predictor's platform and Spark version.
+
+        Returns:
+            True if the state was loaded, False when the file is missing,
+            corrupt, or was saved with an incompatible feature schema.
+
+        """
+        source = Path(path) if path is not None else default_model_path(self.platform, self.spark_version)
+        if not source.exists():
+            logger.debug(f"No saved predictor state at {source}")
+            return False
+
+        try:
+            payload = joblib.load(source)
+        except (FileNotFoundError, ValueError, OSError, KeyError, AttributeError, ImportError, EOFError) as exc:
+            logger.error(f"Failed to load predictor state from {source}: {exc}")
+            return False
+
+        if not isinstance(payload, dict):
+            logger.warning(f"Ignoring saved predictor state at {source}: unexpected payload type")
+            return False
+
+        if payload.get("feature_names") != list(SURROGATE_FEATURE_NAMES):
+            logger.warning(f"Ignoring saved predictor state at {source}: feature schema mismatch")
+            return False
+
+        self._online_model = payload.get("online_model")
+        self._online_r2 = float(payload.get("online_r2", 0.0))
+        self._online_trained_samples = int(payload.get("online_trained_samples", 0))
+        self._online_features = list(payload.get("online_features", []))
+        self._online_targets = list(payload.get("online_targets", []))
+        self._online_measured = list(payload.get("online_measured", []))
+
+        # Restore legacy batch-trained state when present
+        if payload.get("time_model") is not None:
+            self._time_model = payload["time_model"]
+            self._memory_model = payload.get("memory_model")
+            self._scaler = payload.get("scaler")
+            self._feature_importance = payload.get("feature_importance", {})
+            self._model_version = payload.get("model_version", "1.0")
+            self._training_samples = payload.get("training_samples", 0)
+            self._is_trained = True
+
+        logger.info(
+            f"Predictor state loaded from {source} ({self.sample_count} online samples, R²={self._online_r2:.3f})",
+        )
+        return True

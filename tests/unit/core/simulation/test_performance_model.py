@@ -306,6 +306,262 @@ class TestPerformanceModelMissingCoverage:
         assert result["execution_time_seconds"] > 0
         assert "stage_0_scan" in result["stage_times"]
 
+    def test_gc_overhead_grows_with_memory_pressure(self) -> None:
+        """Test GC overhead increases monotonically with memory pressure (M1)."""
+        model = PerformanceModel()
+        topology = {"executor_memory_gb": 4.0, "executor_cores": 4}
+
+        # heap per core = 4 * 0.6 / 4 = 0.6 GB; working set = size / partitions
+        low = model._estimate_gc_overhead({}, DataCharacteristics(size_gb=1, partitioning=100), topology)
+        moderate = model._estimate_gc_overhead({}, DataCharacteristics(size_gb=20, partitioning=50), topology)
+        high = model._estimate_gc_overhead({}, DataCharacteristics(size_gb=500, partitioning=50), topology)
+
+        assert low["memory_pressure"] < moderate["memory_pressure"] < high["memory_pressure"]
+        assert low["gc_time_fraction"] < moderate["gc_time_fraction"] < high["gc_time_fraction"]
+        # Low pressure stays in the 1-3% regime (before G1 relief), high is capped at 25%
+        assert low["gc_time_fraction"] < 0.03
+        assert high["gc_time_fraction"] <= PerformanceModel.GC_OVERHEAD_MAX
+        # Overhead factor is the multiplier applied to CPU-bound stages
+        assert high["gc_overhead_factor"] == pytest.approx(1.0 + high["gc_time_fraction"])
+
+    def test_gc_overhead_reduced_by_g1gc(self) -> None:
+        """Test G1GC reduces GC overhead ~20% relative vs an older collector (M1)."""
+        model = PerformanceModel()
+        topology = {"executor_memory_gb": 4.0, "executor_cores": 4}
+        data_profile = DataCharacteristics(size_gb=500, partitioning=50)
+
+        default = model._estimate_gc_overhead({}, data_profile, topology)
+        explicit_g1 = model._estimate_gc_overhead(
+            {"spark.executor.defaultJavaOptions": "-XX:+UseG1GC"},
+            data_profile,
+            topology,
+        )
+        parallel = model._estimate_gc_overhead(
+            {"spark.executor.extraJavaOptions": "-XX:+UseParallelGC"},
+            data_profile,
+            topology,
+        )
+
+        # G1 is the assumed default on JDK9+ / Spark 3.3+ when nothing is set
+        assert default["uses_g1gc"] == 1.0
+        assert default["gc_time_fraction"] == pytest.approx(explicit_g1["gc_time_fraction"])
+        # Explicit non-G1 collector loses the relief
+        assert parallel["uses_g1gc"] == 0.0
+        assert default["gc_time_fraction"] == pytest.approx(
+            parallel["gc_time_fraction"] * PerformanceModel.G1GC_OVERHEAD_RELIEF,
+        )
+
+    def test_gc_breakdown_surfaced_in_estimate(self) -> None:
+        """Test estimate() surfaces the GC diagnostics and folds GC into stage times (M1)."""
+        model = PerformanceModel()
+        config = {"spark.executor.memory": "4g", "spark.executor.cores": "4"}
+        resource_spec = ResourceSpec(cpu_cores=8, memory_gb=32)
+        operations = OperationProfile(operations=[OperationType.AGGREGATION])
+
+        # Same data size; fewer partitions -> bigger per-core working set -> more GC
+        pressured = model.estimate(
+            config,
+            resource_spec,
+            data_profile=DataCharacteristics(size_gb=200, partitioning=10),
+            operations=operations,
+        )
+        relaxed = model.estimate(
+            config,
+            resource_spec,
+            data_profile=DataCharacteristics(size_gb=200, partitioning=1000),
+            operations=operations,
+        )
+
+        assert "gc_breakdown" in pressured
+        assert pressured["gc_breakdown"]["gc_overhead_factor"] >= 1.0
+        assert pressured["gc_breakdown"]["gc_time_fraction"] > relaxed["gc_breakdown"]["gc_time_fraction"]
+        # GC pressure must slow down the CPU-bound aggregation stage
+        assert pressured["stage_times"]["stage_0_aggregation"] > relaxed["stage_times"]["stage_0_aggregation"]
+
+    def test_shuffle_network_bound_on_few_fat_nodes(self) -> None:
+        """Test network binds shuffle transfer on few large executors (M2)."""
+        model = PerformanceModel()
+        operations = OperationProfile(
+            operations=[OperationType.JOIN, OperationType.AGGREGATION, OperationType.SORT],
+        )
+        data_profile = DataCharacteristics(size_gb=400)
+        # 2 fat nodes: aggregate NIC = 2 x 1.25 GB/s < disk = 32 x 0.15 GB/s
+        topology = {"num_executors": 2, "executor_memory_gb": 8.0, "total_executor_cores": 32}
+
+        metrics = model._estimate_shuffle_metrics(operations, data_profile, {}, topology)
+
+        assert metrics["network_transfer_seconds"] > metrics["disk_transfer_seconds"]
+        assert metrics["transfer_seconds"] == pytest.approx(metrics["network_transfer_seconds"])
+
+    def test_shuffle_disk_bound_on_many_thin_nodes(self) -> None:
+        """Test disk binds shuffle transfer on many small executors (M2)."""
+        model = PerformanceModel()
+        operations = OperationProfile(
+            operations=[OperationType.JOIN, OperationType.AGGREGATION, OperationType.SORT],
+        )
+        data_profile = DataCharacteristics(size_gb=400)
+        # Same cores spread over 16 nodes: NIC = 20 GB/s > disk = 4.8 GB/s
+        topology = {"num_executors": 16, "executor_memory_gb": 8.0, "total_executor_cores": 32}
+
+        metrics = model._estimate_shuffle_metrics(operations, data_profile, {}, topology)
+
+        assert metrics["disk_transfer_seconds"] > metrics["network_transfer_seconds"]
+        assert metrics["transfer_seconds"] == pytest.approx(metrics["disk_transfer_seconds"])
+
+    def test_shuffle_compression_reduces_wire_bytes(self) -> None:
+        """Test compressed shuffle reduces the bytes on the wire (M2)."""
+        model = PerformanceModel()
+        operations = OperationProfile(operations=[OperationType.JOIN])
+        data_profile = DataCharacteristics(size_gb=100)
+        topology = {"num_executors": 4, "executor_memory_gb": 8.0, "total_executor_cores": 16}
+
+        compressed = model._estimate_shuffle_metrics(operations, data_profile, {}, topology)
+        uncompressed = model._estimate_shuffle_metrics(
+            operations,
+            data_profile,
+            {"spark.shuffle.compress": False},
+            topology,
+        )
+        gzip = model._estimate_shuffle_metrics(
+            operations,
+            data_profile,
+            {"spark.io.compression.codec": "gzip"},
+            topology,
+        )
+
+        assert uncompressed["network_wire_gb"] == pytest.approx(uncompressed["data_gb"])
+        assert compressed["network_wire_gb"] < uncompressed["network_wire_gb"]
+        # gzip compresses harder than the default lz4 codec
+        assert gzip["network_wire_gb"] < compressed["network_wire_gb"]
+        assert gzip["transfer_seconds"] < compressed["transfer_seconds"]
+
+    def test_shuffle_transfer_included_in_total_time(self) -> None:
+        """Test shuffle transfer time contributes to the total estimate (M2)."""
+        model = PerformanceModel()
+        config = {"spark.executor.memory": "8g", "spark.executor.cores": "4"}
+        resource_spec = ResourceSpec(cpu_cores=16, memory_gb=64)
+        data_profile = DataCharacteristics(size_gb=500)
+        operations = OperationProfile(operations=[OperationType.SCAN, OperationType.JOIN])
+
+        result = model.estimate(config, resource_spec, data_profile=data_profile, operations=operations)
+
+        transfer = result["shuffle_breakdown"]["transfer_seconds"]
+        assert transfer > 0
+        assert result["execution_time_seconds"] >= sum(result["stage_times"].values()) + transfer
+
+    def test_skew_one_reproduces_balanced_prediction(self) -> None:
+        """Test skew_factor=1 leaves the balanced stage time unchanged (M3)."""
+        model = PerformanceModel()
+        data_profile = DataCharacteristics(size_gb=50, skew_factor=1.0)
+        topology = {"total_executor_cores": 8}
+
+        adjusted = model._apply_straggler_skew(
+            ideal_time=100.0,
+            op=OperationType.AGGREGATION,
+            data_profile=data_profile,
+            config={},
+            cluster_topology=topology,
+        )
+
+        assert adjusted == pytest.approx(100.0)
+
+    def test_skew_penalty_sublinear_with_many_waves(self) -> None:
+        """Test the straggler penalty is diluted across many task waves (M3)."""
+        model = PerformanceModel()
+        skewed = DataCharacteristics(size_gb=50, skew_factor=3.0)
+        topology = {"total_executor_cores": 8}
+        # 200 shuffle partitions / 8 cores = 25 waves; only the last wave straggles
+        config = {"spark.sql.shuffle.partitions": 200}
+
+        adjusted = model._apply_straggler_skew(
+            ideal_time=100.0,
+            op=OperationType.AGGREGATION,
+            data_profile=skewed,
+            config=config,
+            cluster_topology=topology,
+        )
+
+        # (24 full waves + 3x straggler wave) / 25 waves = 1.08x
+        assert adjusted == pytest.approx(108.0)
+        # Far below a linear 3x penalty, but strictly above the balanced time
+        assert 100.0 < adjusted < 300.0
+
+    def test_skew_penalty_full_with_single_wave(self) -> None:
+        """Test a single wave is fully dominated by the straggler (M3)."""
+        model = PerformanceModel()
+        skewed = DataCharacteristics(size_gb=50, partitioning=4, skew_factor=3.0)
+        # 4 input partitions on 8 cores -> one wave; SCAN follows input partitioning
+        topology = {"total_executor_cores": 8}
+
+        adjusted = model._apply_straggler_skew(
+            ideal_time=100.0,
+            op=OperationType.SCAN,
+            data_profile=skewed,
+            config={},
+            cluster_topology=topology,
+        )
+
+        assert adjusted == pytest.approx(300.0)
+
+    def test_aqe_skew_join_caps_effective_skew(self) -> None:
+        """Test AQE skew-join mitigation caps the straggler multiplier (M3)."""
+        model = PerformanceModel()
+        heavily_skewed = DataCharacteristics(size_gb=50, skew_factor=10.0)
+        # Single wave so the cap is directly observable
+        topology = {"total_executor_cores": 200}
+        aqe_on = {"spark.sql.shuffle.partitions": 200}
+        aqe_off = {"spark.sql.shuffle.partitions": 200, "spark.sql.adaptive.skewJoin.enabled": "false"}
+
+        capped = model._apply_straggler_skew(
+            ideal_time=100.0,
+            op=OperationType.JOIN,
+            data_profile=heavily_skewed,
+            config=aqe_on,
+            cluster_topology=topology,
+        )
+        uncapped = model._apply_straggler_skew(
+            ideal_time=100.0,
+            op=OperationType.JOIN,
+            data_profile=heavily_skewed,
+            config=aqe_off,
+            cluster_topology=topology,
+        )
+
+        assert capped == pytest.approx(100.0 * PerformanceModel.AQE_SKEW_CAP)
+        assert uncapped == pytest.approx(1000.0)
+
+    def test_aqe_skew_cap_via_estimate(self) -> None:
+        """Test the AQE skew cap shows up in end-to-end join stage times (M3)."""
+        model = PerformanceModel()
+        config = {"spark.executor.memory": "4g", "spark.executor.cores": "4"}
+        resource_spec = ResourceSpec(cpu_cores=8, memory_gb=32)
+        data_profile = DataCharacteristics(size_gb=50, skew_factor=10.0)
+        operations = OperationProfile(operations=[OperationType.JOIN])
+
+        aqe_on = model.estimate(config, resource_spec, data_profile=data_profile, operations=operations)
+        aqe_off = model.estimate(
+            {**config, "spark.sql.adaptive.skewJoin.enabled": "false"},
+            resource_spec,
+            data_profile=data_profile,
+            operations=operations,
+        )
+
+        assert aqe_on["stage_times"]["stage_0_join"] < aqe_off["stage_times"]["stage_0_join"]
+
+    def test_predictions_monotonic_in_data_size(self) -> None:
+        """Test total predictions stay monotonic in data size under skew (M1-M3)."""
+        model = PerformanceModel()
+        config = {"spark.executor.memory": "4g", "spark.executor.cores": "4"}
+        resource_spec = ResourceSpec(cpu_cores=8, memory_gb=32)
+        operations = OperationProfile(operations=[OperationType.SCAN, OperationType.JOIN])
+
+        previous = 0.0
+        for size_gb in [10, 50, 100, 500, 1000]:
+            data_profile = DataCharacteristics(size_gb=size_gb, partitioning=100, skew_factor=2.5)
+            result = model.estimate(config, resource_spec, data_profile=data_profile, operations=operations)
+            assert result["execution_time_seconds"] >= previous
+            previous = result["execution_time_seconds"]
+
     def test_validate_feasibility_memory_exceeds_95_percent(self) -> None:
         """Test feasibility check when peak memory exceeds 95% of executor (line 731).
 
@@ -340,3 +596,25 @@ class TestPerformanceModelMissingCoverage:
         assert memory_issue_found
         # Verify line 731 message format
         assert any("exceeds executor memory" in issue for issue in issues)
+
+
+class TestAdvisoryFindingsDoNotFailFeasibility:
+    """Regression: advisory findings must not mark a config infeasible.
+
+    A sparse config without spark.default.parallelism falls back to 200,
+    which can exceed 10x the available cores; that advisory used to flip
+    success=False and made Bayesian trials evaluate to inf.
+    """
+
+    def test_high_parallelism_is_advisory_only(self) -> None:
+        """Test default parallelism on a tiny cluster stays feasible."""
+        model = PerformanceModel()
+        config = {"spark.executor.memory": "2g", "spark.executor.cores": "2"}
+        resource_spec = ResourceSpec(cpu_cores=4, memory_gb=16)
+
+        result = model.estimate(config, resource_spec)
+
+        assert result["success"] is True
+        assert result["execution_time_seconds"] > 0
+        # The advisory is still surfaced for visibility
+        assert any("Parallelism" in issue for issue in result["feasibility_issues"])

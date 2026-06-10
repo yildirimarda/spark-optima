@@ -10,10 +10,18 @@ It includes analytical models and ML-based prediction.
 
 from spark_optima.core.simulation.engine import SimulationEngine
 from spark_optima.core.simulation.performance_model import PerformanceModel
-from spark_optima.core.simulation.predictor import MLPerformancePredictor
+from spark_optima.core.simulation.predictor import (
+    SURROGATE_FEATURE_NAMES,
+    MLPerformancePredictor,
+    default_model_path,
+    extract_features,
+)
 
 __all__ = [
+    "SURROGATE_FEATURE_NAMES",
     "SimulationEngine",
     "PerformanceModel",
     "MLPerformancePredictor",
+    "default_model_path",
+    "extract_features",
 ]

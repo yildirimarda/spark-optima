@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (v1.3)
+- **ML surrogate predictor wired end-to-end**: the simulation engine now learns online from trials (RandomForest, R²-gated blending of analytical + ML predictions, 20-sample minimum), persists models via joblib (`SPARK_OPTIMA_MODEL_DIR`), and execution-mode trials feed real measured runtimes into the surrogate. scikit-learn stays optional — everything degrades silently to pure-analytical without it.
+- **Performance model physics**: GC overhead modeled from memory pressure (with G1GC relief), shuffle transfer bounded by network bandwidth (10 Gbit/node) in addition to disk, and a straggler/wave-based skew model replacing the flat penalty (AQE skew mitigation caps effective skew).
+- **Multi-objective optimization surfaced end-to-end**: repeatable `optimize --objective` flag, Pareto frontier persisted into result metadata (capped at 50 points), new `spark-optima pareto -r result.json` command, and `pareto-json`/`pareto-csv` export formats.
+- **REST API reference docs**: `docs/user-guide/rest-api.md` — all endpoints, auth/rate-limit/job-store env vars, full async flow with curl examples.
+- **Persistent job store**: `SPARK_OPTIMA_JOB_STORE=sqlite` (+ `SPARK_OPTIMA_JOB_DB`) keeps async jobs across restarts (WAL mode, 2h worker-lost staleness rule). In-memory remains the default.
+
+### Fixed (v1.3)
+- An advisory "parallelism very high relative to cores" finding was treated as a feasibility *failure*, making Bayesian trials on sparse configs silently evaluate to `inf`. It is now advisory-only.
+- `spark-optima` console script was missing from `[project.scripts]` (docs referenced it but only `spark-optima-api` existed) and `spark-optima-api` pointed at a nonexistent `main()` — both entry points now work.
+- API OpenAPI metadata listed only 4 platforms and pinned a stale hardcoded version; it now lists all 7 and reads `spark_optima.__version__`.
+
 ### Added (v1.2)
 - **Spark event log analyzer** (`core/execution/event_log.py`): parses real event logs (plain/gzip) into stage/task metrics — GC time, shuffle volumes, spill, task skew. New `spark-optima analyze-log` command and `optimize --event-log` to enrich optimization with real run data. `MetricsCollector.collect_from_event_log()` replaces the previously stubbed GC/shuffle metrics.
 - **Async job API**: `POST /api/v1/optimize/async` (202 + job id), `GET /api/v1/jobs/{id}`, `GET /api/v1/jobs` — thread-pool execution with an in-memory TTL job store.

@@ -34,6 +34,16 @@ app = typer.Typer(
 )
 console = Console()
 
+# Module-level option singleton (mutable list default would trip ruff B008 inline)
+_OBJECTIVE_OPTION = typer.Option(
+    [],
+    "--objective",
+    help=(
+        "Optimization objective; repeat the flag for multi-objective runs, e.g. "
+        "--objective minimize_time --objective minimize_cost (default: minimize_time)"
+    ),
+)
+
 
 def version_callback(value: bool) -> None:
     """Print version and exit."""
@@ -111,6 +121,7 @@ def optimize(
         "--bayesian-trials",
         help="Number of Bayesian optimization trials",
     ),
+    objective: list[str] = _OBJECTIVE_OPTION,
     event_log: str = typer.Option(
         "",
         "--event-log",
@@ -147,6 +158,19 @@ def optimize(
 
     # Convert to Path
     code_path_obj = Path(actual_code_path)
+
+    # Validate objectives (deduplicated, order-preserving); empty means default
+    from spark_optima.core.bayesian.objectives import ObjectiveFunctionFactory
+
+    objectives: list[str] | None = list(dict.fromkeys(objective)) or None
+    valid_objectives = ObjectiveFunctionFactory.get_available_objectives()
+    invalid_objectives = [name for name in (objectives or []) if name not in valid_objectives]
+    if invalid_objectives:
+        console.print(
+            f"[bold red]Error:[/bold red] unknown objective(s): {', '.join(invalid_objectives)}",
+        )
+        console.print(f"Valid objectives: {', '.join(valid_objectives)}")
+        raise typer.Exit(1)
 
     # Parse the event log early so inferred values feed the input summary
     event_summary = None
@@ -186,6 +210,7 @@ def optimize(
     input_table.add_row("Data Format", data_format)
     input_table.add_row("Max Memory", f"{max_memory_gb} GB" if max_memory_gb else "Unlimited")
     input_table.add_row("Mode", mode)
+    input_table.add_row("Objectives", ", ".join(objectives) if objectives else "minimize_time (default)")
     console.print(input_table)
     console.print()
 
@@ -241,6 +266,7 @@ def optimize(
                 resource_constraints=resource_constraints if resource_constraints else None,
                 use_bayesian=True,
                 bayesian_trials=bayesian_trials,
+                objectives=objectives,
             )
         except (RuntimeError, ValueError, KeyError, AttributeError, TypeError) as e:
             console.print(f"[bold red]Optimization failed:[/bold red] {e}")
@@ -284,6 +310,10 @@ def optimize(
     console.print(
         "[dim]      Then export with: spark-optima export -r result.json -f <format>[/dim]",
     )
+    if "pareto_frontier" in result.metadata:
+        console.print(
+            "[dim]      Multi-objective run: inspect trade-offs with: spark-optima pareto -r result.json[/dim]",
+        )
 
 
 @app.command()
@@ -720,7 +750,8 @@ def export(
         "-f",
         help=(
             "Export format (json, yaml, databricks-json, aws-glue, "
-            "azure-synapse, env, properties, airflow, kubernetes, emr)"
+            "azure-synapse, env, properties, airflow, kubernetes, emr, "
+            "pareto-json, pareto-csv)"
         ),
     ),
     output: str = typer.Option(
@@ -816,6 +847,8 @@ def export(
                 "airflow": exporter.export_airflow_dag,
                 "kubernetes": exporter.export_kubernetes_configmap,
                 "emr": exporter.export_aws_emr,
+                "pareto-json": exporter.export_pareto_json,
+                "pareto-csv": exporter.export_pareto_csv,
             }
 
             if format not in formatters:
@@ -883,6 +916,238 @@ def _extract_metrics(result_data: dict[str, Any]) -> dict[str, float]:
             metrics["estimated_cost"] = float(candidate)
             break
     return metrics
+
+
+def _pareto_objective_names(metadata: dict[str, Any], frontier: list[dict[str, Any]]) -> list[str]:
+    """Return Pareto objective names in deterministic order.
+
+    Prefers the objective order recorded in result metadata, falling back to
+    the sorted union of objective names across frontier points.
+
+    Args:
+        metadata: Result metadata dictionary.
+        frontier: Pareto frontier point dictionaries.
+
+    Returns:
+        Ordered list of objective names.
+
+    """
+    names = metadata.get("objectives")
+    if isinstance(names, list) and names:
+        return [str(name) for name in names]
+    return sorted({key for point in frontier for key in (point.get("objective_values") or {})})
+
+
+def _objective_direction(name: str) -> str:
+    """Return the optimization direction ("minimize" or "maximize") for an objective.
+
+    Args:
+        name: Objective name (e.g. "minimize_time").
+
+    Returns:
+        Direction string; unknown objectives default to "minimize".
+
+    """
+    from spark_optima.core.bayesian.objectives import ObjectiveFunctionFactory
+
+    try:
+        return ObjectiveFunctionFactory.create(name).direction
+    except (ValueError, TypeError):
+        return "minimize"
+
+
+def _pareto_value(point: dict[str, Any], name: str) -> float | None:
+    """Extract a numeric objective value from a Pareto point.
+
+    Args:
+        point: Pareto frontier point dictionary.
+        name: Objective name.
+
+    Returns:
+        Float value or None when missing or non-numeric.
+
+    """
+    value = (point.get("objective_values") or {}).get(name)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _format_metric(value: Any) -> str:
+    """Format an objective value for display.
+
+    Args:
+        value: Objective value (usually numeric).
+
+    Returns:
+        Compact string representation.
+
+    """
+    if isinstance(value, (int, float)):
+        return f"{value:.4g}"
+    return "-" if value is None else str(value)
+
+
+def _select_pareto_config_columns(frontier: list[dict[str, Any]], max_columns: int = 4) -> list[str]:
+    """Pick a few key configuration parameters to show as table columns.
+
+    Args:
+        frontier: Pareto frontier point dictionaries.
+        max_columns: Maximum number of configuration columns.
+
+    Returns:
+        List of parameter names (priority parameters first, then alphabetical).
+
+    """
+    available = {key for point in frontier for key in (point.get("configuration") or {})}
+    priority = [
+        "spark.executor.memory",
+        "spark.executor.cores",
+        "spark.executor.instances",
+        "spark.sql.shuffle.partitions",
+        "spark.driver.memory",
+        "spark.default.parallelism",
+    ]
+    columns = [key for key in priority if key in available]
+    columns.extend(key for key in sorted(available) if key not in columns)
+    return columns[:max_columns]
+
+
+def _build_pareto_tradeoff_lines(
+    frontier: list[dict[str, Any]],
+    objective_names: list[str],
+) -> list[str]:
+    """Build trade-off summary lines (one per objective) for the Pareto frontier.
+
+    For each objective the best point is identified (respecting its
+    minimize/maximize direction) and its values on the other objectives are
+    shown relative to their own best values.
+
+    Args:
+        frontier: Pareto frontier point dictionaries.
+        objective_names: Ordered objective names.
+
+    Returns:
+        Human-readable summary lines; empty when no numeric values exist.
+
+    """
+    best_points: dict[str, dict[str, Any]] = {}
+    for name in objective_names:
+        candidates = [point for point in frontier if _pareto_value(point, name) is not None]
+        if not candidates:
+            continue
+        direction = _objective_direction(name)
+        chooser = max if direction == "maximize" else min
+        best_points[name] = chooser(candidates, key=lambda point: _pareto_value(point, name) or 0.0)
+
+    lines: list[str] = []
+    for name in objective_names:
+        best = best_points.get(name)
+        if best is None:
+            continue
+        parts = [f"Best {name}: trial {best.get('trial_number')} ({_format_metric(_pareto_value(best, name))})"]
+        deltas = []
+        for other in objective_names:
+            if other == name or other not in best_points:
+                continue
+            own_value = _pareto_value(best, other)
+            best_value = _pareto_value(best_points[other], other)
+            if own_value is None or best_value is None:
+                continue
+            delta_text = f"{other} {_format_metric(own_value)}"
+            if best_value != 0:
+                delta_pct = (own_value - best_value) / abs(best_value) * 100
+                delta_text += f" ({delta_pct:+.1f}% vs best)"
+            deltas.append(delta_text)
+        if deltas:
+            parts.append(", ".join(deltas))
+        lines.append(" — ".join(parts))
+    return lines
+
+
+@app.command()
+def pareto(
+    result_file: str = typer.Option(
+        ...,
+        "--result-file",
+        "-r",
+        help="Path to optimization result JSON file",
+    ),
+    output_format: str = typer.Option(
+        "table",
+        "--output",
+        "-o",
+        help="Output format (table, json)",
+    ),
+) -> None:
+    """Display the Pareto frontier of a multi-objective optimization result.
+
+    Shows the non-dominated trade-off points found by a multi-objective run
+    (e.g. minimize_time vs minimize_cost) with their objective values and key
+    configuration parameters, plus a trade-off summary.
+
+    Example:
+        $ spark-optima pareto -r result.json
+        $ spark-optima pareto -r result.json --output json
+
+    """
+    result_data = _load_result_dict(Path(result_file))
+    metadata: dict[str, Any] = result_data.get("metadata") or {}
+    frontier = metadata.get("pareto_frontier")
+
+    if not frontier:
+        console.print("[bold red]Error:[/bold red] this result has no Pareto frontier.")
+        console.print(
+            "[dim]Rerun optimization with multiple objectives, e.g.:[/dim]\n"
+            "[dim]  spark-optima optimize -c job.py "
+            "--objective minimize_time --objective minimize_cost[/dim]",
+        )
+        raise typer.Exit(1)
+
+    objective_names = _pareto_objective_names(metadata, frontier)
+
+    if output_format == "json":
+        payload = {
+            "objectives": objective_names,
+            "n_points": len(frontier),
+            "points": frontier,
+        }
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    console.print(
+        Panel.fit(
+            "[bold blue]Pareto Frontier[/bold blue]\n"
+            f"[dim]{len(frontier)} non-dominated point(s) — objectives: {', '.join(objective_names)}[/dim]",
+            border_style="blue",
+        ),
+    )
+
+    config_columns = _select_pareto_config_columns(frontier)
+    table = Table(title="Pareto Frontier Points")
+    table.add_column("Trial", style="cyan", justify="right")
+    for name in objective_names:
+        table.add_column(name, style="green", justify="right")
+    for param in config_columns:
+        table.add_column(param, style="yellow")
+
+    for point in sorted(frontier, key=lambda p: p.get("trial_number", -1)):
+        configuration = point.get("configuration") or {}
+        row = [str(point.get("trial_number", "-"))]
+        row.extend(_format_metric(_pareto_value(point, name)) for name in objective_names)
+        row.extend(str(configuration[param]) if param in configuration else "-" for param in config_columns)
+        table.add_row(*row)
+    console.print(table)
+
+    tradeoff_lines = _build_pareto_tradeoff_lines(frontier, objective_names)
+    if tradeoff_lines:
+        console.print("\n[bold]Trade-off summary:[/bold]")
+        for line in tradeoff_lines:
+            console.print(f"  {line}")
+
+    console.print(
+        f"\n[dim]Tip: export the frontier with: spark-optima export -r {result_file} -f pareto-csv[/dim]",
+    )
 
 
 def _display_history_entry(entry: Any) -> None:

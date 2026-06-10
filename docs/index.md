@@ -53,6 +53,7 @@ spark-optima optimize -c ./my_spark_job.py -p databricks -d 100
 - **New User?** Start with [Getting Started](user-guide/getting-started.md)
 - **Want to Install?** Check [Installation](user-guide/installation.md)
 - **Using a Specific Platform?** See [Platform Guides](platforms/local.md)
+- **Calling over HTTP?** See the [REST API Reference](user-guide/rest-api.md)
 - **Developer?** Read [Contributing](development/contributing.md)
 
 ## Support

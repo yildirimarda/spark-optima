@@ -1246,3 +1246,56 @@ class TestBayesianOptimizerWarmStart:
 
         assert result.metadata["n_prior_trials"] == 0
         assert result.metadata["seed_trial_enqueued"] is True
+
+
+class TestBayesianOptimizerMultiObjectiveEndToEnd:
+    """End-to-end multi-objective optimization (Workstream N)."""
+
+    @pytest.fixture
+    def optimizer(self) -> BayesianOptimizer:
+        """Create a 2-objective optimizer with a feasible heuristic config.
+
+        spark.default.parallelism is set explicitly: without it the simulation
+        feasibility check flags the 200-partition default against few cores and
+        marks every trial as failed.
+        """
+        config_set = ConfigSet(version="3.5.0", parameters={}, metadata={})
+        resources = ResourceSpec(cpu_cores=8, memory_gb=32)
+        return BayesianOptimizer(
+            heuristic_config={
+                "spark.executor.memory": "4g",
+                "spark.executor.cores": "4",
+                "spark.default.parallelism": "16",
+            },
+            config_set=config_set,
+            resource_spec=resources,
+            objectives=["minimize_time", "minimize_cost"],
+        )
+
+    def test_two_objective_run_completes(self, optimizer: BayesianOptimizer) -> None:
+        """A 2-objective run completes trials and produces a best config."""
+        result = optimizer.optimize(n_trials=5, show_progress=False)
+
+        assert isinstance(result, BayesianOptimizationResult)
+        assert result.n_trials_completed > 0
+        assert result.best_config
+        assert result.metadata["objectives"] == ["minimize_time", "minimize_cost"]
+
+    def test_two_objective_run_builds_pareto_frontier(self, optimizer: BayesianOptimizer) -> None:
+        """Multi-objective runs expose a non-empty Pareto frontier with both objectives."""
+        result = optimizer.optimize(n_trials=5, show_progress=False)
+
+        assert len(result.pareto_frontier) >= 1
+        for point in result.pareto_frontier:
+            assert isinstance(point.trial_number, int)
+            assert set(point.objective_values.keys()) == {"minimize_time", "minimize_cost"}
+            assert point.configuration
+
+    def test_two_objective_frontier_survives_to_dict(self, optimizer: BayesianOptimizer) -> None:
+        """Pareto frontier serializes through BayesianOptimizationResult.to_dict()."""
+        result = optimizer.optimize(n_trials=4, show_progress=False)
+
+        payload = result.to_dict()
+        assert len(payload["pareto_frontier"]) == len(result.pareto_frontier)
+        for point in payload["pareto_frontier"]:
+            assert set(point.keys()) == {"trial_number", "objective_values", "configuration"}

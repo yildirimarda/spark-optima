@@ -1,24 +1,36 @@
 # Copyright 2024 Spark Optima Contributors
 # Licensed under the Apache License, Version 2.0
 
-"""In-memory job store for asynchronous optimization runs.
+"""Job stores for asynchronous optimization runs.
 
-This module provides a thread-safe, in-memory job registry backed by a
-small thread pool. Optimization work is synchronous CPU-bound code, so it
-is executed on a ``ThreadPoolExecutor`` instead of FastAPI background
-tasks (which would serialize work on the event loop).
+This module provides the job-store abstraction used by the async API
+endpoints, the default thread-safe in-memory implementation, and the
+factory that selects a backend at startup. Optimization work is
+synchronous CPU-bound code, so it is executed on a ``ThreadPoolExecutor``
+instead of FastAPI background tasks (which would serialize work on the
+event loop).
 
-The store is process-local: jobs are lost on restart and are not shared
-across workers. Finished jobs are evicted opportunistically once they are
-older than the configured TTL — no background cleanup threads are used.
+Backend selection is controlled by the ``SPARK_OPTIMA_JOB_STORE``
+environment variable, read once when the global store is created:
+
+- ``memory`` (default) — process-local dict; jobs are lost on restart and
+  are not shared across workers.
+- ``sqlite`` — persistent single-node store; see
+  :mod:`spark_optima.api.job_store_sqlite`.
+
+Any other value logs a warning and falls back to the in-memory store.
+Finished jobs are evicted opportunistically once they are older than the
+configured TTL — no background cleanup threads are used.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import uuid
+from abc import ABC, abstractmethod
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -33,6 +45,12 @@ JobStatus = Literal["pending", "running", "completed", "failed"]
 
 #: Default time-to-live for finished (completed/failed) jobs, in hours.
 DEFAULT_JOB_TTL_HOURS = 6.0
+
+#: Environment variable selecting the job store backend ("memory" | "sqlite").
+JOB_STORE_ENV_VAR = "SPARK_OPTIMA_JOB_STORE"
+
+#: Supported job store backend names.
+VALID_JOB_STORE_BACKENDS = ("memory", "sqlite")
 
 #: Shared worker pool for job execution. Optimization is synchronous
 #: CPU-bound work, so a small dedicated pool keeps the API responsive
@@ -80,31 +98,27 @@ class Job:
     finished_ts: float | None = field(default=None, repr=False)
 
 
-class JobStore:
-    """Thread-safe in-memory registry of asynchronous optimization jobs.
+class BaseJobStore(ABC):
+    """Abstract base class for asynchronous optimization job stores.
 
-    Jobs are executed on a shared module-level thread pool (or an injected
-    executor) and tracked in a plain dict guarded by a lock. Finished jobs
-    older than the TTL are removed opportunistically whenever the store is
-    accessed.
+    Concrete stores only implement persistence (add, lookup, list, and
+    state transitions); job identity, scheduling on the executor, and
+    error handling are shared here. All implementations must be safe to
+    call from multiple threads.
 
     Attributes:
-        _jobs: Mapping of job_id to Job.
-        _lock: Lock guarding all access to the job mapping.
         _ttl_seconds: TTL for finished jobs, in seconds.
         _executor: Optional executor override (used in tests).
     """
 
     def __init__(self, ttl_hours: float = DEFAULT_JOB_TTL_HOURS, executor: Executor | None = None) -> None:
-        """Initialize the job store.
+        """Initialize common job store state.
 
         Args:
             ttl_hours: Hours to retain finished (completed/failed) jobs.
             executor: Optional executor override; defaults to the shared
                 module-level thread pool when None.
         """
-        self._jobs: dict[str, Job] = {}
-        self._lock = threading.Lock()
         self._ttl_seconds = ttl_hours * 3600.0
         self._executor = executor
 
@@ -129,14 +143,112 @@ class JobStore:
             submitted_at=_utc_now_iso(),
             submitted_ts=time.time(),
         )
-        with self._lock:
-            self._cleanup_locked()
-            self._jobs[job_id] = job
+        self._add_job(job)
 
         executor = self._executor if self._executor is not None else _EXECUTOR
         executor.submit(self._run, job_id, work)
         logger.info(f"Submitted optimization job {job_id} (platform={platform}, spark_version={spark_version})")
         return job_id
+
+    @abstractmethod
+    def get(self, job_id: str) -> Job | None:
+        """Look up a job by identifier.
+
+        Args:
+            job_id: Job identifier returned by submit().
+
+        Returns:
+            The Job if known, None otherwise (including after TTL eviction).
+        """
+
+    @abstractmethod
+    def list_jobs(self, limit: int = 50) -> list[Job]:
+        """List known jobs, newest first.
+
+        Args:
+            limit: Maximum number of jobs to return.
+
+        Returns:
+            Jobs ordered by submission time descending.
+        """
+
+    @abstractmethod
+    def _add_job(self, job: Job) -> None:
+        """Persist a freshly submitted job in the pending state.
+
+        Args:
+            job: The new job record to store.
+        """
+
+    @abstractmethod
+    def _mark_running(self, job_id: str) -> None:
+        """Transition a job to the running state.
+
+        Args:
+            job_id: Identifier of the job to update.
+        """
+
+    @abstractmethod
+    def _mark_completed(self, job_id: str, result: dict[str, Any]) -> None:
+        """Transition a job to the completed state.
+
+        Args:
+            job_id: Identifier of the job to update.
+            result: The optimization result payload.
+        """
+
+    @abstractmethod
+    def _mark_failed(self, job_id: str, error: str) -> None:
+        """Transition a job to the failed state.
+
+        Args:
+            job_id: Identifier of the job to update.
+            error: Human-readable failure message.
+        """
+
+    def _run(self, job_id: str, work: Callable[[], dict[str, Any]]) -> None:
+        """Execute a job on the worker pool and record its outcome.
+
+        Args:
+            job_id: Identifier of the job to execute.
+            work: The callable performing the actual optimization.
+        """
+        self._mark_running(job_id)
+        try:
+            result = work()
+        except Exception as exc:  # noqa: BLE001 — jobs must never crash the worker pool
+            logger.exception(f"Optimization job {job_id} failed")
+            self._mark_failed(job_id, str(exc))
+        else:
+            self._mark_completed(job_id, result)
+
+
+class JobStore(BaseJobStore):
+    """Thread-safe in-memory registry of asynchronous optimization jobs.
+
+    Jobs are executed on a shared module-level thread pool (or an injected
+    executor) and tracked in a plain dict guarded by a lock. Finished jobs
+    older than the TTL are removed opportunistically whenever the store is
+    accessed.
+
+    Attributes:
+        _jobs: Mapping of job_id to Job.
+        _lock: Lock guarding all access to the job mapping.
+        _ttl_seconds: TTL for finished jobs, in seconds.
+        _executor: Optional executor override (used in tests).
+    """
+
+    def __init__(self, ttl_hours: float = DEFAULT_JOB_TTL_HOURS, executor: Executor | None = None) -> None:
+        """Initialize the job store.
+
+        Args:
+            ttl_hours: Hours to retain finished (completed/failed) jobs.
+            executor: Optional executor override; defaults to the shared
+                module-level thread pool when None.
+        """
+        super().__init__(ttl_hours=ttl_hours, executor=executor)
+        self._jobs: dict[str, Job] = {}
+        self._lock = threading.Lock()
 
     def get(self, job_id: str) -> Job | None:
         """Look up a job by identifier.
@@ -165,21 +277,15 @@ class JobStore:
             ordered = sorted(self._jobs.values(), key=lambda job: job.submitted_ts, reverse=True)
             return ordered[:limit]
 
-    def _run(self, job_id: str, work: Callable[[], dict[str, Any]]) -> None:
-        """Execute a job on the worker pool and record its outcome.
+    def _add_job(self, job: Job) -> None:
+        """Store a freshly submitted job.
 
         Args:
-            job_id: Identifier of the job to execute.
-            work: The callable performing the actual optimization.
+            job: The new job record to store.
         """
-        self._mark_running(job_id)
-        try:
-            result = work()
-        except Exception as exc:  # noqa: BLE001 — jobs must never crash the worker pool
-            logger.exception(f"Optimization job {job_id} failed")
-            self._mark_failed(job_id, str(exc))
-        else:
-            self._mark_completed(job_id, result)
+        with self._lock:
+            self._cleanup_locked()
+            self._jobs[job.job_id] = job
 
     def _mark_running(self, job_id: str) -> None:
         """Transition a job to the running state.
@@ -241,21 +347,51 @@ class JobStore:
             logger.debug(f"Evicted {len(expired)} expired job(s) from the job store")
 
 
-# Global store instance (singleton pattern, mirrors get_optimization_service)
-_store_lock = threading.Lock()
-_store_instance: JobStore | None = None
+def create_job_store() -> BaseJobStore:
+    """Create a job store based on the ``SPARK_OPTIMA_JOB_STORE`` env variable.
 
-
-def get_job_store() -> JobStore:
-    """Get the global job store instance.
+    Supported values are "memory" (default) and "sqlite". Any other value
+    logs a warning and falls back to the in-memory store so the API keeps
+    working with a misconfigured environment.
 
     Returns:
-        The shared JobStore singleton.
+        A freshly constructed job store for the selected backend.
+    """
+    backend = (os.environ.get(JOB_STORE_ENV_VAR) or "memory").strip().lower()
+    if backend == "sqlite":
+        # Imported lazily to avoid a circular import (the sqlite store
+        # builds on the Job/BaseJobStore definitions in this module).
+        from spark_optima.api.job_store_sqlite import SQLiteJobStore
+
+        store = SQLiteJobStore()
+        logger.info(f"Using SQLite job store at {store.db_path}")
+        return store
+    if backend != "memory":
+        logger.warning(
+            f"Invalid {JOB_STORE_ENV_VAR}={backend!r} (expected one of {VALID_JOB_STORE_BACKENDS}); "
+            "falling back to the in-memory job store"
+        )
+    return JobStore()
+
+
+# Global store instance (singleton pattern, mirrors get_optimization_service)
+_store_lock = threading.Lock()
+_store_instance: BaseJobStore | None = None
+
+
+def get_job_store() -> BaseJobStore:
+    """Get the global job store instance.
+
+    The backend is selected once, on first access, from the
+    ``SPARK_OPTIMA_JOB_STORE`` environment variable (see create_job_store).
+
+    Returns:
+        The shared job store singleton.
     """
     global _store_instance
     with _store_lock:
         if _store_instance is None:
-            _store_instance = JobStore()
+            _store_instance = create_job_store()
         return _store_instance
 
 

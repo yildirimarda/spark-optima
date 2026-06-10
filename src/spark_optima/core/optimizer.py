@@ -23,6 +23,12 @@ from spark_optima.platforms.models import ResourceSpec
 
 logger = logging.getLogger(__name__)
 
+# Maximum number of Pareto frontier points persisted into
+# OptimizationResult.metadata for multi-objective runs. The frontier is
+# truncated to the first MAX_PARETO_POINTS points returned by the Bayesian
+# optimizer to keep result files (and the history database) small.
+MAX_PARETO_POINTS = 50
+
 
 class Optimizer:
     """Main optimizer for Spark configuration tuning.
@@ -276,6 +282,8 @@ class Optimizer:
             mode=self.optimization_mode,
             study_name=f"spark_optima_{self.platform}_{self.spark_version}",
             code_path=code_path,
+            platform=self.platform,
+            spark_version=self.spark_version,
         )
 
         # Run optimization
@@ -338,6 +346,11 @@ class Optimizer:
     ) -> OptimizationResult:
         """Build optimization result from configuration.
 
+        For multi-objective Bayesian runs the Pareto frontier is persisted into
+        ``metadata["pareto_frontier"]`` as a list of points (each with
+        ``trial_number``, ``objective_values``, and ``configuration``), capped
+        at ``MAX_PARETO_POINTS`` points. Single-objective runs do not add the key.
+
         Args:
             final_config: Final optimized configuration.
             heuristic_config: Initial heuristic configuration.
@@ -382,6 +395,23 @@ class Optimizer:
         # Add code analysis metadata if available
         if analysis_metadata:
             metadata["code_analysis"] = analysis_metadata
+
+        # Multi-objective runs: persist the Pareto frontier so it survives
+        # result.to_dict() -> JSON and can be exported or displayed later
+        # (spark-optima pareto / export -f pareto-json|pareto-csv).
+        # Capped at MAX_PARETO_POINTS points; single-objective runs add no key.
+        if self._bayesian_result is not None:
+            objectives_used = list(self._bayesian_result.metadata.get("objectives") or [])
+            if len(objectives_used) > 1:
+                metadata["objectives"] = objectives_used
+                metadata["pareto_frontier"] = [
+                    {
+                        "trial_number": point.trial_number,
+                        "objective_values": point.objective_values,
+                        "configuration": point.configuration,
+                    }
+                    for point in self._bayesian_result.pareto_frontier[:MAX_PARETO_POINTS]
+                ]
 
         # Build result
         return OptimizationResult(
