@@ -93,6 +93,7 @@ nav:
       - Configuration: user-guide/configuration.md
       - CLI Usage: user-guide/cli.md
       - API Usage: user-guide/api.md
+      - REST API Reference: user-guide/rest-api.md
   - Platform Guides:
       - Local: platforms/local.md
       - AWS Glue: platforms/aws-glue.md

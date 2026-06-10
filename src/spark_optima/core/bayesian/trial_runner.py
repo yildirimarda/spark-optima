@@ -58,6 +58,8 @@ class TrialRunner:
         simulation_engine: SimulationEngine | None = None,
         execution_engine: ExecutionEngine | None = None,
         max_consecutive_failures: int | None = None,
+        platform: str = "local",
+        spark_version: str = "default",
     ) -> None:
         """Initialize the trial runner.
 
@@ -67,6 +69,8 @@ class TrialRunner:
             simulation_engine: Custom simulation engine (optional).
             execution_engine: Custom execution engine (optional).
             max_consecutive_failures: Stop after N consecutive failures (default: 10).
+            platform: Platform identifier, used for surrogate model persistence naming.
+            spark_version: Spark version, used for surrogate model persistence naming.
 
         Raises:
             ValueError: If mode is invalid.
@@ -80,7 +84,10 @@ class TrialRunner:
         self.max_consecutive_failures = max_consecutive_failures or self.DEFAULT_MAX_CONSECUTIVE_FAILURES
 
         # Initialize engines
-        self._simulation_engine = simulation_engine or SimulationEngine()
+        self._simulation_engine = simulation_engine or SimulationEngine(
+            platform=platform,
+            spark_version=spark_version,
+        )
         self._execution_engine = execution_engine
 
         if mode == "execution" and self._execution_engine is None:
@@ -159,6 +166,18 @@ class TrialRunner:
                     code_path=code_path,
                 )
                 metrics = trial_result.metrics
+
+                # Feed real measured runtimes into the simulation surrogate so the
+                # ML blend can learn from execution-mode trials (best effort).
+                if metrics.success and metrics.execution_time_seconds > 0:
+                    try:
+                        self._simulation_engine.record_observation(
+                            config=config,
+                            data_profile=data_profile,
+                            measured_time=metrics.execution_time_seconds,
+                        )
+                    except Exception as obs_error:  # surrogate learning must never fail a trial
+                        logger.debug(f"Could not record surrogate observation: {obs_error}")
 
             duration = time.time() - start_time
 

@@ -38,6 +38,7 @@ dependencies = [
 ]
 
 [project.scripts]
+spark-optima = "spark_optima.cli.main:app"
 spark-optima-api = "spark_optima.api.main:main"
 
 [dependency-groups]

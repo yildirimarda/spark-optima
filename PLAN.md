@@ -26,7 +26,7 @@ The tool collects the user's Spark code, target platform, resource constraints, 
 | — | UV Migration (Poetry → UV) | ✅ Done |
 | 12 | v1.1 Improvements (EMR, history, new smells, exports, warm-start) | ✅ Done |
 
-**Active:** v1.2 backlog grooming (see "Backlog" at the bottom).
+**Active:** v1.3 implementation (see "Backlog" at the bottom).
 
 ---
 
@@ -371,11 +371,51 @@ Real metrics instead of stubs: parse Spark event logs to extract stage/task metr
 | I6 | CLI help text platform list | ✅ Done |
 | I7 | Quality gates + end-to-end smoke + CHANGELOG | ✅ Done |
 
-### Backlog (v1.3+) — identified but deliberately deferred
+## v1.3 Improvement Plan (2026-06-10)
 
-- **ML predictor end-to-end** — `MLPerformancePredictor` exists but is not wired into the simulation pipeline
+Scope drawn from the v1.2 backlog. Five parallel workstreams.
+
+### Workstream L — ML Predictor End-to-End
+
+`MLPerformancePredictor` exists but was never wired into the simulation pipeline. Make it a real surrogate model that learns from trial history.
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| L1 | Feature extraction | Config + data-profile → numeric feature vector (shared, deterministic) | ✅ Done |
+| L2 | Online training in SimulationEngine | Collect (features, predicted/measured time) per trial; train after N samples; blend analytical + ML predictions with confidence weighting | ✅ Done |
+| L3 | Model persistence | Save/load via joblib under ~/.spark_optima/models/; scikit-learn stays an optional guarded dependency | ✅ Done |
+
+### Workstream M — Performance Model Improvements
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| M1 | GC time modeling | GC overhead as a function of memory pressure (data-to-heap ratio, GC algorithm from config) | ✅ Done |
+| M2 | Network bandwidth | Shuffle transfer time bounded by per-node network throughput, not just disk | ✅ Done |
+| M3 | Straggler/skew distribution | Task-time distribution model: stage time driven by the slowest partition under skew instead of a flat linear penalty | ✅ Done |
+
+### Workstream N — Multi-Objective & Pareto Frontier
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| N1 | CLI `--objective` (repeatable) on `optimize` | Pass objectives through to the Bayesian engine; multi-objective runs persist the Pareto frontier into result metadata | ✅ Done |
+| N2 | Pareto export | Frontier → JSON/CSV via the export pipeline | ✅ Done |
+| N3 | `spark-optima pareto -r result.json` | Rich table of frontier points + trade-off summary (no new plotting deps) | ✅ Done |
+
+### Workstream O — REST API Reference Docs
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| O1 | docs/user-guide/rest-api.md | All endpoints (sync, async jobs, platforms, health), auth + rate-limit env vars, request/response examples | ✅ Done |
+| O2 | mkdocs nav + cross-links | Link from user-guide/api.md and index | ✅ Done |
+
+### Workstream P — Persistent Job Store
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| P1 | SQLite-backed JobStore | `SPARK_OPTIMA_JOB_STORE=memory|sqlite` (+ path env); jobs survive restarts and work across multi-process workers on one node | ✅ Done |
+| P2 | Store selection + docs note | Factory keeps in-memory default; PRODUCTION.md note updated | ✅ Done |
+
+### Backlog (v1.4+) — identified but deliberately deferred
+
 - **Live pricing APIs** — v1.2 ships static regional multipliers; live AWS/Azure/GCP pricing API integration with caching remains deferred
-- **REST API reference docs page** — endpoints are self-documented via OpenAPI (/docs); a dedicated MkDocs page for endpoints + auth/rate-limit env vars is still missing
-- **Distributed job store** — the async API job store is process-local; multi-replica deployments need Redis/DB-backed jobs or sticky sessions (noted in kubernetes/PRODUCTION.md)
-- **Pareto frontier export/visualization** for multi-objective runs
-- **Performance model improvements** — GC modeling, network bandwidth, task straggler/skew distribution modeling
+- **Distributed job store (multi-node)** — v1.3 ships a SQLite store for single-node persistence/multi-process; true multi-replica deployments still need Redis/DB-backed jobs or sticky sessions

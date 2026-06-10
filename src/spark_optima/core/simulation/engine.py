@@ -10,6 +10,7 @@ performance simulation using both analytical models and ML-based prediction.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -20,7 +21,7 @@ from spark_optima.core.simulation.performance_model import (
     OperationType,
     PerformanceModel,
 )
-from spark_optima.core.simulation.predictor import MLPerformancePredictor
+from spark_optima.core.simulation.predictor import MLPerformancePredictor, extract_features
 from spark_optima.platforms.models import CostModel, ResourceSpec
 
 if TYPE_CHECKING:
@@ -78,11 +79,25 @@ class SimulationEngine:
     ANALYTICAL_WEIGHT = 0.6
     ML_WEIGHT = 0.4
 
+    # Online surrogate blending policy (v1.3, Workstream L)
+    ML_MIN_SAMPLES_DEFAULT = 20
+    ML_RETRAIN_INTERVAL_DEFAULT = 10
+    ML_R2_GATE = 0.3
+    ML_R2_SATURATION = 0.9
+    ML_WEIGHT_CAP_ANALYTICAL = 0.5
+    ML_WEIGHT_CAP_MEASURED = 0.8
+    ML_RAMP_SAMPLES_MULTIPLIER = 3
+
     def __init__(
         self,
         use_ml: bool = True,
         ml_model_path: str | Path | None = None,
         hybrid_mode: str = "auto",
+        enable_ml_predictor: bool = True,
+        ml_min_samples: int = ML_MIN_SAMPLES_DEFAULT,
+        ml_retrain_interval: int = ML_RETRAIN_INTERVAL_DEFAULT,
+        platform: str = "local",
+        spark_version: str = "default",
     ) -> None:
         """Initialize the simulation engine.
 
@@ -90,10 +105,22 @@ class SimulationEngine:
             use_ml: Whether to use ML-based prediction.
             ml_model_path: Path to saved ML model.
             hybrid_mode: Hybrid mode - "auto", "analytical", "ml", or "ensemble".
+            enable_ml_predictor: Whether the online surrogate learns across trials
+                and blends its predictions into estimates. Degrades silently to
+                pure-analytical when scikit-learn is missing.
+            ml_min_samples: Minimum accumulated samples before surrogate training.
+            ml_retrain_interval: Retrain after this many new samples post-training.
+            platform: Platform identifier used for default model persistence naming.
+            spark_version: Spark version used for default model persistence naming.
 
         """
         self.use_ml = use_ml
         self.hybrid_mode = hybrid_mode
+        self.enable_ml_predictor = enable_ml_predictor
+        self.ml_min_samples = max(ml_min_samples, 4)
+        self.ml_retrain_interval = max(ml_retrain_interval, 1)
+        self.platform = platform
+        self.spark_version = spark_version
 
         # Initialize analytical model
         self._analytical_model = PerformanceModel()
@@ -105,11 +132,17 @@ class SimulationEngine:
                 self._ml_model = MLPerformancePredictor(
                     model_path=ml_model_path,
                     use_ensemble=True,
+                    platform=platform,
+                    spark_version=spark_version,
                 )
                 logger.info("ML predictor initialized successfully")
             except RuntimeError as e:
+                # Logged once here; all surrogate paths silently degrade to analytical
                 logger.warning(f"ML predictor not available: {e}")
                 self._ml_model = None
+
+        # Online surrogate is active only when a predictor could be constructed
+        self._surrogate_active = bool(use_ml and enable_ml_predictor and self._ml_model is not None)
 
         # Historical data for ML training
         self._trial_history: list[dict[str, Any]] = []
@@ -199,6 +232,15 @@ class SimulationEngine:
             ml_result=ml_result,
         )
 
+        # Online surrogate: learn from accumulated trials and blend its
+        # prediction into the hybrid estimate (additive metadata only)
+        surrogate_status = self._apply_ml_surrogate(
+            config=config,
+            data_profile=data_profile,
+            analytical_time=float(analytical_result.get("execution_time_seconds", 0.0)),
+            hybrid_estimate=hybrid_estimate,
+        )
+
         # Calculate confidence score
         confidence = self._calculate_confidence(
             analytical_result=analytical_result,
@@ -238,6 +280,7 @@ class SimulationEngine:
                 "analytical": self.ANALYTICAL_WEIGHT,
                 "ml": self.ML_WEIGHT if ml_result else 0.0,
             },
+            "ml_surrogate": surrogate_status,
         }
 
         return SimulationResult(
@@ -430,6 +473,242 @@ class SimulationEngine:
             "method": method,
             "analytical_time": analytical_time,
             "ml_time": ml_time,
+        }
+
+    def _apply_ml_surrogate(
+        self,
+        config: dict[str, Any],
+        data_profile: dict[str, Any],
+        analytical_time: float,
+        hybrid_estimate: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run the online surrogate step: train lazily, blend, and record the sample.
+
+        The analytical estimate of every simulated trial is recorded as a
+        pseudo-observation after prediction, so the surrogate never sees the
+        point it is asked about. When the surrogate is trained and its hold-out
+        R² clears the gate, its prediction is blended into ``hybrid_estimate``
+        in place. All keys added to ``hybrid_estimate`` are additive.
+
+        Args:
+            config: Spark configuration of the current trial.
+            data_profile: Data characteristics of the current trial.
+            analytical_time: Execution time predicted by the analytical model.
+            hybrid_estimate: Hybrid estimate dict, updated in place.
+
+        Returns:
+            Status dictionary describing what the surrogate did.
+
+        """
+        status: dict[str, Any] = {
+            "enabled": self._surrogate_active,
+            "trained": False,
+            "ml_samples": 0,
+            "measured_samples": 0,
+            "ml_blend_weight": 0.0,
+            "validation_r2": 0.0,
+            "ml_prediction_seconds": None,
+        }
+
+        if not self._surrogate_active or self._ml_model is None:
+            hybrid_estimate["ml_blend_weight"] = 0.0
+            hybrid_estimate["ml_samples"] = 0
+            return status
+
+        predictor = self._ml_model
+        try:
+            features = extract_features(config, data_profile)
+
+            # Train lazily on previously accumulated samples
+            self._maybe_train_surrogate()
+
+            trained = bool(predictor.has_online_model())
+            r2 = float(predictor.online_r2)
+            n_samples = int(predictor.sample_count)
+            measured_fraction = float(predictor.measured_fraction)
+
+            weight = 0.0
+            if trained:
+                weight = self._compute_blend_weight(
+                    r2=r2,
+                    n_samples=n_samples,
+                    measured_fraction=measured_fraction,
+                )
+
+            applied_weight = 0.0
+            if weight > 0.0:
+                ml_prediction = predictor.predict_online(features)
+                if ml_prediction is not None:
+                    pre_blend = float(hybrid_estimate.get("execution_time_seconds", analytical_time))
+                    blended = weight * ml_prediction + (1.0 - weight) * pre_blend
+                    hybrid_estimate["pre_blend_time_seconds"] = pre_blend
+                    hybrid_estimate["ml_surrogate_time_seconds"] = ml_prediction
+                    hybrid_estimate["execution_time_seconds"] = max(blended, 1e-6)
+                    applied_weight = weight
+                    status["ml_prediction_seconds"] = ml_prediction
+
+            # Record the analytical estimate as a pseudo-observation after prediction
+            if math.isfinite(analytical_time) and analytical_time > 0:
+                predictor.add_sample(features, analytical_time, measured=False)
+
+            status.update(
+                {
+                    "trained": trained,
+                    "ml_samples": int(predictor.sample_count),
+                    "measured_samples": int(predictor.measured_sample_count),
+                    "ml_blend_weight": applied_weight,
+                    "validation_r2": r2,
+                },
+            )
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError) as exc:
+            logger.warning(f"ML surrogate step failed; using analytical estimate: {exc}")
+
+        hybrid_estimate["ml_blend_weight"] = status["ml_blend_weight"]
+        hybrid_estimate["ml_samples"] = status["ml_samples"]
+        return status
+
+    def _compute_blend_weight(
+        self,
+        r2: float,
+        n_samples: int,
+        measured_fraction: float,
+    ) -> float:
+        """Compute the surrogate blend weight from validation quality and sample count.
+
+        Policy:
+        - A hold-out R² below ``ML_R2_GATE`` keeps the weight at 0 (analytical only).
+        - The cap ramps from ``ML_WEIGHT_CAP_ANALYTICAL`` (analytical-only samples)
+          to ``ML_WEIGHT_CAP_MEASURED`` as the share of real measurements grows.
+        - The weight ramps with sample count, saturating at
+          ``ML_RAMP_SAMPLES_MULTIPLIER * ml_min_samples`` samples, and with R²,
+          saturating at ``ML_R2_SATURATION``.
+
+        Args:
+            r2: Hold-out validation R² of the surrogate model.
+            n_samples: Number of accumulated online samples.
+            measured_fraction: Fraction of samples backed by real measurements.
+
+        Returns:
+            Blend weight in [0, ML_WEIGHT_CAP_MEASURED].
+
+        """
+        if not math.isfinite(r2) or r2 < self.ML_R2_GATE:
+            return 0.0
+
+        clamped_fraction = min(max(measured_fraction, 0.0), 1.0)
+        cap = (
+            self.ML_WEIGHT_CAP_ANALYTICAL
+            + (self.ML_WEIGHT_CAP_MEASURED - self.ML_WEIGHT_CAP_ANALYTICAL) * clamped_fraction
+        )
+
+        ramp_span = max(self.ML_RAMP_SAMPLES_MULTIPLIER * self.ml_min_samples, 1)
+        sample_factor = min(1.0, n_samples / ramp_span)
+        r2_factor = min(1.0, (r2 - self.ML_R2_GATE) / (self.ML_R2_SATURATION - self.ML_R2_GATE))
+
+        return cap * sample_factor * r2_factor
+
+    def _maybe_train_surrogate(self) -> None:
+        """Train or retrain the online surrogate when enough new samples accumulated."""
+        predictor = self._ml_model
+        if predictor is None:
+            return
+
+        n_samples = predictor.sample_count
+        if n_samples < self.ml_min_samples:
+            return
+        if predictor.has_online_model() and n_samples - predictor.online_trained_samples < self.ml_retrain_interval:
+            return
+
+        predictor.train_online(min_samples=self.ml_min_samples)
+
+    def record_observation(
+        self,
+        config: dict[str, Any],
+        data_profile: dict[str, Any] | None,
+        measured_time: float,
+    ) -> bool:
+        """Record a real measured execution time for online surrogate learning.
+
+        Intended for execution mode where actual runtimes are available.
+        Measured samples raise the surrogate blend-weight cap because they
+        carry more signal than analytical pseudo-observations.
+
+        Args:
+            config: Spark configuration that was executed.
+            data_profile: Data characteristics of the executed workload.
+            measured_time: Measured execution time in seconds.
+
+        Returns:
+            True if the observation was recorded, False when the surrogate is
+            inactive or the measurement is invalid.
+
+        """
+        if not self._surrogate_active or self._ml_model is None:
+            return False
+        if not math.isfinite(measured_time) or measured_time <= 0:
+            logger.debug(f"Ignored invalid measured time: {measured_time}")
+            return False
+
+        features = extract_features(config, data_profile or {})
+        recorded = bool(self._ml_model.add_sample(features, measured_time, measured=True))
+        if recorded:
+            self._maybe_train_surrogate()
+        return recorded
+
+    def save_ml_model(self, path: str | Path | None = None) -> Path | None:
+        """Persist the ML predictor state to disk.
+
+        Args:
+            path: Target file path. Defaults to the predictor's default path
+                derived from platform and Spark version (see
+                ``predictor.default_model_path``).
+
+        Returns:
+            The path the model was saved to, or None when no predictor exists.
+
+        """
+        if self._ml_model is None:
+            logger.warning("Cannot save ML model: predictor not available")
+            return None
+        return self._ml_model.save(path)
+
+    def load_ml_model(self, path: str | Path | None = None) -> bool:
+        """Load previously persisted ML predictor state.
+
+        Args:
+            path: Source file path. Defaults to the predictor's default path.
+
+        Returns:
+            True if the state was loaded, False otherwise.
+
+        """
+        if self._ml_model is None:
+            return False
+        return self._ml_model.load(path)
+
+    def get_ml_surrogate_status(self) -> dict[str, Any]:
+        """Get a snapshot of the online surrogate state for diagnostics.
+
+        Returns:
+            Dictionary with ``enabled``, ``trained``, ``ml_samples``,
+            ``measured_samples`` and ``validation_r2`` keys.
+
+        """
+        if not self._surrogate_active or self._ml_model is None:
+            return {
+                "enabled": False,
+                "trained": False,
+                "ml_samples": 0,
+                "measured_samples": 0,
+                "validation_r2": 0.0,
+            }
+        predictor = self._ml_model
+        return {
+            "enabled": True,
+            "trained": bool(predictor.has_online_model()),
+            "ml_samples": int(predictor.sample_count),
+            "measured_samples": int(predictor.measured_sample_count),
+            "validation_r2": float(predictor.online_r2),
         }
 
     def _calculate_confidence(

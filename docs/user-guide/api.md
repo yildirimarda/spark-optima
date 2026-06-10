@@ -1,6 +1,6 @@
 # Python API Guide
 
-This guide covers using Spark Optima programmatically via the Python API.
+This guide covers using Spark Optima programmatically via the Python API. For the HTTP/REST interface, see the [REST API Reference](rest-api.md).
 
 ## Overview
 
@@ -559,5 +559,6 @@ Code improvement suggestion with properties:
 
 **Next Steps:**
 - Explore [Platform-Specific Guides](../platforms/)
+- See the [REST API Reference](rest-api.md)
 - See [CLI Usage Guide](cli.md)
 - Read [Configuration Guide](configuration.md)

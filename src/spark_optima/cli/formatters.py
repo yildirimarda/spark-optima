@@ -10,8 +10,10 @@ platforms and use cases.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from rich.console import Console
@@ -451,6 +453,93 @@ class ConfigExporter:
         ]
         return json.dumps(configurations, indent=2, sort_keys=True)
 
+    def _pareto_points(self) -> list[dict[str, Any]]:
+        """Return the Pareto frontier points stored in the result metadata.
+
+        Returns:
+            List of frontier point dictionaries, each with ``trial_number``,
+            ``objective_values``, and ``configuration`` keys.
+
+        Raises:
+            ValueError: If the result has no Pareto frontier (single-objective run).
+        """
+        frontier = (self.result.metadata or {}).get("pareto_frontier")
+        if not frontier:
+            raise ValueError(
+                "Result has no Pareto frontier. Rerun optimization with multiple "
+                "--objective flags (e.g. --objective minimize_time --objective minimize_cost).",
+            )
+        return list(frontier)
+
+    def _pareto_objective_names(self, points: list[dict[str, Any]]) -> list[str]:
+        """Return objective names for the Pareto frontier in deterministic order.
+
+        Prefers the objective order recorded in result metadata (the order the
+        user requested); falls back to the sorted union of objective names
+        found across all frontier points.
+
+        Args:
+            points: Pareto frontier point dictionaries.
+
+        Returns:
+            Ordered list of objective names.
+        """
+        names = (self.result.metadata or {}).get("objectives")
+        if isinstance(names, list) and names:
+            return [str(name) for name in names]
+        return sorted({key for point in points for key in (point.get("objective_values") or {})})
+
+    def export_pareto_json(self, indent: int = 2) -> str:
+        """Export the Pareto frontier of a multi-objective run as JSON.
+
+        Args:
+            indent: JSON indentation level.
+
+        Returns:
+            JSON object with ``objectives``, ``n_points``, and ``points`` keys.
+
+        Raises:
+            ValueError: If the result has no Pareto frontier.
+        """
+        points = self._pareto_points()
+        payload = {
+            "objectives": self._pareto_objective_names(points),
+            "n_points": len(points),
+            "points": points,
+        }
+        return json.dumps(payload, indent=indent)
+
+    def export_pareto_csv(self) -> str:
+        """Export the Pareto frontier of a multi-objective run as CSV.
+
+        Each frontier point becomes one row. Column order is deterministic:
+        ``trial`` first, then one column per objective (in the order recorded
+        in the result metadata), then the sorted union of configuration
+        parameter names across all points. Missing values are left empty.
+        Rows are sorted by trial number.
+
+        Returns:
+            CSV document as a string.
+
+        Raises:
+            ValueError: If the result has no Pareto frontier.
+        """
+        points = self._pareto_points()
+        objective_names = self._pareto_objective_names(points)
+        param_names = sorted({key for point in points for key in (point.get("configuration") or {})})
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, lineterminator="\n")
+        writer.writerow(["trial", *objective_names, *param_names])
+        for point in sorted(points, key=lambda p: p.get("trial_number", -1)):
+            objective_values = point.get("objective_values") or {}
+            configuration = point.get("configuration") or {}
+            row: list[Any] = [point.get("trial_number", "")]
+            row.extend(objective_values.get(name, "") for name in objective_names)
+            row.extend(configuration.get(name, "") for name in param_names)
+            writer.writerow(row)
+        return buffer.getvalue()
+
     def export_properties_file(self) -> str:
         """Export as Spark properties file.
 
@@ -491,6 +580,8 @@ class ConfigExporter:
             "airflow": self.export_airflow_dag,
             "kubernetes": self.export_kubernetes_configmap,
             "emr": self.export_aws_emr,
+            "pareto-json": self.export_pareto_json,
+            "pareto-csv": self.export_pareto_csv,
         }
 
         if format_type not in formatters:

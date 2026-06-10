@@ -1639,3 +1639,314 @@ class TestCLIOptimizeEventLog:
 
         assert result.exit_code == 1
         assert "not found" in result.output
+
+
+def _make_pareto_result_dict() -> dict:
+    """Build a result dictionary with a 3-point Pareto frontier."""
+    return {
+        "configuration": {"spark.executor.memory": "4g"},
+        "estimated_time_minutes": 10.0,
+        "confidence_score": 0.9,
+        "code_suggestions": [],
+        "platform_specific": {"platform": "local"},
+        "metadata": {
+            "objectives": ["minimize_time", "minimize_cost"],
+            "pareto_frontier": [
+                {
+                    "trial_number": 0,
+                    "objective_values": {"minimize_time": 120.0, "minimize_cost": 0.30},
+                    "configuration": {"spark.executor.memory": "4g", "spark.executor.cores": 4},
+                },
+                {
+                    "trial_number": 3,
+                    "objective_values": {"minimize_time": 90.0, "minimize_cost": 0.45},
+                    "configuration": {"spark.executor.memory": "8g", "spark.executor.cores": 4},
+                },
+                {
+                    "trial_number": 7,
+                    "objective_values": {"minimize_time": 150.0, "minimize_cost": 0.20},
+                    "configuration": {"spark.executor.memory": "2g", "spark.executor.cores": 2},
+                },
+            ],
+        },
+    }
+
+
+@pytest.fixture
+def pareto_result_file(tmp_path: Path) -> Path:
+    """Write a multi-objective result file with a Pareto frontier."""
+    path = tmp_path / "pareto_result.json"
+    path.write_text(json.dumps(_make_pareto_result_dict()))
+    return path
+
+
+@pytest.fixture
+def single_objective_result_file(tmp_path: Path) -> Path:
+    """Write a single-objective result file (no Pareto frontier)."""
+    data = _make_pareto_result_dict()
+    data["metadata"] = {"platform": "local"}
+    path = tmp_path / "single_result.json"
+    path.write_text(json.dumps(data))
+    return path
+
+
+class TestCLIOptimizeObjectiveOption:
+    """Test cases for the optimize --objective option (Workstream N)."""
+
+    @staticmethod
+    def _mock_result() -> object:
+        """Build a real OptimizationResult for the mocked optimizer."""
+        from spark_optima.core.result import OptimizationResult
+
+        return OptimizationResult(
+            configuration={"spark.executor.memory": "4g"},
+            estimated_time_minutes=10.0,
+            confidence_score=0.9,
+            platform_specific={"platform": "local"},
+        )
+
+    def test_optimize_rejects_unknown_objective(
+        self,
+        runner: CliRunner,
+        sample_code_file: Path,
+    ) -> None:
+        """Unknown objectives are rejected with the valid names listed."""
+        result = runner.invoke(
+            app,
+            [
+                "optimize",
+                "--code-path",
+                str(sample_code_file),
+                "--objective",
+                "minimize_bananas",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "minimize_bananas" in result.output
+        # Error message lists all valid objective names
+        assert "minimize_time" in result.output
+        assert "minimize_cost" in result.output
+        assert "maximize_success" in result.output
+        assert "minimize_memory" in result.output
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_optimize_passes_objectives_through(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Repeated --objective flags reach Optimizer.optimize as a list."""
+        monkeypatch.setenv("SPARK_OPTIMA_HISTORY_DB", str(tmp_path / "history.db"))
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = self._mock_result()
+        mock_optimizer.return_value = mock_instance
+
+        result = runner.invoke(
+            app,
+            [
+                "optimize",
+                "--code-path",
+                str(sample_code_file),
+                "--objective",
+                "minimize_time",
+                "--objective",
+                "minimize_cost",
+            ],
+        )
+
+        assert result.exit_code == 0
+        _, kwargs = mock_instance.optimize.call_args
+        assert kwargs["objectives"] == ["minimize_time", "minimize_cost"]
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_optimize_default_objectives_is_none(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without --objective the optimizer receives objectives=None (default)."""
+        monkeypatch.setenv("SPARK_OPTIMA_HISTORY_DB", str(tmp_path / "history.db"))
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = self._mock_result()
+        mock_optimizer.return_value = mock_instance
+
+        result = runner.invoke(
+            app,
+            ["optimize", "--code-path", str(sample_code_file)],
+        )
+
+        assert result.exit_code == 0
+        _, kwargs = mock_instance.optimize.call_args
+        assert kwargs["objectives"] is None
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_optimize_deduplicates_objectives(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Duplicate --objective flags are deduplicated preserving order."""
+        monkeypatch.setenv("SPARK_OPTIMA_HISTORY_DB", str(tmp_path / "history.db"))
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = self._mock_result()
+        mock_optimizer.return_value = mock_instance
+
+        result = runner.invoke(
+            app,
+            [
+                "optimize",
+                "--code-path",
+                str(sample_code_file),
+                "--objective",
+                "minimize_cost",
+                "--objective",
+                "minimize_cost",
+                "--objective",
+                "minimize_time",
+            ],
+        )
+
+        assert result.exit_code == 0
+        _, kwargs = mock_instance.optimize.call_args
+        assert kwargs["objectives"] == ["minimize_cost", "minimize_time"]
+
+
+class TestCLIParetoCommand:
+    """Test cases for the pareto command (Workstream N)."""
+
+    def test_pareto_command_help(self, runner: CliRunner) -> None:
+        """Test pareto command help."""
+        result = runner.invoke(app, ["pareto", "--help"])
+
+        assert result.exit_code == 0
+        assert "pareto" in result.output.lower()
+
+    def test_pareto_table_output(self, runner: CliRunner, pareto_result_file: Path) -> None:
+        """Table output lists frontier points, objectives, and a trade-off summary."""
+        result = runner.invoke(app, ["pareto", "-r", str(pareto_result_file)])
+
+        assert result.exit_code == 0
+        assert "Pareto Frontier" in result.output
+        assert "minimize_time" in result.output
+        assert "minimize_cost" in result.output
+        # All trial numbers shown
+        for trial in ("0", "3", "7"):
+            assert trial in result.output
+        assert "Trade-off summary" in result.output
+        # Fastest point is trial 3, cheapest is trial 7
+        assert "trial 3" in result.output
+        assert "trial 7" in result.output
+
+    def test_pareto_json_output(self, runner: CliRunner, pareto_result_file: Path) -> None:
+        """JSON output is pure machine-readable JSON via typer.echo."""
+        result = runner.invoke(
+            app,
+            ["pareto", "-r", str(pareto_result_file), "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["objectives"] == ["minimize_time", "minimize_cost"]
+        assert payload["n_points"] == 3
+        assert len(payload["points"]) == 3
+        assert payload["points"][0]["trial_number"] == 0
+        assert payload["points"][0]["objective_values"]["minimize_time"] == pytest.approx(120.0)
+
+    def test_pareto_missing_frontier_errors(
+        self,
+        runner: CliRunner,
+        single_objective_result_file: Path,
+    ) -> None:
+        """A result without a frontier exits 1 with a multi-objective hint."""
+        result = runner.invoke(app, ["pareto", "-r", str(single_objective_result_file)])
+
+        assert result.exit_code == 1
+        assert "no Pareto frontier" in result.output
+        assert "--objective" in result.output
+
+    def test_pareto_missing_file_errors(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A missing result file exits 1 with an error."""
+        result = runner.invoke(app, ["pareto", "-r", str(tmp_path / "missing.json")])
+
+        assert result.exit_code == 1
+        assert "Error" in result.output
+
+
+class TestCLIExportParetoFormats:
+    """Test cases for export -f pareto-json / pareto-csv routing (Workstream N)."""
+
+    def test_export_pareto_json_stdout(self, runner: CliRunner, pareto_result_file: Path) -> None:
+        """pareto-json is dispatched to stdout as JSON."""
+        result = runner.invoke(
+            app,
+            ["export", "-r", str(pareto_result_file), "-f", "pareto-json"],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output[result.output.index("{") :])
+        assert payload["n_points"] == 3
+        assert payload["objectives"] == ["minimize_time", "minimize_cost"]
+
+    def test_export_pareto_csv_stdout(self, runner: CliRunner, pareto_result_file: Path) -> None:
+        """pareto-csv is dispatched to stdout with deterministic columns."""
+        result = runner.invoke(
+            app,
+            ["export", "-r", str(pareto_result_file), "-f", "pareto-csv"],
+        )
+
+        assert result.exit_code == 0
+        assert "trial,minimize_time,minimize_cost,spark.executor.cores,spark.executor.memory" in result.output
+
+    def test_export_pareto_csv_to_file(
+        self,
+        runner: CliRunner,
+        pareto_result_file: Path,
+        tmp_path: Path,
+    ) -> None:
+        """pareto-csv routes through save_to_file when --output is given."""
+        output_file = tmp_path / "frontier.csv"
+        result = runner.invoke(
+            app,
+            [
+                "export",
+                "-r",
+                str(pareto_result_file),
+                "-f",
+                "pareto-csv",
+                "-o",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        content = output_file.read_text()
+        lines = content.strip().split("\n")
+        assert lines[0] == "trial,minimize_time,minimize_cost,spark.executor.cores,spark.executor.memory"
+        # Rows sorted by trial number
+        assert lines[1].startswith("0,")
+        assert lines[2].startswith("3,")
+        assert lines[3].startswith("7,")
+
+    def test_export_pareto_without_frontier_errors(
+        self,
+        runner: CliRunner,
+        single_objective_result_file: Path,
+    ) -> None:
+        """Exporting the frontier of a single-objective result exits 1."""
+        result = runner.invoke(
+            app,
+            ["export", "-r", str(single_objective_result_file), "-f", "pareto-json"],
+        )
+
+        assert result.exit_code == 1
+        assert "Export error" in result.output

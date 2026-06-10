@@ -171,6 +171,56 @@ class PerformanceModel:
         JoinType.CARTESIAN: 10.0,
     }
 
+    # --- Shuffle transfer throughput (M2) ---
+    # Per-node network bandwidth available for shuffle transfers (GB/s).
+    # ~1.25 GB/s ~= 10 Gbit/s, the standard NIC on mainstream cloud instances.
+    NETWORK_GBPS_PER_NODE = 1.25
+
+    # Per-core local disk throughput for shuffle file I/O (GB/s).
+    # Each task streams its own shuffle file; SSD-class storage sustains roughly
+    # 0.15 GB/s per concurrent writer before the device saturates, so aggregate
+    # disk throughput scales with cores while network scales with nodes.
+    SHUFFLE_DISK_GBPS_PER_CORE = 0.15
+
+    # --- GC model (M1) ---
+    # Memory pressure = per-core working set / per-core heap (after spark.memory.fraction).
+    GC_PRESSURE_LOW = 0.5  # below this, collections are rare (~1-3% overhead)
+    GC_PRESSURE_HIGH = 0.9  # above this, the heap is near spill territory
+    GC_OVERHEAD_MIN = 0.01  # 1% floor: even a cold heap pays some GC
+    GC_OVERHEAD_AT_LOW = 0.03  # ~3% overhead at the low/moderate pressure boundary
+    GC_OVERHEAD_AT_HIGH = 0.10  # ~10% overhead at the moderate/high pressure boundary
+    GC_OVERHEAD_MAX = 0.25  # cap: past this Spark spills to disk instead of GC-thrashing
+    GC_PRESSURE_RAMP_SLOPE = 0.5  # overhead growth per unit of pressure above GC_PRESSURE_HIGH
+    G1GC_OVERHEAD_RELIEF = 0.8  # G1's incremental region collection trims ~20% off GC overhead
+
+    # Explicit collector flags that override the assume-G1 default. JDK9+ defaults
+    # to G1 and Spark 3.3+ ships on JDK11/17, so G1 is assumed unless one of these
+    # appears in the executor Java options.
+    NON_G1_COLLECTOR_FLAGS = (
+        "UseParallelGC",
+        "UseParallelOldGC",
+        "UseConcMarkSweepGC",
+        "UseSerialGC",
+        "UseZGC",
+        "UseShenandoahGC",
+    )
+
+    # --- Straggler / skew model (M3) ---
+    # AQE skew-join mitigation splits oversized partitions, capping how much larger
+    # than the mean the slowest task's share can be.
+    AQE_SKEW_CAP = 2.0
+
+    # Operations whose task count follows spark.sql.shuffle.partitions rather than
+    # the input partitioning.
+    SHUFFLE_TASK_OPS = frozenset(
+        {
+            OperationType.JOIN,
+            OperationType.AGGREGATION,
+            OperationType.SORT,
+            OperationType.WINDOW,
+        }
+    )
+
     def __init__(self) -> None:
         """Initialize the performance model."""
         self._cache: dict[str, Any] = {}
@@ -254,6 +304,13 @@ class PerformanceModel:
             stage_times=stage_times,
         )
 
+        # Estimate GC overhead (already folded into stage times; surfaced for diagnostics)
+        gc_metrics = self._estimate_gc_overhead(
+            config=config,
+            data_profile=data_profile,
+            cluster_topology=cluster_topology,
+        )
+
         # Aggregate total execution time
         total_time = self._aggregate_execution_time(
             stage_times=stage_times,
@@ -314,6 +371,7 @@ class PerformanceModel:
             "memory_breakdown": memory_metrics,
             "cpu_breakdown": cpu_metrics,
             "shuffle_breakdown": shuffle_metrics,
+            "gc_breakdown": gc_metrics,
             "feasibility_issues": feasibility_issues,
         }
 
@@ -417,7 +475,6 @@ class PerformanceModel:
         config: dict[str, Any],
         io_metrics: dict[str, float],
     ) -> dict[str, float]:
-        _ = config  # Mark as intentionally unused
         """Estimate execution time for each stage.
 
         Args:
@@ -440,6 +497,13 @@ class PerformanceModel:
         # Base processing rate (GB/s per core for simple scan)
         base_rate = 0.5  # GB/s per core
         total_cores = cluster_topology["total_executor_cores"]
+
+        # GC overhead applies to CPU/heap-bound work (everything except I/O-bound scans)
+        gc_factor = self._estimate_gc_overhead(
+            config=config,
+            data_profile=data_profile,
+            cluster_topology=cluster_topology,
+        )["gc_overhead_factor"]
 
         for i, op in enumerate(operations.operations):
             stage_name = f"stage_{i}_{op.name.lower()}"
@@ -470,9 +534,19 @@ class PerformanceModel:
                 # General processing
                 processing_time = (data_profile.size_gb / (base_rate * total_cores)) * complexity
 
-            # Apply skew penalty
-            if data_profile.skew_factor > 1.5:
-                processing_time *= 1 + (data_profile.skew_factor - 1) * 0.3
+            # Apply GC overhead to CPU/heap-bound stages (scans are I/O-bound)
+            if op != OperationType.SCAN:
+                processing_time *= gc_factor
+
+            # Apply straggler/skew model: stage wall time is driven by the
+            # slowest task in the last wave, not a flat penalty
+            processing_time = self._apply_straggler_skew(
+                ideal_time=processing_time,
+                op=op,
+                data_profile=data_profile,
+                config=config,
+                cluster_topology=cluster_topology,
+            )
 
             # Apply UDF penalty if present
             if op == OperationType.UDF:
@@ -481,6 +555,63 @@ class PerformanceModel:
             stage_times[stage_name] = processing_time
 
         return stage_times
+
+    def _apply_straggler_skew(
+        self,
+        ideal_time: float,
+        op: OperationType,
+        data_profile: DataCharacteristics,
+        config: dict[str, Any],
+        cluster_topology: dict[str, Any],
+    ) -> float:
+        """Adjust an ideally balanced stage time for skew-driven stragglers.
+
+        Tasks execute in waves of ``total_cores`` parallel slots. Under skew the
+        slowest task receives roughly ``skew_factor`` times the mean data share,
+        so only the final wave is stretched by the straggler while earlier waves
+        complete at the mean rate:
+
+            stage_time = mean_wave_time * (waves - 1) + mean_wave_time * max(1, skew)
+
+        With ``skew == 1`` this reproduces the balanced estimate exactly, and the
+        penalty dilutes sub-linearly as the number of waves grows. AQE skew-join
+        mitigation splits oversized join partitions, capping the effective skew.
+
+        Args:
+            ideal_time: Stage wall time assuming perfectly balanced tasks.
+            op: Operation type of the stage.
+            data_profile: Data characteristics (provides skew_factor).
+            config: Spark configuration.
+            cluster_topology: Cluster topology details.
+
+        Returns:
+            Stage wall time adjusted for the straggler in the last wave.
+
+        """
+        skew = max(1.0, float(data_profile.skew_factor))
+        if skew <= 1.0:
+            return ideal_time
+
+        # AQE splits oversized skewed join partitions, bounding the straggler
+        if (
+            op == OperationType.JOIN
+            and self._config_flag(config, "spark.sql.adaptive.enabled", default=True)
+            and self._config_flag(config, "spark.sql.adaptive.skewJoin.enabled", default=True)
+        ):
+            skew = min(skew, self.AQE_SKEW_CAP)
+
+        # Task count: shuffle stages follow spark.sql.shuffle.partitions,
+        # map-side stages follow the input partitioning
+        if op in self.SHUFFLE_TASK_OPS:
+            num_tasks = max(1, int(config.get("spark.sql.shuffle.partitions", 200)))
+        else:
+            num_tasks = max(1, int(data_profile.partitioning))
+
+        total_cores = max(1, int(cluster_topology.get("total_executor_cores", 1)))
+        waves = max(1, math.ceil(num_tasks / total_cores))
+
+        mean_wave_time = ideal_time / waves
+        return mean_wave_time * (waves - 1) + mean_wave_time * skew
 
     def _estimate_shuffle_metrics(
         self,
@@ -532,12 +663,36 @@ class PerformanceModel:
         else:
             spill_gb = 0.0
 
+        # Shuffle transfer time (M2): the same compressed bytes flow through both
+        # the local disks (scaling with cores) and the network (scaling with
+        # nodes); the slowest pipe binds, so transfer time is the max of the two.
+        if compression_enabled:
+            # Compressed shuffle reduces bytes on the wire and on disk
+            codec = str(config.get("spark.io.compression.codec", "lz4")).lower()
+            wire_gb = shuffle_data_gb * self.COMPRESSION_RATIOS.get(codec, 0.7)
+        else:
+            wire_gb = shuffle_data_gb
+
+        num_executors = max(1, int(cluster_topology["num_executors"]))
+        # Topology is unknown below the executor level, so assume one executor
+        # per node for the per-node NIC budget
+        nodes_effective = num_executors
+        total_cores = max(1, int(cluster_topology.get("total_executor_cores", num_executors)))
+
+        disk_transfer_seconds = wire_gb / (self.SHUFFLE_DISK_GBPS_PER_CORE * total_cores)
+        network_transfer_seconds = wire_gb / (self.NETWORK_GBPS_PER_NODE * nodes_effective)
+        transfer_seconds = max(disk_transfer_seconds, network_transfer_seconds)
+
         return {
             "read_gb": shuffle_read_gb,
             "write_gb": shuffle_write_gb,
             "spill_gb": spill_gb,
             "data_gb": shuffle_data_gb,
             "compression_ratio": compression_ratio,
+            "network_wire_gb": wire_gb,
+            "disk_transfer_seconds": disk_transfer_seconds,
+            "network_transfer_seconds": network_transfer_seconds,
+            "transfer_seconds": transfer_seconds,
         }
 
     def _estimate_memory_usage(
@@ -598,6 +753,112 @@ class PerformanceModel:
             "driver_peak_gb": driver_peak,
             "executor_memory_gb": executor_memory,
         }
+
+    def _estimate_gc_overhead(
+        self,
+        config: dict[str, Any],
+        data_profile: DataCharacteristics,
+        cluster_topology: dict[str, Any],
+    ) -> dict[str, float]:
+        """Estimate JVM garbage collection overhead from memory pressure.
+
+        Memory pressure is the per-core working set (one partition of data per
+        task slot) divided by the per-core heap available to Spark after
+        ``spark.memory.fraction``. Overhead grows piecewise with pressure:
+        ~1-3% when the heap is mostly idle, ~5-10% under moderate churn, and up
+        to 25% when the working set approaches spill territory. G1GC's
+        incremental collection reduces the overhead by ~20% relative; G1 is
+        assumed by default since JDK9+ (Spark 3.3+ ships on JDK11/17) unless the
+        executor Java options select another collector.
+
+        Args:
+            config: Spark configuration.
+            data_profile: Data characteristics.
+            cluster_topology: Cluster topology details.
+
+        Returns:
+            Dictionary with ``memory_pressure``, ``gc_time_fraction`` (extra time
+            relative to CPU-bound work), ``gc_overhead_factor`` (multiplier
+            applied to CPU-bound stage times) and ``uses_g1gc`` (0.0/1.0).
+
+        """
+        executor_memory = float(cluster_topology.get("executor_memory_gb", 4.0))
+        executor_cores = max(1, int(cluster_topology.get("executor_cores", 1)))
+        memory_fraction = float(config.get("spark.memory.fraction", 0.6))
+
+        # Heap each task slot can use for live objects
+        heap_per_core_gb = (executor_memory * memory_fraction) / executor_cores
+
+        # Working set per core: each slot processes one input partition at a time
+        partitions = max(1, int(data_profile.partitioning))
+        working_set_per_core_gb = data_profile.size_gb / partitions
+
+        memory_pressure = working_set_per_core_gb / max(heap_per_core_gb, 1e-9)
+
+        # Piecewise-linear overhead curve over the pressure regimes
+        if memory_pressure <= self.GC_PRESSURE_LOW:
+            gc_fraction = self.GC_OVERHEAD_MIN + (self.GC_OVERHEAD_AT_LOW - self.GC_OVERHEAD_MIN) * (
+                memory_pressure / self.GC_PRESSURE_LOW
+            )
+        elif memory_pressure <= self.GC_PRESSURE_HIGH:
+            gc_fraction = self.GC_OVERHEAD_AT_LOW + (self.GC_OVERHEAD_AT_HIGH - self.GC_OVERHEAD_AT_LOW) * (
+                (memory_pressure - self.GC_PRESSURE_LOW) / (self.GC_PRESSURE_HIGH - self.GC_PRESSURE_LOW)
+            )
+        else:
+            gc_fraction = min(
+                self.GC_OVERHEAD_MAX,
+                self.GC_OVERHEAD_AT_HIGH + (memory_pressure - self.GC_PRESSURE_HIGH) * self.GC_PRESSURE_RAMP_SLOPE,
+            )
+
+        uses_g1gc = self._uses_g1gc(config)
+        if uses_g1gc:
+            gc_fraction *= self.G1GC_OVERHEAD_RELIEF
+
+        return {
+            "memory_pressure": memory_pressure,
+            "gc_time_fraction": gc_fraction,
+            "gc_overhead_factor": 1.0 + gc_fraction,
+            "uses_g1gc": 1.0 if uses_g1gc else 0.0,
+        }
+
+    def _uses_g1gc(self, config: dict[str, Any]) -> bool:
+        """Determine whether executors run with the G1 garbage collector.
+
+        Args:
+            config: Spark configuration.
+
+        Returns:
+            True if G1GC is explicitly requested or no other collector is
+            selected (G1 is the JVM default on JDK9+ / Spark 3.3+).
+
+        """
+        java_opts = " ".join(
+            str(config.get(key, "")) for key in ("spark.executor.defaultJavaOptions", "spark.executor.extraJavaOptions")
+        )
+
+        if "UseG1GC" in java_opts:
+            return True
+
+        # An explicitly selected non-G1 collector overrides the G1-default assumption
+        return not any(flag in java_opts for flag in self.NON_G1_COLLECTOR_FLAGS)
+
+    @staticmethod
+    def _config_flag(config: dict[str, Any], key: str, *, default: bool) -> bool:
+        """Read a boolean Spark config value, handling string representations.
+
+        Args:
+            config: Spark configuration.
+            key: Configuration key to look up.
+            default: Value to use when the key is absent.
+
+        Returns:
+            The configuration value interpreted as a boolean.
+
+        """
+        value = config.get(key, default)
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes")
+        return bool(value)
 
     def _estimate_cpu_utilization(
         self,
@@ -665,11 +926,14 @@ class PerformanceModel:
         # Add shuffle overhead
         shuffle_overhead = shuffle_metrics["spill_gb"] * 2  # 2s per GB spill
 
+        # Add shuffle transfer time: bytes moved through min(disk, network) throughput
+        transfer_time = shuffle_metrics.get("transfer_seconds", 0.0)
+
         # Add coordination overhead
         num_executors = float(cluster_topology["num_executors"])
         coordination_overhead = num_executors * 0.5  # 0.5s per executor
 
-        total_time = total_stage_time + shuffle_overhead + coordination_overhead
+        total_time = total_stage_time + shuffle_overhead + transfer_time + coordination_overhead
 
         return max(1.0, float(total_time))  # Minimum 1 second
 
@@ -749,7 +1013,13 @@ class PerformanceModel:
                 f"Executor cores ({executor_cores}) exceed total cores ({resource_spec.cpu_cores})",
             )
 
-        # Check for reasonable parallelism
+        # Feasibility is decided by the hard constraints above; advisory
+        # findings below are surfaced in the issue list but must not fail the
+        # config (a failing advisory would make Bayesian trials silently
+        # evaluate to inf for otherwise valid sparse configs).
+        is_feasible = len(issues) == 0
+
+        # Advisory: very high parallelism relative to available cores
         parallelism = int(config.get("spark.default.parallelism", 200))
         total_cores = cluster_topology["total_executor_cores"]
         if parallelism > total_cores * 10:
@@ -757,7 +1027,6 @@ class PerformanceModel:
                 f"Parallelism ({parallelism}) is very high relative to cores ({total_cores}) - may cause overhead",
             )
 
-        is_feasible = len(issues) == 0
         return is_feasible, issues
 
     @staticmethod

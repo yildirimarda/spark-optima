@@ -389,3 +389,121 @@ class TestDisplayResults:
         assert "aws" in output.lower()
         assert "glue" in output.lower()
         assert "create-job" in output.lower()
+
+
+class TestParetoExports:
+    """Tests for Pareto frontier export formats (Workstream N)."""
+
+    @pytest.fixture
+    def pareto_result(self) -> OptimizationResult:
+        """Create a multi-objective result with a 3-point Pareto frontier."""
+        return OptimizationResult(
+            configuration={"spark.executor.memory": "4g"},
+            estimated_time_minutes=10.0,
+            confidence_score=0.9,
+            platform_specific={"platform": "local"},
+            metadata={
+                "objectives": ["minimize_time", "minimize_cost"],
+                "pareto_frontier": [
+                    {
+                        "trial_number": 7,
+                        "objective_values": {"minimize_time": 150.0, "minimize_cost": 0.20},
+                        "configuration": {"spark.executor.memory": "2g"},
+                    },
+                    {
+                        "trial_number": 0,
+                        "objective_values": {"minimize_time": 120.0, "minimize_cost": 0.30},
+                        "configuration": {"spark.executor.memory": "4g", "spark.executor.cores": 4},
+                    },
+                    {
+                        "trial_number": 3,
+                        "objective_values": {"minimize_time": 90.0, "minimize_cost": 0.45},
+                        "configuration": {"spark.executor.memory": "8g", "spark.executor.cores": 4},
+                    },
+                ],
+            },
+        )
+
+    @pytest.fixture
+    def single_objective_result(self) -> OptimizationResult:
+        """Create a single-objective result (no Pareto frontier)."""
+        return OptimizationResult(
+            configuration={"spark.executor.memory": "4g"},
+            estimated_time_minutes=10.0,
+            confidence_score=0.9,
+            platform_specific={"platform": "local"},
+            metadata={"platform": "local"},
+        )
+
+    def test_export_pareto_json(self, pareto_result: OptimizationResult) -> None:
+        """JSON export contains objectives, point count, and all points."""
+        exporter = ConfigExporter(pareto_result, "local")
+        payload = json.loads(exporter.export_pareto_json())
+
+        assert payload["objectives"] == ["minimize_time", "minimize_cost"]
+        assert payload["n_points"] == 3
+        assert len(payload["points"]) == 3
+        assert payload["points"][0]["trial_number"] == 7
+        assert payload["points"][0]["objective_values"]["minimize_cost"] == pytest.approx(0.20)
+
+    def test_export_pareto_json_falls_back_to_sorted_objectives(self) -> None:
+        """Without metadata objectives, names come from the sorted union of point keys."""
+        result = OptimizationResult(
+            configuration={},
+            estimated_time_minutes=1.0,
+            confidence_score=0.5,
+            metadata={
+                "pareto_frontier": [
+                    {
+                        "trial_number": 1,
+                        "objective_values": {"minimize_time": 5.0, "minimize_cost": 0.1},
+                        "configuration": {"spark.executor.memory": "4g"},
+                    },
+                ],
+            },
+        )
+        exporter = ConfigExporter(result, "local")
+        payload = json.loads(exporter.export_pareto_json())
+
+        assert payload["objectives"] == ["minimize_cost", "minimize_time"]
+
+    def test_export_pareto_csv_deterministic_columns(self, pareto_result: OptimizationResult) -> None:
+        """CSV header is trial, objectives (metadata order), then sorted config params."""
+        exporter = ConfigExporter(pareto_result, "local")
+        lines = exporter.export_pareto_csv().strip().split("\n")
+
+        assert lines[0] == "trial,minimize_time,minimize_cost,spark.executor.cores,spark.executor.memory"
+        # Rows are sorted by trial number
+        assert lines[1] == "0,120.0,0.3,4,4g"
+        assert lines[2] == "3,90.0,0.45,4,8g"
+        # Missing config params produce empty cells (trial 7 has no cores value)
+        assert lines[3] == "7,150.0,0.2,,2g"
+
+    def test_export_pareto_json_raises_without_frontier(
+        self,
+        single_objective_result: OptimizationResult,
+    ) -> None:
+        """Single-objective results raise a helpful ValueError on pareto export."""
+        exporter = ConfigExporter(single_objective_result, "local")
+
+        with pytest.raises(ValueError, match="no Pareto frontier"):
+            exporter.export_pareto_json()
+        with pytest.raises(ValueError, match="--objective"):
+            exporter.export_pareto_csv()
+
+    def test_save_to_file_routes_pareto_formats(
+        self,
+        pareto_result: OptimizationResult,
+        tmp_path: Path,
+    ) -> None:
+        """save_to_file dispatches pareto-json and pareto-csv formats."""
+        exporter = ConfigExporter(pareto_result, "local")
+
+        json_path = tmp_path / "frontier.json"
+        exporter.save_to_file(json_path, "pareto-json")
+        payload = json.loads(json_path.read_text())
+        assert payload["n_points"] == 3
+
+        csv_path = tmp_path / "frontier.csv"
+        exporter.save_to_file(csv_path, "pareto-csv")
+        assert csv_path.read_text().startswith("trial,minimize_time,minimize_cost")

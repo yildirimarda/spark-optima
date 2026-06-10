@@ -166,8 +166,8 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
-# Entry point for running with uvicorn
-if __name__ == "__main__":
+def main() -> None:
+    """Run the API server (console-script entry point for ``spark-optima-api``)."""
     import os
 
     import uvicorn
@@ -181,6 +181,10 @@ if __name__ == "__main__":
         "spark_optima.api.main:app",
         host=host,
         port=port,
-        reload=True,
         log_level="info",
     )
+
+
+# Entry point for running with uvicorn
+if __name__ == "__main__":
+    main()

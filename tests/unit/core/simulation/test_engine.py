@@ -3,11 +3,41 @@
 
 """Unit tests for SimulationEngine."""
 
-from unittest.mock import MagicMock
+import importlib.util
+import math
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from spark_optima.core.bayesian.models import TrialMetrics
 from spark_optima.core.simulation.engine import SimulationEngine
 from spark_optima.platforms.models import ResourceSpec
+
+requires_sklearn = pytest.mark.skipif(
+    importlib.util.find_spec("sklearn") is None,
+    reason="scikit-learn not installed",
+)
+
+
+def _mock_surrogate_predictor(
+    r2: float = 0.9,
+    sample_count: int = 60,
+    measured_fraction: float = 0.0,
+    prediction: float = 123.0,
+) -> MagicMock:
+    """Build a mock MLPerformancePredictor with a trained online surrogate."""
+    predictor = MagicMock()
+    # Disable the legacy batch-trained path; these tests target the online surrogate
+    predictor.is_trained.return_value = False
+    predictor.has_online_model.return_value = True
+    predictor.online_r2 = r2
+    predictor.sample_count = sample_count
+    predictor.measured_sample_count = int(sample_count * measured_fraction)
+    predictor.measured_fraction = measured_fraction
+    predictor.online_trained_samples = sample_count
+    predictor.predict_online.return_value = prediction
+    predictor.add_sample.return_value = True
+    return predictor
 
 
 class TestSimulationEngine:
@@ -604,3 +634,334 @@ class TestSimulationEngineMoreCoverage:
 
         history = engine.get_trial_history()
         assert len(history) == 1
+
+
+class TestBlendWeightPolicy:
+    """Tests for the online surrogate blend-weight policy (Workstream L2)."""
+
+    def _engine(self) -> SimulationEngine:
+        return SimulationEngine(use_ml=False)
+
+    def test_r2_below_gate_keeps_weight_zero(self) -> None:
+        """R² below the gate disables blending entirely."""
+        engine = self._engine()
+
+        assert engine._compute_blend_weight(r2=0.29, n_samples=1000, measured_fraction=1.0) == 0.0
+        assert engine._compute_blend_weight(r2=-1.0, n_samples=1000, measured_fraction=1.0) == 0.0
+        assert engine._compute_blend_weight(r2=float("nan"), n_samples=1000, measured_fraction=1.0) == 0.0
+
+    def test_analytical_only_cap(self) -> None:
+        """With only analytical samples the weight saturates at 0.5."""
+        engine = self._engine()
+        saturated_samples = SimulationEngine.ML_RAMP_SAMPLES_MULTIPLIER * engine.ml_min_samples
+
+        weight = engine._compute_blend_weight(r2=0.95, n_samples=saturated_samples, measured_fraction=0.0)
+
+        assert weight == pytest.approx(SimulationEngine.ML_WEIGHT_CAP_ANALYTICAL)
+
+    def test_measured_cap(self) -> None:
+        """With fully measured samples the weight saturates at 0.8."""
+        engine = self._engine()
+        saturated_samples = SimulationEngine.ML_RAMP_SAMPLES_MULTIPLIER * engine.ml_min_samples
+
+        weight = engine._compute_blend_weight(r2=0.95, n_samples=saturated_samples, measured_fraction=1.0)
+
+        assert weight == pytest.approx(SimulationEngine.ML_WEIGHT_CAP_MEASURED)
+
+    def test_weight_ramps_with_sample_count(self) -> None:
+        """The weight grows proportionally with sample count until saturation."""
+        engine = self._engine()
+        half_samples = SimulationEngine.ML_RAMP_SAMPLES_MULTIPLIER * engine.ml_min_samples // 2
+
+        weight = engine._compute_blend_weight(r2=0.95, n_samples=half_samples, measured_fraction=0.0)
+
+        assert weight == pytest.approx(SimulationEngine.ML_WEIGHT_CAP_ANALYTICAL / 2)
+
+    def test_weight_ramps_with_r2(self) -> None:
+        """The weight grows with R² between the gate and the saturation point."""
+        engine = self._engine()
+        saturated_samples = SimulationEngine.ML_RAMP_SAMPLES_MULTIPLIER * engine.ml_min_samples
+        midpoint_r2 = (SimulationEngine.ML_R2_GATE + SimulationEngine.ML_R2_SATURATION) / 2
+
+        weight = engine._compute_blend_weight(r2=midpoint_r2, n_samples=saturated_samples, measured_fraction=0.0)
+
+        assert weight == pytest.approx(SimulationEngine.ML_WEIGHT_CAP_ANALYTICAL / 2)
+
+    def test_measured_fraction_interpolates_cap(self) -> None:
+        """A partially measured sample set interpolates the cap linearly."""
+        engine = self._engine()
+        saturated_samples = SimulationEngine.ML_RAMP_SAMPLES_MULTIPLIER * engine.ml_min_samples
+
+        weight = engine._compute_blend_weight(r2=0.95, n_samples=saturated_samples, measured_fraction=0.5)
+
+        expected = (SimulationEngine.ML_WEIGHT_CAP_ANALYTICAL + SimulationEngine.ML_WEIGHT_CAP_MEASURED) / 2
+        assert weight == pytest.approx(expected)
+
+
+class TestSurrogateConfiguration:
+    """Tests for the surrogate-related constructor flags."""
+
+    def test_default_flags(self) -> None:
+        """The surrogate is on by default with the documented thresholds."""
+        engine = SimulationEngine(use_ml=False)
+
+        assert engine.enable_ml_predictor is True
+        assert engine.ml_min_samples == SimulationEngine.ML_MIN_SAMPLES_DEFAULT
+        assert engine.ml_retrain_interval == SimulationEngine.ML_RETRAIN_INTERVAL_DEFAULT
+
+    def test_disabled_surrogate_records_no_samples(self) -> None:
+        """enable_ml_predictor=False keeps the engine purely analytical."""
+        mock_predictor = _mock_surrogate_predictor()
+        with patch(
+            "spark_optima.core.simulation.engine.MLPerformancePredictor",
+            return_value=mock_predictor,
+        ):
+            engine = SimulationEngine(enable_ml_predictor=False)
+
+        result = engine.simulate(
+            config={"spark.executor.memory": "4g"},
+            resource_spec=ResourceSpec(cpu_cores=8, memory_gb=32),
+        )
+
+        mock_predictor.add_sample.assert_not_called()
+        assert result.hybrid_estimate["ml_blend_weight"] == 0.0
+        assert result.hybrid_estimate["ml_samples"] == 0
+        assert result.model_breakdown["ml_surrogate"]["enabled"] is False
+
+    def test_use_ml_false_disables_surrogate(self) -> None:
+        """use_ml=False means no predictor and therefore no surrogate."""
+        engine = SimulationEngine(use_ml=False)
+
+        result = engine.simulate(
+            config={"spark.executor.memory": "4g"},
+            resource_spec=ResourceSpec(cpu_cores=8, memory_gb=32),
+        )
+
+        assert result.hybrid_estimate["ml_blend_weight"] == 0.0
+        assert result.model_breakdown["ml_surrogate"]["enabled"] is False
+        assert engine.record_observation({"spark.executor.memory": "4g"}, {"size_gb": 10}, 42.0) is False
+
+
+class TestSurrogateBlending:
+    """Tests for online surrogate blending inside simulate()."""
+
+    def _engine_with_mock(self, mock_predictor: MagicMock) -> SimulationEngine:
+        with patch(
+            "spark_optima.core.simulation.engine.MLPerformancePredictor",
+            return_value=mock_predictor,
+        ):
+            return SimulationEngine()
+
+    def test_blending_math_with_mocked_model(self) -> None:
+        """final = w * ml_prediction + (1 - w) * analytical, with w from the policy."""
+        mock_predictor = _mock_surrogate_predictor(r2=0.9, sample_count=60, prediction=123.0)
+        engine = self._engine_with_mock(mock_predictor)
+
+        result = engine.simulate(
+            config={"spark.executor.memory": "4g"},
+            resource_spec=ResourceSpec(cpu_cores=8, memory_gb=32),
+        )
+
+        hybrid = result.hybrid_estimate
+        # r2=0.9 and 60 samples saturate the ramp; analytical-only cap is 0.5
+        assert hybrid["ml_blend_weight"] == pytest.approx(0.5)
+        expected = 0.5 * 123.0 + 0.5 * hybrid["pre_blend_time_seconds"]
+        assert hybrid["execution_time_seconds"] == pytest.approx(expected)
+        assert hybrid["ml_surrogate_time_seconds"] == 123.0
+        assert result.metrics.execution_time_seconds == pytest.approx(expected)
+
+        surrogate = result.model_breakdown["ml_surrogate"]
+        assert surrogate["enabled"] is True
+        assert surrogate["trained"] is True
+        assert surrogate["ml_blend_weight"] == pytest.approx(0.5)
+        assert surrogate["validation_r2"] == 0.9
+        assert surrogate["ml_prediction_seconds"] == 123.0
+
+        # The analytical estimate is recorded as a pseudo-observation
+        mock_predictor.add_sample.assert_called_once()
+        assert mock_predictor.add_sample.call_args.kwargs.get("measured") is False
+
+    def test_r2_gate_blocks_blending(self) -> None:
+        """A surrogate with R² below the gate contributes nothing."""
+        mock_predictor = _mock_surrogate_predictor(r2=0.1, sample_count=60)
+        engine = self._engine_with_mock(mock_predictor)
+
+        result = engine.simulate(
+            config={"spark.executor.memory": "4g"},
+            resource_spec=ResourceSpec(cpu_cores=8, memory_gb=32),
+        )
+
+        hybrid = result.hybrid_estimate
+        assert hybrid["ml_blend_weight"] == 0.0
+        assert "pre_blend_time_seconds" not in hybrid
+        mock_predictor.predict_online.assert_not_called()
+        # Samples still accumulate so the surrogate can improve over time
+        mock_predictor.add_sample.assert_called_once()
+
+    def test_failed_prediction_falls_back_to_analytical(self) -> None:
+        """A None prediction from the surrogate leaves the estimate untouched."""
+        mock_predictor = _mock_surrogate_predictor(r2=0.9, sample_count=60)
+        mock_predictor.predict_online.return_value = None
+        engine = self._engine_with_mock(mock_predictor)
+
+        result = engine.simulate(
+            config={"spark.executor.memory": "4g"},
+            resource_spec=ResourceSpec(cpu_cores=8, memory_gb=32),
+        )
+
+        assert result.hybrid_estimate["ml_blend_weight"] == 0.0
+        assert "pre_blend_time_seconds" not in result.hybrid_estimate
+        assert result.metrics.execution_time_seconds > 0
+
+    def test_record_observation_with_mock(self) -> None:
+        """record_observation feeds measured samples into the surrogate."""
+        mock_predictor = _mock_surrogate_predictor()
+        engine = self._engine_with_mock(mock_predictor)
+
+        recorded = engine.record_observation(
+            {"spark.executor.memory": "4g"},
+            {"size_gb": 10},
+            42.0,
+        )
+
+        assert recorded is True
+        mock_predictor.add_sample.assert_called_once()
+        assert mock_predictor.add_sample.call_args.kwargs.get("measured") is True
+
+    def test_record_observation_rejects_invalid_time(self) -> None:
+        """Non-finite or non-positive measurements are ignored."""
+        mock_predictor = _mock_surrogate_predictor()
+        engine = self._engine_with_mock(mock_predictor)
+
+        assert engine.record_observation({}, {}, -5.0) is False
+        assert engine.record_observation({}, {}, 0.0) is False
+        assert engine.record_observation({}, {}, float("nan")) is False
+        mock_predictor.add_sample.assert_not_called()
+
+
+class TestSurrogateSklearnMissing:
+    """The engine must degrade silently to pure-analytical without scikit-learn."""
+
+    def test_engine_works_without_sklearn(self) -> None:
+        """Simulation stays functional and surrogate paths return inert values."""
+        with patch("spark_optima.core.simulation.predictor.SKLEARN_AVAILABLE", False):
+            engine = SimulationEngine(use_ml=True, enable_ml_predictor=True)
+
+        assert engine._ml_model is None
+
+        result = engine.simulate(
+            config={"spark.executor.memory": "4g"},
+            resource_spec=ResourceSpec(cpu_cores=8, memory_gb=32),
+        )
+
+        assert result.metrics.execution_time_seconds > 0
+        assert math.isfinite(result.metrics.execution_time_seconds)
+        assert result.hybrid_estimate["ml_blend_weight"] == 0.0
+        assert result.hybrid_estimate["ml_samples"] == 0
+        assert result.model_breakdown["ml_surrogate"]["enabled"] is False
+
+        assert engine.record_observation({"spark.executor.memory": "4g"}, {"size_gb": 10}, 42.0) is False
+        assert engine.save_ml_model() is None
+        assert engine.load_ml_model() is False
+        assert engine.get_ml_surrogate_status()["enabled"] is False
+
+
+@requires_sklearn
+class TestSurrogateEndToEnd:
+    """Integration tests: the surrogate trains from real simulated trials."""
+
+    @staticmethod
+    def _varied_trial_inputs(index: int) -> tuple[dict, dict]:
+        config = {
+            "spark.executor.memory": f"{2 + (index % 6)}g",
+            "spark.executor.cores": str(2 + (index % 4)),
+            "spark.sql.shuffle.partitions": str(100 + 20 * index),
+        }
+        data_profile = {"size_gb": 5.0 + 3.0 * index, "format": "parquet"}
+        return config, data_profile
+
+    def test_training_triggers_after_min_samples(self) -> None:
+        """Enough simulated trials train the surrogate and expose blend metadata."""
+        engine = SimulationEngine(ml_min_samples=10, ml_retrain_interval=5)
+        resource_spec = ResourceSpec(cpu_cores=8, memory_gb=32)
+
+        last_result = None
+        for i in range(30):
+            config, data_profile = self._varied_trial_inputs(i)
+            last_result = engine.simulate(
+                config=config,
+                resource_spec=resource_spec,
+                data_profile=data_profile,
+            )
+
+        assert last_result is not None
+        status = engine.get_ml_surrogate_status()
+        assert status["enabled"] is True
+        assert status["trained"] is True
+        assert status["ml_samples"] == 30
+
+        surrogate = last_result.model_breakdown["ml_surrogate"]
+        assert surrogate["trained"] is True
+        assert surrogate["ml_samples"] == 30
+
+        # Results stay finite and positive regardless of blending
+        assert last_result.metrics.execution_time_seconds > 0
+        assert math.isfinite(last_result.metrics.execution_time_seconds)
+        assert 0.0 <= last_result.hybrid_estimate["ml_blend_weight"] <= SimulationEngine.ML_WEIGHT_CAP_MEASURED
+
+        # If the surrogate cleared the R² gate it must actually contribute
+        if status["validation_r2"] >= SimulationEngine.ML_R2_GATE:
+            assert last_result.hybrid_estimate["ml_blend_weight"] > 0.0
+            assert "pre_blend_time_seconds" in last_result.hybrid_estimate
+
+    def test_below_threshold_stays_analytical(self) -> None:
+        """Before reaching ml_min_samples the engine is purely analytical."""
+        engine = SimulationEngine(ml_min_samples=10, ml_retrain_interval=5)
+        resource_spec = ResourceSpec(cpu_cores=8, memory_gb=32)
+
+        for i in range(5):
+            config, data_profile = self._varied_trial_inputs(i)
+            result = engine.simulate(
+                config=config,
+                resource_spec=resource_spec,
+                data_profile=data_profile,
+            )
+            assert result.hybrid_estimate["ml_blend_weight"] == 0.0
+            assert result.model_breakdown["ml_surrogate"]["trained"] is False
+
+        status = engine.get_ml_surrogate_status()
+        assert status["trained"] is False
+        assert status["ml_samples"] == 5
+
+    def test_measured_observations_feed_training(self) -> None:
+        """record_observation accumulates measured samples and triggers training."""
+        engine = SimulationEngine(ml_min_samples=10, ml_retrain_interval=5)
+
+        for i in range(12):
+            config, data_profile = self._varied_trial_inputs(i)
+            measured_time = 20.0 + 5.0 * data_profile["size_gb"]
+            assert engine.record_observation(config, data_profile, measured_time) is True
+
+        status = engine.get_ml_surrogate_status()
+        assert status["trained"] is True
+        assert status["ml_samples"] == 12
+        assert status["measured_samples"] == 12
+
+    def test_save_and_load_roundtrip_via_engine(self, tmp_path) -> None:
+        """A trained surrogate persists through engine save/load helpers."""
+        engine = SimulationEngine(ml_min_samples=10, ml_retrain_interval=5)
+        for i in range(12):
+            config, data_profile = self._varied_trial_inputs(i)
+            engine.record_observation(config, data_profile, 20.0 + 5.0 * data_profile["size_gb"])
+
+        model_path = tmp_path / "surrogate.joblib"
+        saved_to = engine.save_ml_model(model_path)
+        assert saved_to == model_path
+        assert model_path.exists()
+
+        fresh_engine = SimulationEngine()
+        assert fresh_engine.load_ml_model(model_path) is True
+        status = fresh_engine.get_ml_surrogate_status()
+        assert status["trained"] is True
+        assert status["ml_samples"] == 12
+        assert status["measured_samples"] == 12
