@@ -370,11 +370,14 @@ class JobDetailResponse(JobSummaryResponse):
         error: Failure message when the job failed.
         webhook_status: Webhook delivery outcome ("delivered" or "failed"),
             null when no webhook was requested or delivery is still pending.
+        progress: Latest optimization progress snapshot (per-trial counters
+            from the Bayesian phase), null before the first update.
     """
 
     result: dict[str, Any] | None = Field(None, description="Optimization result when completed")
     error: str | None = Field(None, description="Error message when failed")
     webhook_status: str | None = Field(None, description="Webhook delivery status (delivered/failed)")
+    progress: dict[str, Any] | None = Field(None, description="Latest optimization progress snapshot")
 
 
 class JobListResponse(BaseModel):
@@ -385,3 +388,65 @@ class JobListResponse(BaseModel):
     """
 
     jobs: list[JobSummaryResponse] = Field(default_factory=list, description="Job summaries, newest first")
+
+
+class TemplateSummaryResponse(BaseModel):
+    """Summary of a curated workload template.
+
+    Attributes:
+        name: Template identifier (e.g. "etl-batch").
+        display_name: Human-readable template name.
+        description: What the template is for.
+        parameter_count: Number of curated Spark parameters.
+    """
+
+    name: str = Field(..., description="Template identifier")
+    display_name: str = Field(..., description="Human-readable template name")
+    description: str = Field(..., description="What the template is for")
+    parameter_count: int = Field(..., ge=0, description="Number of curated Spark parameters")
+
+
+class TemplateListResponse(BaseModel):
+    """Response for the template list endpoint.
+
+    Attributes:
+        templates: Template summaries sorted by name.
+    """
+
+    templates: list[TemplateSummaryResponse] = Field(default_factory=list, description="Available templates")
+
+
+class TemplateParameterResponse(BaseModel):
+    """A single curated Spark parameter inside a workload template.
+
+    Attributes:
+        value: Curated parameter value.
+        comment: Short rationale explaining why the value was chosen.
+    """
+
+    value: Any = Field(..., description="Curated parameter value")
+    comment: str = Field("", description="Rationale for the chosen value")
+
+
+class TemplateDetailResponse(BaseModel):
+    """Full workload template including configuration and rationale.
+
+    Attributes:
+        name: Template identifier.
+        display_name: Human-readable template name.
+        description: What the template is for.
+        workload_traits: Characteristics of the targeted workload.
+        config: Curated Spark parameters with per-parameter comments.
+        recommended_for: Scenarios where the template is a good fit.
+        not_recommended_for: Scenarios where the template should be avoided.
+    """
+
+    name: str = Field(..., description="Template identifier")
+    display_name: str = Field(..., description="Human-readable template name")
+    description: str = Field(..., description="What the template is for")
+    workload_traits: list[str] = Field(default_factory=list, description="Targeted workload characteristics")
+    config: dict[str, TemplateParameterResponse] = Field(
+        default_factory=dict, description="Curated Spark parameters with per-parameter comments"
+    )
+    recommended_for: list[str] = Field(default_factory=list, description="Good-fit scenarios")
+    not_recommended_for: list[str] = Field(default_factory=list, description="Scenarios to avoid")

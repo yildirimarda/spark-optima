@@ -90,6 +90,8 @@ class Job:
         error: Error message when status is "failed".
         webhook_status: Webhook delivery outcome ("delivered" or "failed"),
             None when no webhook was requested or delivery has not finished.
+        progress: Latest optimization progress snapshot (per-trial counters
+            from the Bayesian phase), None before the first update.
         submitted_ts: Monotonic-ish epoch seconds used for ordering.
         finished_ts: Epoch seconds when the job finished, used for TTL eviction.
     """
@@ -104,6 +106,7 @@ class Job:
     result: dict[str, Any] | None = None
     error: str | None = None
     webhook_status: WebhookStatus | None = None
+    progress: dict[str, Any] | None = None
     submitted_ts: float = field(default=0.0, repr=False)
     finished_ts: float | None = field(default=None, repr=False)
 
@@ -142,6 +145,7 @@ class BaseJobStore(ABC):
         platform: str,
         spark_version: str,
         on_finished: Callable[[Job], None] | None = None,
+        on_accepted: Callable[[str], None] | None = None,
     ) -> str:
         """Register a new job and schedule it for execution.
 
@@ -157,6 +161,12 @@ class BaseJobStore(ABC):
                 never persisted and run only in the process that accepted
                 the job. Exceptions they raise are logged and never affect
                 job state.
+            on_accepted: Optional callback invoked synchronously with the new
+                job id after the job record is persisted but before execution
+                is scheduled. Used to bind progress reporters that need the
+                job id before the work starts (the work may run immediately
+                on inline executors). Exceptions it raises are logged and
+                never prevent the job from running.
 
         Returns:
             The job identifier for status polling.
@@ -173,6 +183,11 @@ class BaseJobStore(ABC):
         if on_finished is not None:
             with self._callback_lock:
                 self._on_finished[job_id] = on_finished
+        if on_accepted is not None:
+            try:
+                on_accepted(job_id)
+            except Exception:  # noqa: BLE001 — acceptance hooks must never block job execution
+                logger.exception(f"on_accepted callback for job {job_id} raised; the job will still run")
 
         executor = self._executor if self._executor is not None else _EXECUTOR
         executor.submit(self._run, job_id, work)
@@ -242,6 +257,18 @@ class BaseJobStore(ABC):
         Args:
             job_id: Identifier of the job to update.
             webhook_status: "delivered" or "failed".
+        """
+
+    @abstractmethod
+    def set_progress(self, job_id: str, progress: dict[str, Any]) -> None:
+        """Record the latest optimization progress snapshot on a job.
+
+        Called from the worker thread while the job is running; unknown job
+        ids are ignored (the job may have been evicted).
+
+        Args:
+            job_id: Identifier of the job to update.
+            progress: JSON-serializable progress payload (per-trial counters).
         """
 
     def _run(self, job_id: str, work: Callable[[], dict[str, Any]]) -> None:
@@ -401,6 +428,18 @@ class JobStore(BaseJobStore):
             job = self._jobs.get(job_id)
             if job is not None:
                 job.webhook_status = webhook_status
+
+    def set_progress(self, job_id: str, progress: dict[str, Any]) -> None:
+        """Record the latest optimization progress snapshot on a job.
+
+        Args:
+            job_id: Identifier of the job to update.
+            progress: JSON-serializable progress payload (per-trial counters).
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is not None:
+                job.progress = progress
 
     def _cleanup_locked(self) -> None:
         """Evict finished jobs older than the TTL.

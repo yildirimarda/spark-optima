@@ -46,8 +46,11 @@ Spark Optima supports multiple deployment platforms:
 
 - **Local** - Run on your local machine with standalone Spark
 - **AWS Glue** - Serverless Spark on AWS
+- **AWS EMR** - Managed Spark on EC2 (m5/r5/c5 instance families)
 - **Databricks** - Managed Spark platform
 - **Azure Synapse** - Azure's analytics service
+- **GCP Dataproc** - Managed Spark on Google Cloud (n2-standard/n2-highmem)
+- **Kubernetes** - Self-hosted Spark-on-K8s, including Spark Operator CRD export
 
 ## Quick Start Tutorial
 
@@ -243,10 +246,20 @@ Simulation mode provides good estimates (typically within ±30%) based on perfor
 ### Can I customize the optimization objectives?
 
 Yes! You can optimize for:
-- **Minimize execution time** (default)
-- **Minimize cost**
-- **Balance time and cost**
-- **Maximize throughput**
+- **`minimize_time`** - fastest run (default)
+- **`minimize_cost`** - cheapest run
+- **`minimize_memory`** - smallest memory footprint
+- **`maximize_success`** - lowest failure/OOM risk
+
+Passing more than one objective switches to multi-objective mode and produces
+a Pareto frontier of trade-offs:
+
+```bash
+spark-optima optimize -c job.py \
+  --objective minimize_time --objective minimize_cost \
+  --output json > result.json
+spark-optima pareto -r result.json
+```
 
 See the [Configuration Guide](configuration.md) for details.
 

@@ -110,10 +110,19 @@ class TestConfigValidator:
         assert validator.validate(bytes_param, "1024k")
 
     def test_validate_bytes_min_violation(self, validator, bytes_param):
-        """Test bytes below minimum."""
-        assert not validator.validate(bytes_param, "100")
+        """Test bytes below minimum (unit-suffixed candidate)."""
+        assert not validator.validate(bytes_param, "100b")
         errors = validator.get_errors()
         assert len(errors) == 1
+
+    def test_validate_bytes_suffixless_candidate_skips_range(self, validator, bytes_param):
+        """Bare-number BYTES candidates are not range-compared.
+
+        Spark's default unit for bare numbers varies per parameter (MiB for
+        memory params, bytes for others), so "100" cannot be ranged safely.
+        """
+        assert validator.validate(bytes_param, "100")
+        assert validator.get_errors() == []
 
     def test_parse_bytes_valid(self, validator):
         """Test byte parsing."""
@@ -562,3 +571,277 @@ class TestConfigValidatorValidateConfig:
         warnings = validator.get_warnings()
         assert len(warnings) == 1
         assert "may not be applicable" in warnings[0]
+
+
+class TestUnitSuffixedBounds:
+    """Tests for unit-suffixed min/max bounds on BYTES/DURATION parameters.
+
+    Regression tests for the v1.4 mixed-unit database issue where bounds like
+    ``max_value: 2048`` (meaning MiB) were compared against candidate values
+    parsed to bytes, making even the parameter's own default fail validation.
+    """
+
+    @pytest.fixture
+    def validator(self) -> ConfigValidator:
+        """Create a validator instance."""
+        return ConfigValidator()
+
+    @pytest.fixture
+    def kryo_like_param(self) -> ConfigParameter:
+        """Create a BYTES parameter with unit-suffixed bounds."""
+        return ConfigParameter(
+            name="spark.test.kryoBufferMax",
+            category=ParameterCategory.SERIALIZATION,
+            param_type=ParameterType.BYTES,
+            default="64m",
+            constraints=ValidationConstraint(min_value="64k", max_value="2048m"),
+        )
+
+    @pytest.fixture
+    def duration_param(self) -> ConfigParameter:
+        """Create a DURATION parameter with unit-suffixed bounds."""
+        return ConfigParameter(
+            name="spark.test.timeout",
+            category=ParameterCategory.NETWORK,
+            param_type=ParameterType.DURATION,
+            default="120s",
+            constraints=ValidationConstraint(min_value="1s", max_value="10min"),
+        )
+
+    def test_bytes_within_suffixed_bounds_passes(self, validator, kryo_like_param) -> None:
+        """A value inside unit-suffixed bounds must validate."""
+        assert validator.validate(kryo_like_param, "512m")
+        assert validator.get_errors() == []
+
+    def test_bytes_default_within_own_bounds(self, validator, kryo_like_param) -> None:
+        """Previously broken: default '64m' failed against max_value 2048 (MiB-as-bytes)."""
+        assert validator.validate(kryo_like_param, "64m")
+
+    def test_bytes_bounds_are_inclusive(self, validator, kryo_like_param) -> None:
+        """Values equal to the bounds must validate."""
+        assert validator.validate(kryo_like_param, "64k")
+        assert validator.validate(kryo_like_param, "2048m")
+
+    def test_bytes_above_max_fails_with_units(self, validator, kryo_like_param) -> None:
+        """A too-large value must fail naming both sides with units."""
+        assert not validator.validate(kryo_like_param, "3g")
+        errors = validator.get_errors()
+        assert len(errors) == 1
+        message = str(errors[0])
+        assert "is greater than maximum" in message
+        assert "'3g'" in message
+        assert "'2048m'" in message
+        assert "bytes" in message
+
+    def test_bytes_below_min_fails_with_units(self, validator, kryo_like_param) -> None:
+        """A too-small value must fail naming both sides with units."""
+        assert not validator.validate(kryo_like_param, "16k")
+        errors = validator.get_errors()
+        assert len(errors) == 1
+        message = str(errors[0])
+        assert "is less than minimum" in message
+        assert "'16k'" in message
+        assert "'64k'" in message
+        assert "bytes" in message
+
+    def test_unitless_bytes_candidates_skip_range_check(self, validator, kryo_like_param) -> None:
+        """Unit-less BYTES candidates are never range-compared.
+
+        Spark's default unit for bare numbers varies per parameter
+        (bytesConf(ByteUnit.MiB) params read "4096" as MiB, others as
+        bytes), so neither bare ints nor suffixless strings can be ranged
+        safely — even when their bytes interpretation would be out of range.
+        """
+        assert validator.validate(kryo_like_param, 64 * 1024 * 1024)
+        assert validator.validate(kryo_like_param, 3 * 1024**3)
+        assert validator.validate(kryo_like_param, "4096")
+        assert validator.get_errors() == []
+
+    def test_bare_numeric_bounds_mean_bytes(self, validator) -> None:
+        """Bare numeric bounds keep meaning canonical base units (bytes)."""
+        param = ConfigParameter(
+            name="spark.test.buffer",
+            category=ParameterCategory.SHUFFLE,
+            param_type=ParameterType.BYTES,
+            default="32k",
+            constraints=ValidationConstraint(min_value=1024),
+        )
+        assert validator.validate(param, "2k")
+        assert not validator.validate(param, "512b")
+        message = str(validator.get_errors()[0])
+        assert "1024 bytes" in message
+
+    def test_duration_within_suffixed_bounds_passes(self, validator, duration_param) -> None:
+        """A duration inside unit-suffixed bounds must validate."""
+        assert validator.validate(duration_param, "30s")
+        assert validator.validate(duration_param, "120s")
+
+    def test_duration_above_max_fails_with_units(self, validator, duration_param) -> None:
+        """A too-long duration must fail naming both sides with units."""
+        assert not validator.validate(duration_param, "1h")
+        errors = validator.get_errors()
+        assert len(errors) == 1
+        message = str(errors[0])
+        assert "is greater than maximum" in message
+        assert "'1h'" in message
+        assert "'10min'" in message
+        assert "seconds" in message
+
+    def test_duration_bare_numeric_bound_means_seconds(self, validator) -> None:
+        """Bare numeric duration bounds keep meaning seconds."""
+        param = ConfigParameter(
+            name="spark.test.interval",
+            category=ParameterCategory.NETWORK,
+            param_type=ParameterType.DURATION,
+            default="60s",
+            constraints=ValidationConstraint(min_value=10, max_value=600),
+        )
+        assert validator.validate(param, "1min")
+        assert not validator.validate(param, "20min")
+        message = str(validator.get_errors()[0])
+        assert "600 seconds" in message
+
+    def test_invalid_bound_string_is_validation_error(self, validator) -> None:
+        """An unparsable bound must surface as a validation error, not pass silently."""
+        param = ConfigParameter(
+            name="spark.test.badBound",
+            category=ParameterCategory.MEMORY,
+            param_type=ParameterType.BYTES,
+            default="1g",
+            constraints=ValidationConstraint(max_value="12parsecs"),
+        )
+        assert not validator.validate(param, "1g")
+        errors = validator.get_errors()
+        assert len(errors) == 1
+        assert "Invalid max_value '12parsecs'" in str(errors[0])
+
+    def test_integer_messages_unchanged(self, validator) -> None:
+        """Non-BYTES/DURATION range messages keep the plain numeric format."""
+        param = ConfigParameter(
+            name="spark.test.cores",
+            category=ParameterCategory.CPU,
+            param_type=ParameterType.INTEGER,
+            constraints=ValidationConstraint(min_value=1, max_value=100),
+        )
+        assert not validator.validate(param, 200)
+        assert str(validator.get_errors()[0]) == "Value 200 is greater than maximum 100"
+
+
+class TestDatabaseUnitNormalizationSweep:
+    """Mechanical sweep over the shipped parameter database.
+
+    Asserts the canonical unit convention holds for every BYTES/DURATION
+    parameter in every Spark version: bounds parse with the same parser used
+    for candidate values, min <= max, and each parameter's own default
+    validates within its own bounds. Catches any reintroduced mixed-unit
+    entry without naming parameters individually.
+    """
+
+    @pytest.fixture(scope="class")
+    def database(self):
+        """Load the shipped configuration database."""
+        from spark_optima.core.config_engine.database import ConfigDatabase
+
+        return ConfigDatabase()
+
+    @pytest.fixture
+    def validator(self) -> ConfigValidator:
+        """Create a validator instance."""
+        return ConfigValidator()
+
+    @staticmethod
+    def _sized_params(database):
+        """Yield (version, name, param) for every BYTES/DURATION parameter."""
+        for version in database.get_available_versions():
+            config_set = database.get_config_set(version)
+            for name, param in config_set.parameters.items():
+                if param.param_type in (ParameterType.BYTES, ParameterType.DURATION):
+                    yield version, name, param
+
+    def test_database_has_sized_params(self, database) -> None:
+        """Sanity check: the sweep actually covers parameters."""
+        assert sum(1 for _ in self._sized_params(database)) > 0
+
+    def test_bounds_parse_with_value_parser(self, database, validator) -> None:
+        """Every string bound must parse with the candidate-value parser."""
+        failures = []
+        for version, name, param in self._sized_params(database):
+            for bound_name in ("min_value", "max_value"):
+                bound = getattr(param.constraints, bound_name)
+                try:
+                    validator._bound_to_numeric(bound, param.param_type, name, bound_name)
+                except ValueError as e:
+                    failures.append(f"{version} {name}.{bound_name}: {e}")
+        assert not failures, "Unparsable bounds:\n" + "\n".join(failures)
+
+    def test_min_not_greater_than_max(self, database, validator) -> None:
+        """Whenever both bounds exist, min must not exceed max in base units."""
+        failures = []
+        for version, name, param in self._sized_params(database):
+            low = validator._bound_to_numeric(param.constraints.min_value, param.param_type, name, "min_value")
+            high = validator._bound_to_numeric(param.constraints.max_value, param.param_type, name, "max_value")
+            if low is not None and high is not None and low > high:
+                failures.append(f"{version} {name}: min {low} > max {high}")
+        assert not failures, "Inverted bounds:\n" + "\n".join(failures)
+
+    def test_every_default_validates_within_own_bounds(self, database, validator) -> None:
+        """Every BYTES/DURATION default must pass its own range check."""
+        failures = []
+        for version, name, param in self._sized_params(database):
+            if param.default is None:
+                continue
+            if not validator.validate(param, param.default):
+                details = "; ".join(str(e) for e in validator.get_errors())
+                failures.append(f"{version} {name} default={param.default!r}: {details}")
+        assert not failures, "Defaults failing their own bounds:\n" + "\n".join(failures)
+
+    def test_all_loaded_bounds_are_numeric(self, database) -> None:
+        """Load-time canonicalization leaves no string bound in the system."""
+        failures = []
+        for version in database.get_available_versions():
+            config_set = database.get_config_set(version)
+            for name, param in config_set.parameters.items():
+                for bound_name in ("min_value", "max_value"):
+                    bound = getattr(param.constraints, bound_name)
+                    if bound is not None and not isinstance(bound, int | float):
+                        failures.append(f"{version} {name}.{bound_name}={bound!r}")
+        assert not failures, "Non-numeric bounds after load:\n" + "\n".join(failures)
+
+    def test_kryoserializer_buffer_max_regression(self, database, validator) -> None:
+        """Regression: the v1.4 mixed-unit entry now range-checks correctly.
+
+        The YAML max bound "2048m" is canonicalized to 2147483648 bytes at
+        load time; violations name both sides with units.
+        """
+        param = database.get_parameter("3.5.0", "spark.kryoserializer.buffer.max")
+        assert param is not None
+        assert param.constraints.max_value == 2048 * 1024**2
+        assert validator.validate(param, "64m")
+        assert validator.validate(param, "512m")
+        assert not validator.validate(param, "3g")
+        message = str(validator.get_errors()[0])
+        assert "'3g'" in message
+        assert "2147483648 bytes" in message
+
+    def test_executor_memory_minimum_regression(self, database, validator) -> None:
+        """Regression: executor memory minimum is 512 MiB, not 512 bytes."""
+        param = database.get_parameter("3.5.0", "spark.executor.memory")
+        assert param is not None
+        assert param.constraints.min_value == 512 * 1024**2
+        assert validator.validate(param, "4g")
+        assert not validator.validate(param, "1m")
+        message = str(validator.get_errors()[0])
+        assert "'1m'" in message
+        assert "536870912 bytes" in message
+
+    def test_bare_number_candidate_on_driver_memory_passes(self, database, validator) -> None:
+        """Regression: a bare "4096" on spark.driver.memory must pass.
+
+        Spark defines driver memory as bytesConf(ByteUnit.MiB), so "4096"
+        means 4096 MiB — perfectly valid. Range comparison is skipped for
+        unit-less candidates; format/pattern checks still apply.
+        """
+        param = database.get_parameter("3.5.0", "spark.driver.memory")
+        assert param is not None
+        assert validator.validate(param, "4096")
+        assert validator.get_errors() == []

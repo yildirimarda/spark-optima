@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -41,6 +42,77 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["Optimization"])
+
+#: Minimum seconds between persisted progress writes for one job. Module-level
+#: so tests can patch it to observe every trial.
+PROGRESS_WRITE_INTERVAL_SECONDS = 0.5
+
+
+class JobProgressRecorder:
+    """Forwards per-trial optimizer progress events to the job store.
+
+    Instances are bound to a job id via :meth:`bind` (passed as the
+    ``on_accepted`` hook of ``store.submit``) and then used as the
+    ``progress_callback`` of the optimization run. Writes are throttled to
+    at most one every ``PROGRESS_WRITE_INTERVAL_SECONDS`` seconds, except
+    for the final trial which is always persisted. Runs that stop early
+    (timeout, max consecutive failures) never emit that final trial, so
+    :meth:`flush` must be called once the run ends to persist the last
+    event that was throttled away.
+
+    Attributes:
+        _store: Job store receiving the progress snapshots.
+        _job_id: Bound job identifier, None until bind() is called.
+        _last_write: Monotonic timestamp of the last persisted write.
+        _last_event: Most recent progress event seen, persisted or not.
+    """
+
+    def __init__(self, store: BaseJobStore) -> None:
+        """Initialize the recorder.
+
+        Args:
+            store: Job store to persist progress snapshots into.
+        """
+        self._store = store
+        self._job_id: str | None = None
+        self._last_write = 0.0
+        self._last_event: dict[str, Any] | None = None
+
+    def bind(self, job_id: str) -> None:
+        """Bind the recorder to a job id before the work starts.
+
+        Args:
+            job_id: Identifier assigned by the job store at submission.
+        """
+        self._job_id = job_id
+
+    def __call__(self, progress: dict[str, Any]) -> None:
+        """Persist a progress event, throttled to the configured interval.
+
+        Args:
+            progress: Progress event from the Bayesian optimizer.
+        """
+        if self._job_id is None:  # pragma: no cover — bind() runs before the work starts
+            return
+        self._last_event = progress
+        now = time.monotonic()
+        is_final = progress.get("trials_completed") == progress.get("n_trials")
+        if not is_final and now - self._last_write < PROGRESS_WRITE_INTERVAL_SECONDS:
+            return
+        self._last_write = now
+        self._store.set_progress(self._job_id, progress)
+
+    def flush(self) -> None:
+        """Unconditionally persist the most recent progress event.
+
+        Called once the optimization run has ended (successfully or not) so
+        the stored snapshot always matches the last event the optimizer
+        reported, even when the run stopped early and the event had been
+        throttled away. No-op when unbound or no event was ever seen.
+        """
+        if self._job_id is None or self._last_event is None:
+            return
+        self._store.set_progress(self._job_id, self._last_event)
 
 
 def _generate_optimization_id() -> str:
@@ -73,7 +145,11 @@ def _convert_code_suggestions(suggestions: list[CodeSuggestion]) -> list[CodeSug
     ]
 
 
-def _execute_optimization(request: OptimizationRequest, optimization_id: str) -> OptimizationResponse:
+def _execute_optimization(
+    request: OptimizationRequest,
+    optimization_id: str,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> OptimizationResponse:
     """Run the full optimization pipeline synchronously.
 
     This is the shared implementation behind both the synchronous
@@ -83,6 +159,8 @@ def _execute_optimization(request: OptimizationRequest, optimization_id: str) ->
     Args:
         request: Optimization request with code, platform, and parameters.
         optimization_id: Identifier to attach to the resulting response.
+        progress_callback: Optional per-trial progress callback forwarded to
+            the optimizer (used by async jobs to persist live progress).
 
     Returns:
         OptimizationResponse with the recommended configuration.
@@ -156,6 +234,7 @@ def _execute_optimization(request: OptimizationRequest, optimization_id: str) ->
                 use_bayesian=request.use_bayesian,
                 bayesian_trials=request.bayesian_trials,
                 objectives=request.objectives,
+                progress_callback=progress_callback,
             )
 
             # Build response
@@ -305,10 +384,12 @@ async def optimize_async(request: OptimizationRequest) -> JobSubmittedResponse:
     The request is validated and queued on a small worker pool; the
     response returns immediately with a job id. Poll
     ``GET /api/v1/jobs/{job_id}`` until the job status is "completed"
-    (the full optimization result is included) or "failed". When
-    ``webhook_url`` is provided, the API additionally POSTs a JSON
-    notification to that URL once the job finishes; the delivery outcome
-    is reported as ``webhook_status`` on the job record.
+    (the full optimization result is included) or "failed", or stream
+    live per-trial progress from ``GET /api/v1/jobs/{job_id}/events``
+    (Server-Sent Events). When ``webhook_url`` is provided, the API
+    additionally POSTs a JSON notification to that URL once the job
+    finishes; the delivery outcome is reported as ``webhook_status`` on
+    the job record.
 
     Args:
         request: Optimization request with code, platform, and parameters.
@@ -339,22 +420,30 @@ async def optimize_async(request: OptimizationRequest) -> JobSubmittedResponse:
         )
 
     optimization_id = _generate_optimization_id()
+    store = get_job_store()
+    progress_recorder = JobProgressRecorder(store)
 
     def _work() -> dict[str, Any]:
         """Run the optimization and return the response payload."""
         try:
-            return _execute_optimization(request, optimization_id).model_dump()
+            return _execute_optimization(request, optimization_id, progress_callback=progress_recorder).model_dump()
         except HTTPException as exc:
             # Unwrap HTTP errors into plain messages for the job record
             raise RuntimeError(str(exc.detail)) from exc
+        finally:
+            # Early-stopped runs (timeout, max consecutive failures) end
+            # without the always-persisted final trial; flush so the stored
+            # snapshot matches the last event the optimizer reported. Runs
+            # on success AND failure paths.
+            progress_recorder.flush()
 
-    store = get_job_store()
     on_finished = _build_webhook_callback(request.webhook_url, store)
     job_id = store.submit(
         _work,
         platform=request.platform.value,
         spark_version=request.spark_version,
         on_finished=on_finished,
+        on_accepted=progress_recorder.bind,
     )
     job = store.get(job_id)
     current_status = job.status if job is not None else "pending"

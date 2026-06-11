@@ -13,7 +13,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from spark_optima.core.config_engine.database import ConfigDatabase
-from spark_optima.core.config_engine.models import ConfigSet, ParameterCategory
+from spark_optima.core.config_engine.models import ConfigSet, ParameterCategory, ParameterType
 from spark_optima.core.heuristics.context import DataProfile, EvaluationContext
 from spark_optima.core.heuristics.evaluator import FormulaError, FormulaEvaluator
 from spark_optima.core.heuristics.rules import RuleRegistry
@@ -299,6 +299,13 @@ class HeuristicEngine:
     def validate_config(self, config: dict[str, Any] | None = None) -> list[str]:
         """Validate configuration against constraints.
 
+        Only numeric (integer/float) parameters are range-checked here.
+        BYTES and DURATION parameters carry unit-suffixed values ("4g",
+        "120s") that a naive ``float()`` comparison cannot handle, so their
+        range checks are owned by
+        :class:`spark_optima.core.config_engine.validator.ConfigValidator`,
+        which parses units; this method deliberately defers them.
+
         Args:
             config: Configuration to validate. Uses last evaluated if None.
 
@@ -313,24 +320,32 @@ class HeuristicEngine:
             raise ValueError("config_set must not be None")
         for param_name, value in config.items():
             param = self.config_set.parameters.get(param_name)
-            if param and param.constraints:
-                # Validate against constraints
-                if param.constraints.min_value is not None:
-                    try:
-                        if float(value) < param.constraints.min_value:
-                            errors.append(
-                                f"{param_name}: {value} < min {param.constraints.min_value}",
-                            )
-                    except (ValueError, TypeError):
-                        pass
+            if not param or not param.constraints:
+                continue
 
-                if param.constraints.max_value is not None:
-                    try:
-                        if float(value) > param.constraints.max_value:
-                            errors.append(
-                                f"{param_name}: {value} > max {param.constraints.max_value}",
-                            )
-                    except (ValueError, TypeError):
-                        pass
+            # Unit-bearing types are range-checked by ConfigValidator,
+            # which owns unit parsing. A float() comparison here would be
+            # wrong (or silently skipped) for values like "4g"/"120s".
+            if param.param_type in (ParameterType.BYTES, ParameterType.DURATION):
+                continue
+
+            # Validate against constraints
+            if param.constraints.min_value is not None:
+                try:
+                    if float(value) < param.constraints.min_value:
+                        errors.append(
+                            f"{param_name}: {value} < min {param.constraints.min_value}",
+                        )
+                except (ValueError, TypeError):
+                    pass
+
+            if param.constraints.max_value is not None:
+                try:
+                    if float(value) > param.constraints.max_value:
+                        errors.append(
+                            f"{param_name}: {value} > max {param.constraints.max_value}",
+                        )
+                except (ValueError, TypeError):
+                    pass
 
         return errors

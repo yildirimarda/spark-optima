@@ -2624,3 +2624,263 @@ class TestCLITemplatesCommand:
 
         assert result.exit_code == 1
         assert "Unknown template" in result.output
+
+
+@pytest.fixture
+def sample_scala_file(tmp_path: Path) -> Path:
+    """Create a sample Scala Spark code file for testing."""
+    scala_file = tmp_path / "EtlJob.scala"
+    scala_file.write_text(
+        "import org.apache.spark.sql.SparkSession\n"
+        "\n"
+        "object EtlJob {\n"
+        "  def main(args: Array[String]): Unit = {\n"
+        '    val spark = SparkSession.builder().appName("etl").getOrCreate()\n'
+        '    val df = spark.read.parquet("data.parquet")\n'
+        "    val out = df.crossJoin(df)\n"
+        "    val legacy = rdd.groupByKey().mapValues(_.size)\n"
+        "    out.collect()\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    return scala_file
+
+
+class TestCLIScalaSupport:
+    """Test cases for Scala source handling in analyze and optimize."""
+
+    def test_analyze_with_scala_file(self, runner: CliRunner, sample_scala_file: Path) -> None:
+        """Analyze accepts a .scala file and detects Scala smells."""
+        result = runner.invoke(app, ["analyze", "--code-path", str(sample_scala_file)])
+
+        assert result.exit_code == 0
+        assert "Scala source detected" in result.output
+        assert "cartesian_join" in result.output
+        assert "groupbykey_usage" in result.output
+
+    def test_analyze_scala_json_output(self, runner: CliRunner, sample_scala_file: Path) -> None:
+        """Analyze --output json produces parseable results for Scala files."""
+        result = runner.invoke(
+            app,
+            ["analyze", "--code-path", str(sample_scala_file), "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        json_start = result.output.index("{")
+        payload = json.loads(result.output[json_start:])
+        smell_types = {smell["smell_type"] for smell in payload["smells"]}
+        assert "cartesian_join" in smell_types
+        assert "groupbykey_usage" in smell_types
+        assert "large_collect" in smell_types
+        assert payload["metadata"]["language"] == "scala"
+
+    def test_analyze_python_file_unchanged(self, runner: CliRunner, sample_code_file: Path) -> None:
+        """Python files do not trigger the Scala parser notice."""
+        result = runner.invoke(app, ["analyze", "--code-path", str(sample_code_file)])
+
+        assert result.exit_code == 0
+        assert "Scala source detected" not in result.output
+
+    def test_optimize_with_scala_file(self, runner: CliRunner, sample_scala_file: Path) -> None:
+        """Optimize accepts a .scala file without crashing on code analysis."""
+        result = runner.invoke(
+            app,
+            [
+                "optimize",
+                "--code-path",
+                str(sample_scala_file),
+                "--platform",
+                "local",
+                "--bayesian-trials",
+                "1",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Scala source detected" in result.output
+
+
+# =============================================================================
+# v1.5 — machine-readable stdout (json/yaml modes) + validate range checks
+# =============================================================================
+
+
+class TestCLIMachineReadableStdout:
+    """Regression tests: json/yaml output modes must keep stdout pure.
+
+    `spark-optima optimize ... --output json > result.json` must produce a
+    parseable file, so every decorative element (banner panel, input table,
+    status messages, history note, tips) has to go to stderr instead.
+    """
+
+    @staticmethod
+    def _real_result() -> object:
+        """Build a real OptimizationResult so export and history-save work."""
+        from spark_optima.core.result import OptimizationResult
+
+        return OptimizationResult(
+            configuration={"spark.executor.memory": "4g", "spark.executor.cores": 4},
+            estimated_time_minutes=10.0,
+            confidence_score=0.9,
+            platform_specific={"platform": "local"},
+        )
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_optimize_json_stdout_is_strict_json(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+    ) -> None:
+        """In json mode stdout carries exactly the JSON document."""
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = self._real_result()
+        mock_optimizer.return_value = mock_instance
+
+        result = runner.invoke(
+            app,
+            ["optimize", "--code-path", str(sample_code_file), "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        # Strict parse: any banner/table/tip on stdout breaks this directly
+        payload = json.loads(result.stdout)
+        assert payload["configuration"]["spark.executor.memory"] == "4g"
+        # Decorative output must land on stderr instead
+        assert "Input Parameters" in result.stderr
+        assert "Saved to history" in result.stderr
+        assert "Tip:" in result.stderr
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_optimize_yaml_stdout_is_pure_yaml(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+    ) -> None:
+        """In yaml mode stdout carries exactly the YAML document."""
+        import yaml
+
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = self._real_result()
+        mock_optimizer.return_value = mock_instance
+
+        result = runner.invoke(
+            app,
+            ["optimize", "--code-path", str(sample_code_file), "--output", "yaml"],
+        )
+
+        assert result.exit_code == 0
+        payload = yaml.safe_load(result.stdout)
+        assert payload["configuration"]["spark.executor.memory"] == "4g"
+        assert "Input Parameters" not in result.stdout
+        assert "Input Parameters" in result.stderr
+
+    @patch("spark_optima.cli.main.Optimizer")
+    def test_optimize_table_mode_keeps_stdout_output(
+        self,
+        mock_optimizer: MagicMock,
+        runner: CliRunner,
+        sample_code_file: Path,
+    ) -> None:
+        """Table mode still prints the banner and input table to stdout."""
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = self._real_result()
+        mock_optimizer.return_value = mock_instance
+
+        result = runner.invoke(
+            app,
+            ["optimize", "--code-path", str(sample_code_file)],
+        )
+
+        assert result.exit_code == 0
+        assert "Input Parameters" in result.stdout
+        assert "Saved to history" in result.stdout
+
+    def test_analyze_json_stdout_is_strict_json(
+        self,
+        runner: CliRunner,
+        sample_code_file: Path,
+    ) -> None:
+        """Analyze json mode emits only the JSON document on stdout."""
+        analysis_dict = {"operations": [], "smells": [], "recommendations": []}
+        with patch("spark_optima.analysis.recommender.analyze_code") as mock_analyze:
+            mock_result = MagicMock()
+            mock_result.operations = []
+            mock_result.smells = []
+            mock_result.recommendations = []
+            mock_result.to_dict.return_value = analysis_dict
+            mock_analyze.return_value = mock_result
+
+            result = runner.invoke(
+                app,
+                ["analyze", "--code-path", str(sample_code_file), "--output", "json"],
+            )
+
+        assert result.exit_code == 0
+        # Strict parse: the header panel must not pollute stdout
+        payload = json.loads(result.stdout)
+        assert payload == analysis_dict
+        assert "Spark Code Analysis" in result.stderr
+
+    def test_analyze_table_mode_keeps_stdout_output(
+        self,
+        runner: CliRunner,
+        sample_code_file: Path,
+    ) -> None:
+        """Table mode still prints the analysis header to stdout."""
+        result = runner.invoke(app, ["analyze", "--code-path", str(sample_code_file)])
+
+        assert result.exit_code == 0
+        assert "Spark Code Analysis" in result.stdout
+
+
+class TestCLIValidateByteDurationRanges:
+    """Regression tests: validate range-checks BYTES/DURATION via ConfigValidator.
+
+    The v1.4 workaround skipped numeric range checks for BYTES/DURATION
+    parameters; with canonical-unit bounds the validate command now delegates
+    those checks to ConfigValidator.validate.
+    """
+
+    def test_validate_bytes_above_database_max_errors(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A byte value above the database maximum is an error naming the bound."""
+        config = _write_config_file(tmp_path, ["spark.kryoserializer.buffer.max 3g"])
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["valid"] is False
+        issues = _issues_for_check(payload, "invalid_value")
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "error"
+        assert issues[0]["param"] == "spark.kryoserializer.buffer.max"
+        message = issues[0]["message"]
+        assert "greater than maximum" in message
+        # The database max is 2048m; bounds are canonicalized to base units at
+        # load time, so accept the suffixed or canonical-bytes rendering.
+        assert "2048m" in message or "2147483648" in message
+
+    def test_validate_bytes_within_database_max_ok(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A byte value within the database bounds produces no range error."""
+        config = _write_config_file(tmp_path, ["spark.kryoserializer.buffer.max 512m"])
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["valid"] is True
+        assert _issues_for_check(payload, "invalid_value") == []
+
+    def test_validate_bare_numeric_memory_value_not_rejected(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A suffixless numeric memory value must not be falsely range-rejected."""
+        config = _write_config_file(tmp_path, ["spark.executor.memory 4096"])
+
+        result = runner.invoke(app, ["validate", "-c", str(config), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["valid"] is True
+        assert _issues_for_check(payload, "invalid_value") == []

@@ -49,6 +49,7 @@ SPARK_METHOD_MAP: dict[str, SparkOperationType] = {
     "cube": SparkOperationType.AGGREGATION,
     "pivot": SparkOperationType.AGGREGATION,
     "agg": SparkOperationType.AGGREGATION,
+    "groupByKey": SparkOperationType.AGGREGATION,
     "reduceByKey": SparkOperationType.AGGREGATION,
     # Cache operations
     "cache": SparkOperationType.CACHE,
@@ -109,6 +110,7 @@ SHUFFLE_METHODS: set[str] = {
     "dropDuplicates",
     "orderBy",
     "sort",
+    "groupByKey",
     "reduceByKey",
 }
 
@@ -314,6 +316,8 @@ class ParseResult:
         operations: List of detected Spark operations.
         dataframe_vars: Mapping of variable names to their operations.
         operation_count: Total number of operations detected.
+        language: Source language the result was produced from
+            ("python" or "scala"); defaults to "python".
 
     """
 
@@ -322,11 +326,13 @@ class ParseResult:
         operations: list[SparkOperation],
         dataframe_vars: dict[str, list[SparkOperation]],
         operation_count: int,
+        language: str = "python",
     ) -> None:
         """Initialize parse result."""
         self.operations = operations
         self.dataframe_vars = dataframe_vars
         self.operation_count = operation_count
+        self.language = language
 
     def get_summary(self) -> dict[str, Any]:
         """Get a summary of the parse result.

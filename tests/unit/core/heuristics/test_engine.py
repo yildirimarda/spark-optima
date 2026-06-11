@@ -169,3 +169,88 @@ class TestConfigDatabaseIntegration:
         )
 
         assert config == {}
+
+
+class TestValidateConfigUnitTypeDeferral:
+    """validate_config defers BYTES/DURATION range checks to ConfigValidator.
+
+    Regression for the silent-skip defect: the naive ``float(value)``
+    comparison raised TypeError/ValueError for unit-suffixed values like
+    "4g" and was swallowed, silently skipping the check. Unit-bearing types
+    are now explicitly deferred, while numeric parameters keep the check.
+    """
+
+    @staticmethod
+    def _make_engine() -> HeuristicEngine:
+        """Build an engine over a minimal hand-rolled ConfigSet."""
+        from spark_optima.core.config_engine.models import (
+            ConfigParameter,
+            ConfigSet,
+            ParameterType,
+            ValidationConstraint,
+        )
+
+        config_set = ConfigSet(
+            version="3.5.0",
+            parameters={
+                "spark.test.memory": ConfigParameter(
+                    name="spark.test.memory",
+                    category=ParameterCategory.MEMORY,
+                    param_type=ParameterType.BYTES,
+                    default="1g",
+                    constraints=ValidationConstraint(min_value=512 * 1024**2),
+                ),
+                "spark.test.timeout": ConfigParameter(
+                    name="spark.test.timeout",
+                    category=ParameterCategory.NETWORK,
+                    param_type=ParameterType.DURATION,
+                    default="120s",
+                    constraints=ValidationConstraint(min_value=1, max_value=600),
+                ),
+                "spark.test.cores": ConfigParameter(
+                    name="spark.test.cores",
+                    category=ParameterCategory.CPU,
+                    param_type=ParameterType.INTEGER,
+                    default=4,
+                    constraints=ValidationConstraint(min_value=1, max_value=64),
+                ),
+            },
+        )
+        return HeuristicEngine(config_set)
+
+    def test_bytes_param_is_deferred(self) -> None:
+        """BYTES values — suffixed or not, in range or not — produce no errors here."""
+        engine = self._make_engine()
+        # "1m" is far below the 512 MiB minimum: ConfigValidator's concern,
+        # not validate_config's. Previously this was silently skipped via a
+        # swallowed exception; now it is an explicit, documented deferral.
+        assert engine.validate_config({"spark.test.memory": "1m"}) == []
+        assert engine.validate_config({"spark.test.memory": "4g"}) == []
+
+    def test_duration_param_is_deferred(self) -> None:
+        """DURATION values are deferred to ConfigValidator as well."""
+        engine = self._make_engine()
+        assert engine.validate_config({"spark.test.timeout": "2h"}) == []
+        assert engine.validate_config({"spark.test.timeout": "30s"}) == []
+
+    def test_numeric_param_range_check_kept(self) -> None:
+        """INTEGER parameters keep the existing numeric range check."""
+        engine = self._make_engine()
+        errors = engine.validate_config({"spark.test.cores": 128})
+        assert len(errors) == 1
+        assert "spark.test.cores" in errors[0]
+        assert "max" in errors[0]
+        assert engine.validate_config({"spark.test.cores": 8}) == []
+
+    def test_mixed_config_only_flags_numeric_violation(self) -> None:
+        """A mixed config flags only the numeric out-of-range parameter."""
+        engine = self._make_engine()
+        errors = engine.validate_config(
+            {
+                "spark.test.memory": "1m",
+                "spark.test.timeout": "2h",
+                "spark.test.cores": 0,
+            },
+        )
+        assert len(errors) == 1
+        assert "spark.test.cores" in errors[0]

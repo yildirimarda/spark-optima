@@ -8,6 +8,14 @@ clusters, including representative N2 machine types across the general purpose
 (n2-standard) and memory-optimized (n2-highmem) families, YARN-oriented Spark
 configuration translation, and a Compute Engine + Dataproc fee cost model.
 
+Cost estimates apply a curated regional price multiplier (relative to the
+us-central1 baseline) to the Compute Engine portion; see
+:mod:`spark_optima.platforms.pricing`. When live pricing is opted in
+(``SPARK_OPTIMA_LIVE_PRICING=1`` plus a ``SPARK_OPTIMA_GCP_API_KEY``), live
+per-machine-type Compute Engine rates from the GCP Cloud Billing Catalog API
+replace the static baseline x multiplier (the $0.01/vCPU-hour Dataproc fee
+stays on top); see :mod:`spark_optima.platforms.live_pricing`.
+
 Dataproc image version to Spark version mapping used by this adapter:
 
 | Dataproc image | Spark version |
@@ -23,6 +31,7 @@ import logging
 from typing import Any
 
 from spark_optima.platforms.base import Platform
+from spark_optima.platforms.live_pricing import get_live_hourly_rate
 from spark_optima.platforms.models import (
     ClusterConfig,
     CostModel,
@@ -488,14 +497,19 @@ class GCPDataprocPlatform(Platform):
         """Estimate cost for a Dataproc cluster.
 
         Total cost is (master + workers) x (Compute Engine price + Dataproc
-        fee) x hours. The Dataproc fee is $0.01 per vCPU per hour.
+        fee) x hours. The Dataproc fee is $0.01 per vCPU per hour. When live
+        pricing is opted in (``SPARK_OPTIMA_LIVE_PRICING=1`` plus a
+        ``SPARK_OPTIMA_GCP_API_KEY``) and live Compute Engine rates are
+        available for both machine types, they replace the static baseline
+        rates x regional multiplier (the Dataproc fee stays on top) and the
+        result is labeled ``pricing_source: live``.
 
         When ``use_preemptible_workers`` is enabled, an approximate ~65%
-        discount is applied to the worker Compute Engine portion (the
-        Dataproc fee is charged on all vCPUs regardless, and the master node
-        stays on-demand). This is an approximation: real clusters keep at
-        least 2 non-preemptible primary workers, so actual savings will be
-        somewhat lower.
+        discount is applied to the worker Compute Engine portion — live or
+        static (the Dataproc fee is charged on all vCPUs regardless, and the
+        master node stays on-demand). This is an approximation: real
+        clusters keep at least 2 non-preemptible primary workers, so actual
+        savings will be somewhat lower.
 
         Args:
             cluster_config: Cluster configuration.
@@ -517,11 +531,44 @@ class GCPDataprocPlatform(Platform):
         worker_compute_hourly, worker_fee_hourly = split_hourly(worker)
         master_compute_hourly, master_fee_hourly = split_hourly(master)
 
-        # Regional pricing applies to the Compute Engine portion only — the
-        # Dataproc fee is $0.01/vCPU-hour in every region.
-        region_multiplier = get_region_multiplier(self.name, self.region)
-        worker_compute_hourly *= region_multiplier
-        master_compute_hourly *= region_multiplier
+        # Opt-in live pricing: per-machine-type Compute Engine rates from the
+        # GCP Cloud Billing Catalog API (returns None unless explicitly
+        # enabled and an API key is configured). Both node types must
+        # resolve, otherwise the estimate falls back to static pricing
+        # entirely so the breakdown stays internally consistent.
+        live_worker_compute = get_live_hourly_rate(
+            self.name,
+            region=self.region,
+            instance_type=worker.name,
+            vcpus=worker.resources.cpu_cores,
+            memory_gb=worker.resources.memory_gb,
+        )
+        live_master_compute = (
+            live_worker_compute
+            if master.name == worker.name
+            else get_live_hourly_rate(
+                self.name,
+                region=self.region,
+                instance_type=master.name,
+                vcpus=master.resources.cpu_cores,
+                memory_gb=master.resources.memory_gb,
+            )
+        )
+
+        if live_worker_compute is not None and live_master_compute is not None:
+            # Live path: the Compute Engine portion comes straight from the
+            # Cloud Billing catalog; the Dataproc fee portions are unchanged
+            pricing_source = "live"
+            region_multiplier = 1.0  # Live rates are already region-specific
+            worker_compute_hourly = live_worker_compute
+            master_compute_hourly = live_master_compute
+        else:
+            # Static path: regional pricing applies to the Compute Engine
+            # portion only — the Dataproc fee is $0.01/vCPU-hour everywhere.
+            pricing_source = "static"
+            region_multiplier = get_region_multiplier(self.name, self.region)
+            worker_compute_hourly *= region_multiplier
+            master_compute_hourly *= region_multiplier
 
         # Approximate preemptible (Spot) discount on the worker compute portion
         if self.use_preemptible_workers:
@@ -543,10 +590,7 @@ class GCPDataprocPlatform(Platform):
             "region": self.region,
             "duration_hours": duration_hours,
             "total_cost": total_cost,
-            # Always static: GCP's Cloud Billing Catalog API requires an API
-            # key, so anonymous live pricing is not possible — deferred to
-            # the v1.5+ backlog (see spark_optima.platforms.live_pricing)
-            "pricing_source": "static",
+            "pricing_source": pricing_source,
             "breakdown": {
                 "master_machine_type": master.name,
                 "master_count": cluster_config.driver_count,
@@ -563,8 +607,13 @@ class GCPDataprocPlatform(Platform):
                 "preemptible_discount": (self.PREEMPTIBLE_DISCOUNT if self.use_preemptible_workers else 0.0),
             },
             "notes": (
-                "Cost estimate based on on-demand us-central1 Compute Engine pricing "
-                "plus the $0.01/vCPU-hour Dataproc fee"
+                (
+                    "Cost estimate based on live on-demand Compute Engine pricing "
+                    "(GCP Cloud Billing Catalog API) plus the $0.01/vCPU-hour Dataproc fee"
+                    if pricing_source == "live"
+                    else "Cost estimate based on on-demand us-central1 Compute Engine pricing "
+                    "plus the $0.01/vCPU-hour Dataproc fee"
+                )
                 + (
                     "; preemptible worker discount is an approximation (~65% off worker compute)"
                     if self.use_preemptible_workers

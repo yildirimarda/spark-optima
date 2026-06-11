@@ -13,9 +13,15 @@ import logging
 import re
 from typing import Any
 
+from spark_optima.core.config_engine import units
 from spark_optima.core.config_engine.models import (
     ConfigParameter,
     ParameterType,
+)
+from spark_optima.core.config_engine.units import (
+    has_byte_unit_suffix,
+    parse_bytes,
+    parse_duration,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +51,23 @@ class ConfigValidator:
     constraints including type checking, range validation, pattern
     matching, and dependency checking.
 
+    Unit convention: constraint bounds (``min_value`` / ``max_value``) are
+    numbers in canonical base units — bytes for BYTES parameters, seconds
+    for DURATION parameters (unit-suffixed strings in the YAML database are
+    canonicalized to base units at load time). Range comparisons are always
+    performed in base units and violation messages name both sides with
+    their units.
+
+    Range-check rule for unit-less BYTES candidates: a BYTES candidate
+    without an explicit unit suffix (a bare int, or a string like "4096")
+    is NOT range-compared, because Spark's default unit for bare numbers
+    varies per parameter — ``bytesConf(ByteUnit.MiB)`` parameters such as
+    driver/executor memory, memoryOverhead, pyspark.memory and
+    kryoserializer.buffer.max read bare numbers as MiB, while others read
+    them as bytes — so a unit-less candidate cannot be ranged safely.
+    Format/pattern/allowed-value checks still apply to such candidates.
+    Unit-suffixed candidates ("512m", "3g") are fully range-checked.
+
     Example:
         >>> validator = ConfigValidator()
         >>> param = db.get_parameter("3.5.0", "spark.executor.memory")
@@ -53,31 +76,11 @@ class ConfigValidator:
 
     """
 
-    # Byte size multipliers
-    BYTE_UNITS = {
-        "b": 1,
-        "k": 1024,
-        "kb": 1024,
-        "m": 1024**2,
-        "mb": 1024**2,
-        "g": 1024**3,
-        "gb": 1024**3,
-        "t": 1024**4,
-        "tb": 1024**4,
-    }
+    # Byte size multipliers (shared with load-time canonicalization)
+    BYTE_UNITS = units.BYTE_UNITS
 
-    # Duration multipliers (in seconds)
-    DURATION_UNITS = {
-        "ms": 0.001,
-        "s": 1,
-        "sec": 1,
-        "m": 60,
-        "min": 60,
-        "h": 3600,
-        "hr": 3600,
-        "d": 86400,
-        "day": 86400,
-    }
+    # Duration multipliers in seconds (shared with load-time canonicalization)
+    DURATION_UNITS = units.DURATION_UNITS
 
     def __init__(self) -> None:
         """Initialize the validator."""
@@ -192,23 +195,33 @@ class ConfigValidator:
         constraints = param.constraints
         valid = True
 
-        # Min/Max validation
+        # Min/Max validation. Unit-less BYTES candidates are excluded:
+        # Spark's default unit for bare numbers varies per parameter
+        # (MiB for memory params, bytes for others), so they cannot be
+        # range-compared safely. See the class docstring.
         numeric_value = self._to_numeric(value, param.param_type)
-        if numeric_value is not None:
-            if constraints.min_value is not None and numeric_value < constraints.min_value:
+        if numeric_value is not None and self._is_range_comparable(param.param_type, value):
+            min_bound = self._bound_to_numeric(constraints.min_value, param.param_type, param.name, "min_value")
+            max_bound = self._bound_to_numeric(constraints.max_value, param.param_type, param.name, "max_value")
+
+            if min_bound is not None and numeric_value < min_bound:
+                value_desc = self._describe_quantity(value, numeric_value, param.param_type)
+                bound_desc = self._describe_quantity(constraints.min_value, min_bound, param.param_type)
                 self._errors.append(
                     ValidationError(
-                        f"Value {value} is less than minimum {constraints.min_value}",
+                        f"Value {value_desc} is less than minimum {bound_desc}",
                         param.name,
                         value,
                     ),
                 )
                 valid = False
 
-            if constraints.max_value is not None and numeric_value > constraints.max_value:
+            if max_bound is not None and numeric_value > max_bound:
+                value_desc = self._describe_quantity(value, numeric_value, param.param_type)
+                bound_desc = self._describe_quantity(constraints.max_value, max_bound, param.param_type)
                 self._errors.append(
                     ValidationError(
-                        f"Value {value} is greater than maximum {constraints.max_value}",
+                        f"Value {value_desc} is greater than maximum {bound_desc}",
                         param.name,
                         value,
                     ),
@@ -273,8 +286,107 @@ class ConfigValidator:
 
         return None
 
+    @staticmethod
+    def _is_range_comparable(param_type: ParameterType, value: Any) -> bool:
+        """Check whether a candidate value can be safely range-compared.
+
+        BYTES candidates without an explicit unit suffix (bare ints, or
+        strings like "4096") are not comparable: Spark's default unit for
+        bare numbers varies per parameter (MiB for memory params, bytes
+        for others). All other candidates are comparable.
+
+        Args:
+            param_type: Parameter type being validated.
+            value: Candidate value as supplied.
+
+        Returns:
+            True if min/max range comparison applies to this candidate.
+
+        """
+        if param_type != ParameterType.BYTES:
+            return True
+        return has_byte_unit_suffix(value)
+
+    def _bound_to_numeric(
+        self,
+        bound: int | float | str | None,
+        param_type: ParameterType,
+        param_name: str,
+        bound_name: str,
+    ) -> float | None:
+        """Convert a constraint bound to a numeric base-unit value.
+
+        Database-loaded bounds are already numeric (canonicalized to base
+        units at load time). String bounds on directly-constructed
+        constraints are still parsed defensively with the same parser used
+        for candidate values; bare numbers mean canonical base units
+        (bytes for BYTES, seconds for DURATION).
+
+        Args:
+            bound: Bound value from the parameter constraints.
+            param_type: Parameter type the bound applies to.
+            param_name: Parameter name (for error reporting).
+            bound_name: Which bound is being converted ("min_value"/"max_value").
+
+        Returns:
+            Numeric bound in base units, or None if no bound is set.
+
+        Raises:
+            ValueError: If a string bound cannot be parsed for the type.
+
+        """
+        if bound is None:
+            return None
+
+        if isinstance(bound, str):
+            try:
+                if param_type == ParameterType.BYTES:
+                    return float(self._parse_bytes(bound))
+                if param_type == ParameterType.DURATION:
+                    return float(self._parse_duration(bound))
+                return float(bound)
+            except ValueError as e:
+                raise ValueError(
+                    f"Invalid {bound_name} '{bound}' for parameter {param_name}: "
+                    f"expected a number or a unit-suffixed string",
+                ) from e
+
+        return float(bound)
+
+    def _describe_quantity(self, raw: Any, numeric: float, param_type: ParameterType) -> str:
+        """Format a value or bound for range-violation messages.
+
+        For BYTES/DURATION the description names the unit on both the raw
+        form and its canonical base-unit equivalent, e.g. "'2048m'
+        (2147483648 bytes)". Other types render the raw value unchanged.
+
+        Args:
+            raw: Original value or bound as defined/supplied.
+            numeric: Parsed base-unit numeric equivalent.
+            param_type: Parameter type being validated.
+
+        Returns:
+            Human-readable description string.
+
+        """
+        if param_type == ParameterType.BYTES:
+            unit = "bytes"
+        elif param_type == ParameterType.DURATION:
+            unit = "seconds"
+        else:
+            return str(raw)
+
+        canonical = int(numeric) if float(numeric).is_integer() else numeric
+        if isinstance(raw, str):
+            return f"'{raw}' ({canonical} {unit})"
+        return f"{raw} {unit}"
+
     def _parse_bytes(self, value: str | int) -> int:
         """Parse byte string to integer.
+
+        Delegates to the shared parser in
+        :mod:`spark_optima.core.config_engine.units`, which is also used
+        for load-time canonicalization of constraint bounds.
 
         Args:
             value: Byte string like "4g", "512m", or integer.
@@ -286,43 +398,14 @@ class ConfigValidator:
             ValueError: If string cannot be parsed.
 
         """
-        if isinstance(value, int):
-            return value
-
-        if isinstance(value, str):
-            value = value.strip().lower()
-
-            # Handle -1 for unlimited
-            if value == "-1" or value == "infinity":
-                return -1
-
-            # Extract number and unit
-            match = re.match(r"^(-?\d+(?:\.\d+)?)\s*([a-z]*)$", value)
-            if not match:
-                raise ValueError(f"Invalid byte string: {value}")
-
-            num_str = match.group(1)
-            unit = match.group(2)
-
-            # Validate that we actually have a number
-            try:
-                num = float(num_str)
-            except ValueError as e:
-                raise ValueError(f"Invalid byte string: {value}") from e
-
-            # Empty unit is valid (plain number)
-            if unit == "":
-                return int(num)
-
-            multiplier = self.BYTE_UNITS.get(unit)
-            if multiplier is None:
-                raise ValueError(f"Invalid byte unit: {unit}")
-            return int(num * multiplier)
-
-        raise ValueError(f"Cannot parse bytes from: {value}")
+        return parse_bytes(value)
 
     def _parse_duration(self, value: str | int) -> int:
         """Parse duration string to seconds.
+
+        Delegates to the shared parser in
+        :mod:`spark_optima.core.config_engine.units`, which is also used
+        for load-time canonicalization of constraint bounds.
 
         Args:
             value: Duration string like "5m", "1h", or integer seconds.
@@ -334,35 +417,7 @@ class ConfigValidator:
             ValueError: If string cannot be parsed.
 
         """
-        if isinstance(value, int):
-            return value
-
-        if isinstance(value, str):
-            value = value.strip().lower()
-
-            # Handle "infinity"
-            if value == "infinity":
-                return -1
-
-            # Check for special keywords
-            if value == "daily":
-                return 86400
-
-            # Extract number and unit
-            match = re.match(r"^(\d+(?:\.\d+)?)\s*([a-z]+)$", value)
-            if match:
-                num = float(match.group(1))
-                unit = match.group(2)
-                multiplier = self.DURATION_UNITS.get(unit, 1)
-                return int(num * multiplier)
-
-            # Try parsing as just a number (seconds)
-            try:
-                return int(value)
-            except ValueError:
-                pass
-
-        raise ValueError(f"Cannot parse duration from: {value}")
+        return parse_duration(value)
 
     def validate_config(
         self,

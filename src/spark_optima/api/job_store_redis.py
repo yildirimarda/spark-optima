@@ -321,3 +321,15 @@ class RedisJobStore(BaseJobStore):
             webhook_status: "delivered" or "failed".
         """
         self._update(job_id, webhook_status=webhook_status)
+
+    def set_progress(self, job_id: str, progress: dict[str, Any]) -> None:
+        """Record the latest optimization progress snapshot on a job.
+
+        The progress dictionary is stored as a field of the job's JSON
+        payload, so it is visible to every replica sharing the store.
+
+        Args:
+            job_id: Identifier of the job to update.
+            progress: JSON-serializable progress payload (per-trial counters).
+        """
+        self._update(job_id, progress=progress)

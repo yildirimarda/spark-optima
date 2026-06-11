@@ -12,6 +12,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
+from spark_optima.core.config_engine.units import parse_bytes, parse_duration
+
 
 class ParameterCategory(str, Enum):
     """Categories of Spark configuration parameters."""
@@ -56,9 +58,18 @@ class PlatformSupport(str, Enum):
 class ValidationConstraint:
     """Validation constraints for a configuration parameter.
 
+    Unit convention: ``min_value`` and ``max_value`` are always numbers
+    expressed in canonical base units — bytes for BYTES parameters, seconds
+    for DURATION parameters. Unit-suffixed strings in the YAML database
+    (e.g. ``"512m"``, ``"2048m"``, ``"120s"``) are parsed into base units at
+    load time by :meth:`ConfigParameter.from_dict`, so after load every
+    bound in the system is numeric.
+
     Attributes:
-        min_value: Minimum numeric value (for int/float/bytes).
-        max_value: Maximum numeric value (for int/float/bytes).
+        min_value: Minimum value in canonical base units (bytes for BYTES,
+            seconds for DURATION parameters).
+        max_value: Maximum value in canonical base units (same convention
+            as min_value).
         pattern: Regex pattern for string validation.
         allowed_values: List of allowed enum values.
         depends_on: Other parameters this constraint depends on.
@@ -76,8 +87,9 @@ class ValidationConstraint:
         """Initialize validation constraints.
 
         Args:
-            min_value: Minimum allowed value.
-            max_value: Maximum allowed value.
+            min_value: Minimum allowed value in canonical base units
+                (bytes for BYTES, seconds for DURATION parameters).
+            max_value: Maximum allowed value (same convention as min_value).
             pattern: Regex pattern for string matching.
             allowed_values: List of valid values.
             depends_on: List of dependent parameter names.
@@ -109,6 +121,46 @@ class ValidationConstraint:
             allowed_values=data.get("allowed_values"),
             depends_on=data.get("depends_on", []),
         )
+
+
+def _canonicalize_bounds(
+    constraints: ValidationConstraint,
+    param_type: ParameterType,
+    param_name: str,
+) -> None:
+    """Canonicalize string constraint bounds to numeric base units in place.
+
+    Unit-suffixed string bounds for BYTES/DURATION parameters (e.g. "512m",
+    "120s") are parsed to bytes/seconds with the same parser the validator
+    applies to candidate values. Numeric bounds pass through unchanged: they
+    already mean canonical base units. Bounds for other parameter types are
+    left untouched.
+
+    Args:
+        constraints: Constraints to canonicalize (mutated in place).
+        param_type: Type of the parameter owning the constraints.
+        param_name: Parameter name, used in error messages.
+
+    Raises:
+        ValueError: If a string bound cannot be parsed for the type.
+
+    """
+    if param_type == ParameterType.BYTES:
+        parse = parse_bytes
+    elif param_type == ParameterType.DURATION:
+        parse = parse_duration
+    else:
+        return
+
+    for bound_name in ("min_value", "max_value"):
+        bound = getattr(constraints, bound_name)
+        if isinstance(bound, str):
+            try:
+                setattr(constraints, bound_name, parse(bound))
+            except ValueError as e:
+                raise ValueError(
+                    f"Invalid {bound_name} '{bound}' for parameter {param_name}: {e}",
+                ) from e
 
 
 class HeuristicRule:
@@ -201,6 +253,13 @@ class ConfigParameter:
     including its type, default value, validation rules, and heuristic rules
     for optimization.
 
+    Unit convention: for BYTES and DURATION parameters the constraint bounds
+    (``constraints.min_value`` / ``constraints.max_value``) are numbers in
+    canonical base units (bytes for BYTES, seconds for DURATION).
+    Unit-suffixed strings in the YAML database (``"512m"``, ``"2048m"``,
+    ``"120s"``) are canonicalized at load time by :meth:`from_dict` using the
+    same parser the validator applies to candidate values.
+
     Attributes:
         name: Full parameter name (e.g., "spark.executor.memory").
         category: Parameter category (memory, cpu, shuffle, etc.).
@@ -291,17 +350,30 @@ class ConfigParameter:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ConfigParameter:
-        """Create from dictionary representation."""
+        """Create from dictionary representation.
+
+        Constraint bounds for BYTES/DURATION parameters are canonicalized
+        here: unit-suffixed strings ("512m", "2048m", "120s") are parsed to
+        canonical base units (bytes/seconds), and bare numbers pass through
+        unchanged (they already mean base units). After this, every bound
+        on the resulting parameter is numeric.
+
+        Raises:
+            ValueError: If a string bound cannot be parsed for the type.
+
+        """
         heuristic_data = data.get("heuristic")
         heuristic = HeuristicRule.from_dict(heuristic_data) if heuristic_data else None
 
+        param_type = ParameterType(data["type"])
         constraints_data = data.get("constraints", {})
         constraints = ValidationConstraint.from_dict(constraints_data)
+        _canonicalize_bounds(constraints, param_type, data["name"])
 
         return cls(
             name=data["name"],
             category=ParameterCategory(data["category"]),
-            param_type=ParameterType(data["type"]),
+            param_type=param_type,
             default=data.get("default"),
             description=data.get("description", ""),
             since_version=data.get("since_version", "3.0.0"),

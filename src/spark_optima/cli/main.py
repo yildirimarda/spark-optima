@@ -155,6 +155,10 @@ def optimize(
         $ spark-optima optimize -c ./my_job.py -p databricks -d 100
 
     """
+    # In machine-readable modes stdout must carry exactly the JSON/YAML
+    # document, so all decorative output is routed to stderr instead.
+    display = Console(stderr=True) if output_format in ("json", "yaml") else console
+
     # Convert empty strings to None for compatibility
     if not code_file:
         code_file = None  # type: ignore[assignment]
@@ -170,11 +174,16 @@ def optimize(
 
     # Check code_path is provided
     if actual_code_path is None:
-        console.print("[bold red]Error:[/bold red] code file path is required")
+        display.print("[bold red]Error:[/bold red] code file path is required")
         raise typer.Exit(1)
 
     # Convert to Path
     code_path_obj = Path(actual_code_path)
+
+    # Scala sources are supported for the code-analysis phase: the analysis
+    # engine auto-detects the .scala suffix and routes to the Scala parser.
+    if code_path_obj.suffix.lower() == ".scala":
+        display.print("[dim]Scala source detected — code analysis will use the Scala parser[/dim]")
 
     # Validate objectives (deduplicated, order-preserving); empty means default
     from spark_optima.core.bayesian.objectives import ObjectiveFunctionFactory
@@ -183,10 +192,10 @@ def optimize(
     valid_objectives = ObjectiveFunctionFactory.get_available_objectives()
     invalid_objectives = [name for name in (objectives or []) if name not in valid_objectives]
     if invalid_objectives:
-        console.print(
+        display.print(
             f"[bold red]Error:[/bold red] unknown objective(s): {', '.join(invalid_objectives)}",
         )
-        console.print(f"Valid objectives: {', '.join(valid_objectives)}")
+        display.print(f"Valid objectives: {', '.join(valid_objectives)}")
         raise typer.Exit(1)
 
     # Parse the event log early so inferred values feed the input summary
@@ -198,10 +207,10 @@ def optimize(
         try:
             event_summary = EventLogParser(event_log).parse()
         except FileNotFoundError:
-            console.print(f"[bold red]Error:[/bold red] event log not found: {event_log}")
+            display.print(f"[bold red]Error:[/bold red] event log not found: {event_log}")
             raise typer.Exit(1) from None
         except (OSError, ValueError) as e:
-            console.print(f"[bold red]Error parsing event log:[/bold red] {e}")
+            display.print(f"[bold red]Error parsing event log:[/bold red] {e}")
             raise typer.Exit(1) from e
 
         if data_size_gb is None and event_summary.input_data_gb > 0:
@@ -209,7 +218,7 @@ def optimize(
             data_size_inferred = True
 
     # Display header
-    console.print(
+    display.print(
         Panel.fit(
             "[bold blue]🔥 Spark Optima[/bold blue]\n[dim]Intelligent Spark Configuration Optimization[/dim]",
             border_style="blue",
@@ -228,11 +237,11 @@ def optimize(
     input_table.add_row("Max Memory", f"{max_memory_gb} GB" if max_memory_gb else "Unlimited")
     input_table.add_row("Mode", mode)
     input_table.add_row("Objectives", ", ".join(objectives) if objectives else "minimize_time (default)")
-    console.print(input_table)
-    console.print()
+    display.print(input_table)
+    display.print()
 
     # Initialize optimizer
-    with console.status("[bold green]Initializing optimizer..."):
+    with display.status("[bold green]Initializing optimizer..."):
         try:
             optimizer = Optimizer(
                 platform=platform,
@@ -240,7 +249,7 @@ def optimize(
                 optimization_mode=mode,
             )
         except ValueError as e:
-            console.print(f"[bold red]Error:[/bold red] {e}")
+            display.print(f"[bold red]Error:[/bold red] {e}")
             raise typer.Exit(1) from e
 
     # Prepare data profile
@@ -272,12 +281,12 @@ def optimize(
             notes.append(f"spill detected ({hints['spill_gb']:.2f} GB)")
         if hints["large_shuffles"]:
             notes.append(f"large shuffles ({hints['shuffle_total_gb']:.1f} GB)")
-        console.print(f"[dim]Inferred from event log: {', '.join(notes)}[/dim]\n")
+        display.print(f"[dim]Inferred from event log: {', '.join(notes)}[/dim]\n")
 
     # Run optimization
     if output_format in ("json", "yaml"):
         _silence_optuna_logs()
-    with console.status("[bold green]Running optimization..."):
+    with display.status("[bold green]Running optimization..."):
         try:
             result = optimizer.optimize(
                 code_path=code_path_obj,
@@ -288,7 +297,7 @@ def optimize(
                 objectives=objectives,
             )
         except (RuntimeError, ValueError, KeyError, AttributeError, TypeError) as e:
-            console.print(f"[bold red]Optimization failed:[/bold red] {e}")
+            display.print(f"[bold red]Optimization failed:[/bold red] {e}")
             raise typer.Exit(1) from e
 
     # Display results using formatters
@@ -318,19 +327,19 @@ def optimize(
                 mode=mode,
                 code_path=str(code_path_obj),
             )
-        console.print(
+        display.print(
             f"\n[dim]Saved to history (id={entry_id}). View with: spark-optima history --show {entry_id}[/dim]",
         )
     except Exception as e:  # history persistence must never break optimization
         logger.warning("Failed to save optimization result to history: %s", e)
 
     # Save hint
-    console.print("\n[dim]Tip: Save results with --output json > result.json[/dim]")
-    console.print(
+    display.print("\n[dim]Tip: Save results with --output json > result.json[/dim]")
+    display.print(
         "[dim]      Then export with: spark-optima export -r result.json -f <format>[/dim]",
     )
     if "pareto_frontier" in result.metadata:
-        console.print(
+        display.print(
             "[dim]      Multi-objective run: inspect trade-offs with: spark-optima pareto -r result.json[/dim]",
         )
 
@@ -360,6 +369,10 @@ def analyze(
         $ spark-optima analyze -c ./my_job.py
 
     """
+    # In machine-readable mode stdout must carry exactly the JSON document,
+    # so all decorative output is routed to stderr instead.
+    display = Console(stderr=True) if output_format == "json" else console
+
     # Convert empty strings to None for compatibility
     if not code_file:
         code_file = None  # type: ignore[assignment]
@@ -371,29 +384,33 @@ def analyze(
 
     # Check code_path is provided
     if actual_code_path is None:
-        console.print("[bold red]Error:[/bold red] code file path is required")
+        display.print("[bold red]Error:[/bold red] code file path is required")
         raise typer.Exit(1)
 
     # Convert to Path
     code_path_obj = Path(actual_code_path)
 
     # Display header
-    console.print(
+    display.print(
         Panel.fit(
             "[bold blue]🔍 Spark Code Analysis[/bold blue]\n[dim]Identify optimization opportunities[/dim]",
             border_style="blue",
         ),
     )
 
-    # Run analysis
+    # Run analysis (route .scala sources to the Scala parser)
     from spark_optima.analysis.recommender import analyze_code
 
-    with console.status("[bold green]Analyzing code..."):
+    language = "scala" if code_path_obj.suffix.lower() == ".scala" else "python"
+    if language == "scala":
+        display.print("[dim]Scala source detected — using the Scala code parser[/dim]")
+
+    with display.status("[bold green]Analyzing code..."):
         try:
             source_code = code_path_obj.read_text(encoding="utf-8")
-            result = analyze_code(source_code)
+            result = analyze_code(source_code, language=language)
         except (OSError, RuntimeError, ValueError, AttributeError, TypeError) as e:
-            console.print(f"[bold red]Analysis failed:[/bold red] {e}")
+            display.print(f"[bold red]Analysis failed:[/bold red] {e}")
             raise typer.Exit(1) from e
 
     # Display results
@@ -409,7 +426,7 @@ def analyze(
         table.add_row("Operations Count", str(len(result.operations)))
         table.add_row("Code Smells", str(len(result.smells)))
         table.add_row("Recommendations", str(len(result.recommendations)))
-        console.print(table)
+        display.print(table)
 
         if result.smells:
             smell_table = Table(title="Code Smells")
@@ -419,7 +436,7 @@ def analyze(
             for smell in result.smells:
                 line_number = smell.location.line if smell.location is not None else "Unknown"
                 smell_table.add_row(str(line_number), smell.smell_type, str(smell.severity))
-            console.print(smell_table)
+            display.print(smell_table)
 
 
 def _build_tuning_advice(summary: "EventLogSummary", hints: dict[str, Any]) -> list[tuple[str, str]]:
@@ -1183,7 +1200,8 @@ def pareto(
         console.print(
             "[dim]Rerun optimization with multiple objectives, e.g.:[/dim]\n"
             "[dim]  spark-optima optimize -c job.py "
-            "--objective minimize_time --objective minimize_cost[/dim]",
+            "--objective minimize_time --objective minimize_cost "
+            "--output json > result.json[/dim]",
         )
         raise typer.Exit(1)
 
@@ -1718,7 +1736,10 @@ def _collect_db_issues(
     """Check a config against the Spark parameter database.
 
     Flags unknown parameters, parameters deprecated in the target version,
-    and values that fail type/format or constraint validation.
+    and values that fail type/format or constraint validation. Range, pattern,
+    and allowed-value checks are delegated to ConfigValidator for all
+    parameter types, including BYTES/DURATION values whose bounds are
+    compared in canonical base units.
 
     Args:
         config: Parsed user configuration.
@@ -1729,8 +1750,6 @@ def _collect_db_issues(
         List of validation issues.
 
     """
-    from spark_optima.core.config_engine.models import ParameterType
-
     issues: list[dict[str, str]] = []
     for param_name in sorted(config):
         raw_value = config[param_name]
@@ -1755,23 +1774,6 @@ def _collect_db_issues(
         coerced, type_error = _coerce_typed_value(raw_value, db_param.param_type, validator)
         if type_error is not None:
             issues.append(_validation_issue("error", param_name, type_error, "invalid_value"))
-            continue
-
-        if db_param.param_type in (ParameterType.BYTES, ParameterType.DURATION):
-            # The database expresses byte/duration min/max constraints in mixed
-            # units, so numeric range checks would produce false positives.
-            # Format validity was checked during coercion; also apply the
-            # database regex pattern when one exists.
-            pattern = db_param.constraints.pattern
-            if pattern and isinstance(coerced, str) and not re.match(pattern, coerced):
-                issues.append(
-                    _validation_issue(
-                        "error",
-                        param_name,
-                        f"value '{coerced}' does not match pattern '{pattern}'",
-                        "invalid_value",
-                    ),
-                )
             continue
 
         if not validator.validate(db_param, coerced):
