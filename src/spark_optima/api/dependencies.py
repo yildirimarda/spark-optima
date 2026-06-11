@@ -163,8 +163,10 @@ class APIMetadata:
     This API provides endpoints for:
     - Optimizing Spark configurations for specific workloads
     - Submitting optimizations as asynchronous jobs and polling their status
+    - Streaming live optimization progress over Server-Sent Events
     - Analyzing Spark code for optimization opportunities
     - Getting platform-specific recommendations
+    - Browsing curated workload templates
 
     ## Key Features
 
@@ -175,6 +177,10 @@ class APIMetadata:
     - **Simulation Mode**: Fast performance predictions without running Spark
     - **Async Jobs**: `POST /api/v1/optimize/async` returns a job id; poll
       `GET /api/v1/jobs/{job_id}` for status and results
+    - **Live Progress (SSE)**: `GET /api/v1/jobs/{job_id}/events` streams
+      per-trial optimization progress as Server-Sent Events
+    - **Workload Templates**: `GET /api/v1/templates` lists curated baseline
+      configurations (batch ETL, streaming, ML training, interactive)
 
     ## Authentication
 

@@ -555,3 +555,71 @@ class TestOptimizerMultiObjective:
         # First MAX_PARETO_POINTS points are kept, in order
         assert persisted[0]["trial_number"] == 0
         assert persisted[-1]["trial_number"] == MAX_PARETO_POINTS - 1
+
+
+class TestOptimizerProgressCallbackPassthrough:
+    """Tests that Optimizer.optimize forwards progress_callback (Workstream Z)."""
+
+    @patch("spark_optima.core.optimizer.BayesianOptimizer")
+    def test_progress_callback_forwarded_to_bayesian(self, mock_bayesian: MagicMock, tmp_path: Path) -> None:
+        """The progress_callback kwarg reaches BayesianOptimizer.optimize."""
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = MagicMock(
+            best_config={"spark.executor.memory": "4g"},
+            all_trials=[],
+            pareto_frontier=[],
+            metadata={"objectives": ["minimize_time"]},
+        )
+        mock_bayesian.return_value = mock_instance
+        callback = MagicMock()
+        code_file = tmp_path / "job.py"
+        code_file.write_text("# Spark job")
+
+        optimizer = Optimizer(platform="local")
+        optimizer.optimize(code_path=code_file, use_bayesian=True, progress_callback=callback)
+
+        _, kwargs = mock_instance.optimize.call_args
+        assert kwargs["progress_callback"] is callback
+
+    @patch("spark_optima.core.optimizer.BayesianOptimizer")
+    def test_progress_callback_defaults_to_none(self, mock_bayesian: MagicMock, tmp_path: Path) -> None:
+        """Without the kwarg, None is forwarded (no behavior change)."""
+        mock_instance = MagicMock()
+        mock_instance.optimize.return_value = MagicMock(
+            best_config={"spark.executor.memory": "4g"},
+            all_trials=[],
+            pareto_frontier=[],
+            metadata={"objectives": ["minimize_time"]},
+        )
+        mock_bayesian.return_value = mock_instance
+        code_file = tmp_path / "job.py"
+        code_file.write_text("# Spark job")
+
+        optimizer = Optimizer(platform="local")
+        optimizer.optimize(code_path=code_file, use_bayesian=True)
+
+        _, kwargs = mock_instance.optimize.call_args
+        assert kwargs["progress_callback"] is None
+
+    def test_progress_callback_receives_events_end_to_end(self, tmp_path: Path) -> None:
+        """A real (small) run delivers per-trial events through the Optimizer."""
+        events: list[dict] = []
+        code_file = tmp_path / "job.py"
+        code_file.write_text(
+            "from pyspark.sql import SparkSession\n"
+            "spark = SparkSession.builder.getOrCreate()\n"
+            "df = spark.read.parquet('/data/input')\n",
+        )
+
+        optimizer = Optimizer(platform="local", spark_version="3.5.0")
+        optimizer.optimize(
+            code_path=code_file,
+            data_profile={"size_gb": 1, "format": "parquet"},
+            use_bayesian=True,
+            bayesian_trials=2,
+            progress_callback=events.append,
+        )
+
+        assert len(events) == 2
+        assert all(event["n_trials"] == 2 for event in events)
+        assert {"trial_number", "trials_completed", "state", "best_value"} <= set(events[0].keys())

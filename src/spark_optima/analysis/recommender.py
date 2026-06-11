@@ -50,31 +50,35 @@ class RecommendationEngine:
         self.detector = SmellDetector()
         self._register_generators()
 
-    def analyze_file(self, file_path: str) -> AnalysisResult:
+    def analyze_file(self, file_path: str, language: str = "auto") -> AnalysisResult:
         """Analyze a file and generate recommendations.
 
         Args:
-            file_path: Path to the Python file.
+            file_path: Path to the source file (.py or .scala).
+            language: Source language ("python", "scala", or "auto"; "auto"
+                routes .scala files to the Scala parser, otherwise Python).
 
         Returns:
             AnalysisResult with smells and recommendations.
 
         """
-        analysis_result = self.detector.analyze_file(file_path)
+        analysis_result = self.detector.analyze_file(file_path, language=language)
         analysis_result.recommendations = self._generate_recommendations(analysis_result.smells)
         return analysis_result
 
-    def analyze_source(self, source_code: str) -> AnalysisResult:
+    def analyze_source(self, source_code: str, language: str = "auto") -> AnalysisResult:
         """Analyze source code and generate recommendations.
 
         Args:
-            source_code: Python source code string.
+            source_code: Source code string (Python or Scala).
+            language: Source language ("python", "scala", or "auto"; "auto"
+                applies a conservative heuristic defaulting to Python).
 
         Returns:
             AnalysisResult with smells and recommendations.
 
         """
-        analysis_result = self.detector.analyze_source(source_code)
+        analysis_result = self.detector.analyze_source(source_code, language=language)
         analysis_result.recommendations = self._generate_recommendations(analysis_result.smells)
         return analysis_result
 
@@ -97,6 +101,7 @@ class RecommendationEngine:
             "single_partition_write": self._gen_single_partition_write_recommendation,
             "infer_schema": self._gen_infer_schema_recommendation,
             "withcolumn_in_loop": self._gen_withcolumn_loop_recommendation,
+            "groupbykey_usage": self._gen_groupbykey_recommendation,
             "select_star": self._gen_select_star_recommendation,
             "orderby_without_limit": self._gen_orderby_limit_recommendation,
             "sql_orderby_without_limit": self._gen_sql_orderby_limit_recommendation,
@@ -652,6 +657,41 @@ class RecommendationEngine:
             effort="medium",
         )
 
+    def _gen_groupbykey_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
+        """Generate recommendation for RDD groupByKey usage.
+
+        Args:
+            smell: The detected code smell.
+
+        Returns:
+            Code recommendation with fix.
+
+        """
+        return CodeRecommendation(
+            smell=smell,
+            suggestion="Replace groupByKey with reduceByKey/aggregateByKey or the DataFrame API",
+            before_code="// Scala: every value is shuffled and buffered per key\n"
+            "rdd.groupByKey().mapValues(_.sum)\n\n"
+            "# PySpark equivalent\n"
+            "rdd.groupByKey().mapValues(sum)",
+            after_code="// Option 1: combine on the map side before shuffling\n"
+            "rdd.reduceByKey(_ + _)\n"
+            "# PySpark: rdd.reduceByKey(lambda a, b: a + b)\n\n"
+            "// Option 2: non-trivial aggregations\n"
+            "rdd.aggregateByKey(zeroValue)(seqOp, combOp)\n\n"
+            "// Option 3: prefer the DataFrame API (Catalyst-optimized)\n"
+            'df.groupBy("key").agg(sum("value"))',
+            explanation=(
+                "groupByKey ships every value for a key across the network and "
+                "buffers them all in memory on a single executor, which inflates "
+                "shuffle volume and crashes on skewed keys. reduceByKey and "
+                "aggregateByKey apply a combiner on the map side, so only partial "
+                "aggregates are shuffled. Moving to the DataFrame groupBy().agg() "
+                "API additionally enables Catalyst and Tungsten optimizations."
+            ),
+            effort="medium",
+        )
+
     def _gen_select_star_recommendation(self, smell: CodeSmell) -> CodeRecommendation:
         """Generate recommendation for select('*') / SELECT * usage.
 
@@ -874,11 +914,13 @@ class RecommendationEngine:
         return sorted_recs[:max_recommendations]
 
 
-def analyze_code(source_code: str) -> AnalysisResult:
+def analyze_code(source_code: str, language: str = "auto") -> AnalysisResult:
     """Convenience function to analyze code and get recommendations.
 
     Args:
-        source_code: Python source code string.
+        source_code: Source code string (Python or Scala).
+        language: Source language ("python", "scala", or "auto"; "auto"
+            applies a conservative heuristic that defaults to Python).
 
     Returns:
         AnalysisResult with smells and recommendations.
@@ -896,4 +938,4 @@ def analyze_code(source_code: str) -> AnalysisResult:
 
     """
     engine = RecommendationEngine()
-    return engine.analyze_source(source_code)
+    return engine.analyze_source(source_code, language=language)

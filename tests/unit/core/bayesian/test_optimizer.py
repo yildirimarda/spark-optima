@@ -1299,3 +1299,198 @@ class TestBayesianOptimizerMultiObjectiveEndToEnd:
         assert len(payload["pareto_frontier"]) == len(result.pareto_frontier)
         for point in payload["pareto_frontier"]:
             assert set(point.keys()) == {"trial_number", "objective_values", "configuration"}
+
+
+class TestBayesianOptimizerProgressCallback:
+    """Tests for the optional per-trial progress callback (Workstream Z)."""
+
+    @staticmethod
+    def _make_optimizer(objectives: list[str] | None = None) -> BayesianOptimizer:
+        """Build an optimizer with a feasible heuristic configuration.
+
+        spark.default.parallelism is set explicitly so the simulation
+        feasibility check never marks trials as failed.
+        """
+        return BayesianOptimizer(
+            heuristic_config={
+                "spark.executor.memory": "4g",
+                "spark.executor.cores": "4",
+                "spark.default.parallelism": "16",
+            },
+            config_set=ConfigSet(version="3.5.0", parameters={}, metadata={}),
+            resource_spec=ResourceSpec(cpu_cores=8, memory_gb=32),
+            objectives=objectives,
+        )
+
+    def test_callback_fires_once_per_trial(self) -> None:
+        """The callback fires once per trial with increasing counters."""
+        events: list[dict[str, Any]] = []
+        optimizer = self._make_optimizer()
+
+        optimizer.optimize(n_trials=3, show_progress=False, progress_callback=events.append)
+
+        assert len(events) == 3
+        assert [event["trial_number"] for event in events] == [0, 1, 2]
+        assert [event["trials_completed"] for event in events] == [1, 2, 3]
+        assert all(event["n_trials"] == 3 for event in events)
+
+    def test_callback_event_shape_single_objective(self) -> None:
+        """Single-objective events carry best_value (float) and a state name."""
+        events: list[dict[str, Any]] = []
+        optimizer = self._make_optimizer()
+
+        optimizer.optimize(n_trials=2, show_progress=False, progress_callback=events.append)
+
+        for event in events:
+            assert set(event.keys()) == {"trial_number", "n_trials", "trials_completed", "state", "best_value"}
+            assert isinstance(event["best_value"], float)
+            assert event["state"] == "COMPLETE"
+
+    def test_best_value_never_worsens_for_minimization(self) -> None:
+        """The reported best_value is monotonically non-increasing."""
+        events: list[dict[str, Any]] = []
+        optimizer = self._make_optimizer()
+
+        optimizer.optimize(n_trials=5, show_progress=False, progress_callback=events.append)
+
+        best_values = [event["best_value"] for event in events]
+        assert all(later <= earlier for earlier, later in zip(best_values, best_values[1:], strict=False))
+
+    def test_callback_event_shape_multi_objective(self) -> None:
+        """Multi-objective events carry best_values (list) instead of best_value."""
+        events: list[dict[str, Any]] = []
+        optimizer = self._make_optimizer(objectives=["minimize_time", "minimize_cost"])
+
+        optimizer.optimize(n_trials=3, show_progress=False, progress_callback=events.append)
+
+        assert len(events) == 3
+        for event in events:
+            assert "best_value" not in event
+            assert isinstance(event["best_values"], list)
+            assert len(event["best_values"]) == 2
+
+    def test_callback_exceptions_are_swallowed(self) -> None:
+        """A raising callback never breaks the optimization run."""
+        calls: list[int] = []
+
+        def explode(_event: dict[str, Any]) -> None:
+            calls.append(1)
+            raise RuntimeError("progress consumer crashed")
+
+        optimizer = self._make_optimizer()
+        result = optimizer.optimize(n_trials=3, show_progress=False, progress_callback=explode)
+
+        assert isinstance(result, BayesianOptimizationResult)
+        assert result.n_trials_completed == 3
+        assert len(calls) == 3  # Still invoked for every trial
+
+    def test_callback_exception_logged_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Swallowed callback exceptions are reported with a debug log."""
+        import logging
+
+        def explode(_event: dict[str, Any]) -> None:
+            raise RuntimeError("progress consumer crashed")
+
+        optimizer = self._make_optimizer()
+        with caplog.at_level(logging.DEBUG, logger="spark_optima.core.bayesian.optimizer"):
+            optimizer.optimize(n_trials=1, show_progress=False, progress_callback=explode)
+
+        assert any("Progress callback raised" in record.message for record in caplog.records)
+
+    def test_no_callback_is_default_and_harmless(self) -> None:
+        """Omitting progress_callback keeps the previous behavior."""
+        optimizer = self._make_optimizer()
+        result = optimizer.optimize(n_trials=1, show_progress=False)
+
+        assert isinstance(result, BayesianOptimizationResult)
+        assert result.n_trials_completed == 1
+
+
+class TestBayesianOptimizerProgressEventJsonSafety:
+    """Progress events must always serialize to strict (RFC 8259) JSON.
+
+    Failed trials are penalized with ``inf``, so until the first successful
+    trial ``study.best_value`` is non-finite; ``json.dumps`` would emit the
+    invalid token ``Infinity`` into SSE frames and store payloads. The
+    optimizer must report such values as None instead.
+    """
+
+    @staticmethod
+    def _make_optimizer(objectives: list[str] | None = None) -> BayesianOptimizer:
+        """Build an optimizer with a feasible heuristic configuration."""
+        return BayesianOptimizer(
+            heuristic_config={
+                "spark.executor.memory": "4g",
+                "spark.executor.cores": "4",
+                "spark.default.parallelism": "16",
+            },
+            config_set=ConfigSet(version="3.5.0", parameters={}, metadata={}),
+            resource_spec=ResourceSpec(cpu_cores=8, memory_gb=32),
+            objectives=objectives,
+        )
+
+    @staticmethod
+    def _fail_first_trial(optimizer: BayesianOptimizer) -> None:
+        """Patch the trial runner so trial 0 fails (inf penalty objective)."""
+        real_run_trial = optimizer._trial_runner.run_trial
+
+        def failing_first(*, trial_number: int, **kwargs: Any) -> TrialResult:
+            result = real_run_trial(trial_number=trial_number, **kwargs)
+            if trial_number == 0:
+                result.status = TrialStatus.FAILED
+            return result
+
+        optimizer._trial_runner.run_trial = failing_first  # type: ignore[method-assign]
+
+    @staticmethod
+    def _assert_strict_json_roundtrip(event: dict[str, Any]) -> dict[str, Any]:
+        """Serialize the event and parse it back rejecting Infinity/NaN tokens."""
+        import json
+
+        payload = json.dumps(event)
+        assert "Infinity" not in payload
+        assert "NaN" not in payload
+        decoded: dict[str, Any] = json.loads(
+            payload,
+            parse_constant=lambda token: pytest.fail(f"non-strict JSON token emitted: {token}"),
+        )
+        return decoded
+
+    def test_failed_first_trial_reports_best_value_none(self) -> None:
+        """When the first trial fails, the event carries best_value None."""
+        events: list[dict[str, Any]] = []
+        optimizer = self._make_optimizer()
+        self._fail_first_trial(optimizer)
+
+        optimizer.optimize(n_trials=2, show_progress=False, progress_callback=events.append)
+
+        assert len(events) == 2
+        assert events[0]["best_value"] is None  # inf penalty must not leak
+        assert isinstance(events[1]["best_value"], float)  # Recovered after a success
+
+    def test_failed_first_trial_event_roundtrips_strict_json(self) -> None:
+        """Every event serializes and parses back as strict JSON."""
+        events: list[dict[str, Any]] = []
+        optimizer = self._make_optimizer()
+        self._fail_first_trial(optimizer)
+
+        optimizer.optimize(n_trials=2, show_progress=False, progress_callback=events.append)
+
+        decoded_first = self._assert_strict_json_roundtrip(events[0])
+        assert decoded_first["best_value"] is None
+        for event in events[1:]:
+            self._assert_strict_json_roundtrip(event)
+
+    def test_multi_objective_non_finite_best_values_mapped_per_element(self) -> None:
+        """Multi-objective events map each non-finite element to None."""
+        events: list[dict[str, Any]] = []
+        optimizer = self._make_optimizer(objectives=["minimize_time", "minimize_cost"])
+        self._fail_first_trial(optimizer)
+
+        optimizer.optimize(n_trials=2, show_progress=False, progress_callback=events.append)
+
+        assert len(events) == 2
+        # Only the failed trial exists: its [inf, inf] penalty becomes [None, None]
+        assert events[0]["best_values"] == [None, None]
+        for event in events:
+            self._assert_strict_json_roundtrip(event)

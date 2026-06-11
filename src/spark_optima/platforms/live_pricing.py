@@ -16,14 +16,16 @@ Supported platforms:
 | ``azure_synapse`` | Azure Retail Prices API (public, no auth)  | vCore-hour      |
 | ``aws_emr``     | AWS Pricing API (boto3, credentials needed)  | EC2 on-demand/h |
 | ``aws_glue``    | AWS Pricing API (boto3, credentials needed)  | DPU-hour        |
+| ``gcp_dataproc`` | GCP Cloud Billing Catalog API (API key)     | N2 machine/h    |
 
-``gcp_dataproc`` and ``databricks`` deliberately stay on static pricing:
+``gcp_dataproc`` is additionally gated on the ``SPARK_OPTIMA_GCP_API_KEY``
+environment variable because the Cloud Billing Catalog API cannot be
+queried anonymously; without a key the GCP lookup is skipped and static
+pricing is used.
 
-- GCP's Cloud Billing Catalog API requires an API key, so it cannot be
-  queried anonymously (deferred to the v1.5+ backlog; see PLAN.md).
-- Databricks DBU rates are proprietary list prices with no public pricing
-  API (and they vary by workspace tier and contract), so there is nothing
-  to query.
+``databricks`` deliberately stays on static pricing: DBU rates are
+proprietary list prices with no public pricing API (and they vary by
+workspace tier and contract), so there is nothing to query.
 
 Resolved rates are cached in a JSON file (default
 ``~/.spark_optima/pricing_cache.json``, override with
@@ -69,6 +71,10 @@ logger = logging.getLogger(__name__)
 LIVE_PRICING_ENV_VAR = "SPARK_OPTIMA_LIVE_PRICING"
 CACHE_PATH_ENV_VAR = "SPARK_OPTIMA_PRICING_CACHE"
 CACHE_TTL_ENV_VAR = "SPARK_OPTIMA_PRICING_TTL_HOURS"
+# API key for the GCP Cloud Billing Catalog API (gcp_dataproc only): the
+# catalog cannot be queried anonymously, so GCP live pricing is skipped
+# entirely when this variable is unset.
+GCP_API_KEY_ENV_VAR = "SPARK_OPTIMA_GCP_API_KEY"
 
 # Defaults
 DEFAULT_CACHE_PATH = Path.home() / ".spark_optima" / "pricing_cache.json"
@@ -81,9 +87,10 @@ REQUEST_TIMEOUT_SECONDS = 5.0
 
 _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 
-# Platforms with a working live pricing source. gcp_dataproc and databricks
-# are intentionally absent — see the module docstring for the rationale.
-LIVE_SUPPORTED_PLATFORMS = frozenset({"aws_emr", "aws_glue", "azure_synapse"})
+# Platforms with a working live pricing source. databricks is intentionally
+# absent — see the module docstring for the rationale. gcp_dataproc is
+# additionally gated on SPARK_OPTIMA_GCP_API_KEY at lookup time.
+LIVE_SUPPORTED_PLATFORMS = frozenset({"aws_emr", "aws_glue", "azure_synapse", "gcp_dataproc"})
 
 
 def is_live_pricing_enabled() -> bool:
@@ -553,20 +560,304 @@ class AWSPricingClient:
         return self._extract_on_demand_usd_rate(response.get("PriceList", []))
 
 
-def _fetch_rate(platform: str, region: str, instance_type: str | None) -> float:
+class GCPCloudBillingClient:
+    """Client for the GCP Cloud Billing Catalog API (API-key gated).
+
+    The Cloud Billing Catalog API
+    (https://cloud.google.com/billing/docs/reference/rest/v1/services.skus/list)
+    lists the public SKUs of one billing service per request. Compute
+    Engine's fixed service id in the catalog is ``6F81-5844-456A``, so N2
+    machine pricing is read from::
+
+        GET https://cloudbilling.googleapis.com/v1/services/6F81-5844-456A/skus
+
+    The API requires an API key, read from the ``SPARK_OPTIMA_GCP_API_KEY``
+    environment variable (or passed explicitly) and sent via the
+    ``X-Goog-Api-Key`` request header — never as a URL query parameter — so
+    it cannot leak into logged request URLs or ``httpx`` error messages.
+    Without a key the client only raises when a lookup is actually
+    attempted, so the module imports and constructs cleanly in keyless
+    environments.
+
+    N2 machines are priced per vCPU-hour ("core") and per GB-hour ("RAM")
+    rather than per machine type. The two SKUs are identified
+    **best-effort**: the human-readable description (for example
+    ``"N2 Instance Core running in Virginia"``) is matched by prefix, while
+    the actual region scoping uses ``serviceRegions`` (region ids such as
+    ``us-central1``) and on-demand pricing is selected via
+    ``category.usageType == "OnDemand"``. The matching knobs are versioned
+    as class attributes so they are easy to adjust if Google rewords the
+    catalog. The hourly machine price is then::
+
+        vcpus * core_rate + memory_gb * ram_rate
+
+    Unit prices arrive as ``units`` (whole USD, serialized as a string)
+    plus ``nanos`` (billionths of a USD) under
+    ``pricingInfo[0].pricingExpression.tieredRates[0].unitPrice``.
+
+    Attributes:
+        api_key: Resolved API key, or None when unavailable.
+        timeout: Request timeout in seconds.
+
+    """
+
+    ENDPOINT_TEMPLATE = "https://cloudbilling.googleapis.com/v1/services/{service_id}/skus"
+    # Compute Engine's fixed service id in the Cloud Billing catalog
+    COMPUTE_ENGINE_SERVICE_ID = "6F81-5844-456A"
+    CURRENCY_CODE = "USD"
+    # Catalog page size (the API caps pageSize at 5000)
+    PAGE_SIZE = 5000
+    # Hard cap on catalog pages per lookup so a misbehaving API can never
+    # stall cost estimation in an endless pagination loop
+    MAX_PAGES = 10
+    # Total wall-clock budget for one multi-page lookup. Each page fetch is
+    # already bounded by the request timeout, but MAX_PAGES sequential slow
+    # pages could otherwise stall a cost estimate for ~50 seconds. The
+    # deadline is checked between page fetches; when exceeded the lookup
+    # gives up (None), which the facade negative-caches for one hour.
+    LOOKUP_DEADLINE_SECONDS = 10.0
+    # The API key rides in this request header — never in the URL query
+    # string — so it cannot leak into logged request URLs or
+    # httpx.HTTPStatusError messages.
+    API_KEY_HEADER = "X-Goog-Api-Key"
+    # Best-effort SKU matching knobs — adjust here if Google rewords the
+    # catalog. Descriptions look like "N2 Instance Core running in <region
+    # name>"; the trailing human-readable region name is informational only
+    # (region filtering uses serviceRegions instead).
+    N2_CORE_DESCRIPTION_PREFIX = "N2 Instance Core running in"
+    N2_RAM_DESCRIPTION_PREFIX = "N2 Instance Ram running in"
+    # Excludes Preemptible/Commit1Yr/... SKUs (compared case-insensitively)
+    USAGE_TYPE = "OnDemand"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        timeout: float = REQUEST_TIMEOUT_SECONDS,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        """Initialize the client.
+
+        Args:
+            api_key: Cloud Billing Catalog API key. Falls back to the
+                ``SPARK_OPTIMA_GCP_API_KEY`` environment variable; stays
+                None (client unusable) when neither is set.
+            timeout: Request timeout in seconds (kept short so a slow API
+                never stalls cost estimation).
+            transport: Optional httpx transport (used by tests to inject a
+                ``httpx.MockTransport``).
+
+        """
+        if api_key is None:
+            api_key = os.environ.get(GCP_API_KEY_ENV_VAR, "").strip() or None
+        self.api_key = api_key
+        self.timeout = timeout
+        self._transport = transport
+
+    def get_n2_machine_rate(self, region: str, *, vcpus: float, memory_gb: float) -> float | None:
+        """Fetch the live on-demand hourly price of an N2 machine shape.
+
+        Args:
+            region: GCP region id (e.g., "us-central1").
+            vcpus: Number of vCPUs of the machine type.
+            memory_gb: RAM of the machine type in GB.
+
+        Returns:
+            The USD hourly machine price: ``vcpus * core_rate + memory_gb *
+            ram_rate``, or None when the lookup gave up because the
+            :attr:`LOOKUP_DEADLINE_SECONDS` wall-clock deadline expired.
+
+        Raises:
+            RuntimeError: If httpx is not installed or no API key is set.
+            httpx.HTTPError: On connection errors, timeouts, or HTTP error
+                status codes.
+            LookupError: If the core or RAM SKU cannot be found within the
+                page cap.
+            ValueError: If a response body is not valid JSON.
+
+        """
+        rates = self.get_n2_core_ram_rates(region)
+        if rates is None:
+            return None
+        core_rate, ram_rate = rates
+        return vcpus * core_rate + memory_gb * ram_rate
+
+    def get_n2_core_ram_rates(self, region: str) -> tuple[float, float] | None:
+        """Fetch the on-demand N2 core and RAM unit rates for a region.
+
+        Pages through the Compute Engine SKU catalog (following
+        ``nextPageToken``, capped at :attr:`MAX_PAGES` pages) and picks the
+        first usable core and RAM SKUs matching the region. The wall-clock
+        time of the whole lookup is additionally capped at
+        :attr:`LOOKUP_DEADLINE_SECONDS` (checked between page fetches).
+
+        Args:
+            region: GCP region id (e.g., "us-central1").
+
+        Returns:
+            A ``(core_rate, ram_rate)`` tuple in USD per vCPU-hour and USD
+            per GB-hour, or None when the per-lookup deadline expired before
+            both SKUs were found.
+
+        Raises:
+            RuntimeError: If httpx is not installed or no API key is set.
+            httpx.HTTPError: On connection errors, timeouts, or HTTP error
+                status codes.
+            LookupError: If either SKU is missing within the page cap.
+            ValueError: If a response body is not valid JSON.
+
+        """
+        if httpx is None:  # pragma: no cover - httpx is normally available
+            raise RuntimeError("httpx is required for GCP live pricing. Install with: pip install httpx")
+        if not self.api_key:
+            raise RuntimeError(
+                f"A GCP API key is required for the Cloud Billing Catalog API; set {GCP_API_KEY_ENV_VAR}",
+            )
+
+        region_lower = region.lower()
+        url = self.ENDPOINT_TEMPLATE.format(service_id=self.COMPUTE_ENGINE_SERVICE_ID)
+        # The key goes into a header, never into params: httpx logs full
+        # request URLs and embeds them in HTTPStatusError messages, so a
+        # query-string key would leak into logs.
+        headers = {self.API_KEY_HEADER: self.api_key}
+        core_rate: float | None = None
+        ram_rate: float | None = None
+        deadline = time.monotonic() + self.LOOKUP_DEADLINE_SECONDS
+
+        with httpx.Client(timeout=self.timeout, transport=self._transport) as client:
+            page_token: str | None = None
+            for _ in range(self.MAX_PAGES):
+                params: dict[str, Any] = {
+                    "currencyCode": self.CURRENCY_CODE,
+                    "pageSize": self.PAGE_SIZE,
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+                response = client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                payload = response.json()
+
+                skus = payload.get("skus") if isinstance(payload, dict) else None
+                for sku in skus if isinstance(skus, list) else []:
+                    if not self._sku_matches(sku, region_lower):
+                        continue
+                    description = str(sku.get("description", ""))
+                    if core_rate is None and description.startswith(self.N2_CORE_DESCRIPTION_PREFIX):
+                        core_rate = self._extract_unit_rate(sku)
+                    elif ram_rate is None and description.startswith(self.N2_RAM_DESCRIPTION_PREFIX):
+                        ram_rate = self._extract_unit_rate(sku)
+
+                if core_rate is not None and ram_rate is not None:
+                    return (core_rate, ram_rate)
+
+                page_token = str(payload.get("nextPageToken") or "") if isinstance(payload, dict) else ""
+                if not page_token:
+                    break
+                if time.monotonic() >= deadline:
+                    logger.debug(
+                        "GCP pricing lookup for region '%s' exceeded the %.0fs deadline; giving up",
+                        region,
+                        self.LOOKUP_DEADLINE_SECONDS,
+                    )
+                    return None
+
+        raise LookupError(
+            f"No usable on-demand N2 {'core' if core_rate is None else 'RAM'} SKU found "
+            f"for region '{region}' in the Cloud Billing catalog",
+        )
+
+    def _sku_matches(self, sku: Any, region_lower: str) -> bool:
+        """Check whether a SKU is an on-demand SKU serving the given region.
+
+        Args:
+            sku: One entry of the ``skus`` list from the API response.
+            region_lower: Lowercased GCP region id to match against
+                ``serviceRegions``.
+
+        Returns:
+            True when the SKU is a dict with ``category.usageType`` equal to
+            :attr:`USAGE_TYPE` (case-insensitive) and ``serviceRegions``
+            containing the region.
+
+        """
+        if not isinstance(sku, dict):
+            return False
+        category = sku.get("category")
+        usage_type = str(category.get("usageType", "")) if isinstance(category, dict) else ""
+        if usage_type.lower() != self.USAGE_TYPE.lower():
+            return False
+        regions = sku.get("serviceRegions")
+        if not isinstance(regions, list):
+            return False
+        return any(isinstance(entry, str) and entry.lower() == region_lower for entry in regions)
+
+    @staticmethod
+    def _extract_unit_rate(sku: dict[str, Any]) -> float | None:
+        """Extract the USD unit rate from a SKU's first pricing tier.
+
+        The rate lives at
+        ``pricingInfo[0].pricingExpression.tieredRates[0].unitPrice`` as a
+        ``units`` (whole USD, serialized as a string) + ``nanos``
+        (billionths of a USD) pair.
+
+        Args:
+            sku: SKU dict from the API response.
+
+        Returns:
+            The positive finite USD rate, or None when the SKU is malformed
+            or carries a non-positive price (so a later SKU can still match).
+
+        """
+        pricing_info = sku.get("pricingInfo")
+        if not isinstance(pricing_info, list) or not pricing_info:
+            return None
+        first_info = pricing_info[0]
+        expression = first_info.get("pricingExpression") if isinstance(first_info, dict) else None
+        tiered_rates = expression.get("tieredRates") if isinstance(expression, dict) else None
+        if not isinstance(tiered_rates, list) or not tiered_rates:
+            return None
+        first_tier = tiered_rates[0]
+        unit_price = first_tier.get("unitPrice") if isinstance(first_tier, dict) else None
+        if not isinstance(unit_price, dict):
+            return None
+
+        units = unit_price.get("units", 0)
+        nanos = unit_price.get("nanos", 0)
+        if isinstance(units, bool) or isinstance(nanos, bool):
+            return None
+        try:
+            rate = float(units or 0) + float(nanos or 0) / 1e9
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(rate) or rate <= 0.0:
+            return None
+        return rate
+
+
+def _fetch_rate(
+    platform: str,
+    region: str,
+    instance_type: str | None,
+    vcpus: float | None = None,
+    memory_gb: float | None = None,
+) -> float | None:
     """Fetch a live rate from the platform's pricing API (may raise).
 
     Args:
         platform: Normalized (lowercase) platform identifier.
         region: Cloud region identifier.
-        instance_type: Instance type (required for aws_emr).
+        instance_type: Instance type (required for aws_emr and gcp_dataproc).
+        vcpus: Machine vCPU count (required for gcp_dataproc).
+        memory_gb: Machine RAM in GB (required for gcp_dataproc).
 
     Returns:
-        The live USD hourly rate.
+        The live USD hourly rate, or None when the lookup gave up early
+        (the GCP per-lookup deadline expired). A None is negative-cached by
+        the facade like any other failed lookup.
 
     Raises:
         ValueError: If the platform has no live pricing source.
-        Exception: Any client error (network, parse, missing boto3, ...).
+        Exception: Any client error (network, parse, missing boto3/API
+            key, ...).
 
     """
     if platform == "azure_synapse":
@@ -575,17 +866,30 @@ def _fetch_rate(platform: str, region: str, instance_type: str | None) -> float:
         return AWSPricingClient().get_glue_dpu_rate(region)
     if platform == "aws_emr":
         return AWSPricingClient().get_ec2_ondemand_rate(instance_type or "", region)
+    if platform == "gcp_dataproc":
+        return GCPCloudBillingClient().get_n2_machine_rate(
+            region,
+            vcpus=float(vcpus or 0.0),
+            memory_gb=float(memory_gb or 0.0),
+        )
     raise ValueError(f"No live pricing source for platform '{platform}'")
 
 
-def get_live_hourly_rate(platform: str, *, region: str, instance_type: str | None = None) -> float | None:
+def get_live_hourly_rate(
+    platform: str,
+    *,
+    region: str,
+    instance_type: str | None = None,
+    vcpus: float | None = None,
+    memory_gb: float | None = None,
+) -> float | None:
     """Get the live USD hourly rate for a platform, or None on any failure.
 
     This is the facade used by the platform adapters. It never raises: any
     failure mode (live pricing disabled, unsupported platform, network
-    timeout, HTTP error, parse error, missing boto3/credentials, cache
-    corruption) results in ``None``, which signals the adapter to fall back
-    to its static baseline rate x regional multiplier.
+    timeout, HTTP error, parse error, missing boto3/credentials, missing
+    GCP API key, cache corruption) results in ``None``, which signals the
+    adapter to fall back to its static baseline rate x regional multiplier.
 
     Platform semantics:
 
@@ -593,8 +897,11 @@ def get_live_hourly_rate(platform: str, *, region: str, instance_type: str | Non
     - ``aws_glue``: DPU-hour rate (``instance_type`` ignored).
     - ``aws_emr``: EC2 on-demand instance-hour rate (``instance_type``
       required; the adapter adds the EMR surcharge on top).
-    - ``gcp_dataproc``: always None — the Cloud Billing Catalog API requires
-      an API key, so live pricing is deferred (see PLAN.md backlog).
+    - ``gcp_dataproc``: N2 machine compute-hour rate derived from the
+      region's per-core and per-GB SKU rates (``instance_type``, ``vcpus``,
+      and ``memory_gb`` required; additionally gated on the
+      ``SPARK_OPTIMA_GCP_API_KEY`` environment variable — None when unset.
+      The adapter adds the Dataproc fee on top).
     - ``databricks``: always None — DBU rates are Databricks-proprietary
       list prices with no public pricing API.
 
@@ -604,7 +911,10 @@ def get_live_hourly_rate(platform: str, *, region: str, instance_type: str | Non
     Args:
         platform: Platform identifier (e.g., "aws_emr", "azure_synapse").
         region: Cloud region identifier (e.g., "us-east-1", "westeurope").
-        instance_type: Instance type for per-instance rates (aws_emr only).
+        instance_type: Instance/machine type for per-instance rates
+            (aws_emr and gcp_dataproc).
+        vcpus: Machine vCPU count (gcp_dataproc only).
+        memory_gb: Machine RAM in GB (gcp_dataproc only).
 
     Returns:
         The live USD hourly rate, or None if live pricing is disabled,
@@ -622,6 +932,18 @@ def get_live_hourly_rate(platform: str, *, region: str, instance_type: str | Non
         if normalized == "aws_emr" and not instance_type:
             logger.debug("Live pricing for aws_emr requires an instance type; using static pricing")
             return None
+        if normalized == "gcp_dataproc":
+            if not instance_type or not vcpus or vcpus <= 0 or not memory_gb or memory_gb <= 0:
+                logger.debug(
+                    "Live pricing for gcp_dataproc requires instance_type, vcpus, and memory_gb; using static pricing",
+                )
+                return None
+            if not os.environ.get(GCP_API_KEY_ENV_VAR, "").strip():
+                logger.debug(
+                    "Live pricing for gcp_dataproc requires the %s environment variable; using static pricing",
+                    GCP_API_KEY_ENV_VAR,
+                )
+                return None
 
         cache = PricingCache()
         fresh, cached_rate = cache.get(normalized, region, instance_type)
@@ -630,7 +952,7 @@ def get_live_hourly_rate(platform: str, *, region: str, instance_type: str | Non
 
         rate: float | None
         try:
-            rate = _fetch_rate(normalized, region, instance_type)
+            rate = _fetch_rate(normalized, region, instance_type, vcpus, memory_gb)
         except Exception as exc:  # noqa: BLE001 - any client failure means "no live rate"
             logger.debug(
                 "Live pricing lookup failed for %s/%s/%s: %s",

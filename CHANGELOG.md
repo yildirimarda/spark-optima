@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (v1.5)
+- **Scala code analysis** (planned since v1.0): lexer-based Scala Spark parser (comment/string masking incl. interpolated strings, `val` lineage tracking, multi-line fluent chains) feeding the existing smell/recommendation pipeline; `spark.sql("...")` literals in Scala flow into the sqlglot analyzer; CLI `analyze`/`optimize` accept `.scala` files. New `groupbykey_usage` smell (Python + Scala).
+- **GCP live pricing**: Cloud Billing Catalog API client (`SPARK_OPTIMA_GCP_API_KEY`-gated, key sent via header), N2 core/RAM SKU rates per region → hourly machine price; Dataproc `estimate_cost` uses live rates under the same cache/fallback/labeling rules as the other adapters.
+- **Live optimization progress over SSE**: per-trial `progress_callback` on the optimizer chain, `progress` persisted on async jobs (all three stores), and `GET /api/v1/jobs/{id}/events` streaming progress/done events.
+- **Templates API**: `GET /api/v1/templates` and `GET /api/v1/templates/{name}` (parity with the CLI).
+- **Config DB unit normalization**: all BYTES/DURATION parameter bounds audited across the 8 Spark config YAMLs and canonicalized (the `spark.kryoserializer.buffer.max` default previously failed its own max; memory minimums were compared in the wrong unit). `validate` now range-checks BYTES/DURATION values correctly.
+- **Examples & docs refresh**: new examples (event-log analysis, multi-objective Pareto, EMR/Dataproc/K8s platforms, workload templates), README command catalogue + environment-variable table.
+
+### Fixed (v1.5)
+- `optimize`/`analyze` with `--output json` now route all decorative output to stderr — `... --output json > result.json` produces a clean machine-readable file.
+- GCP pricing lookups are bounded by a total deadline and the API key no longer appears in URLs (header-based auth).
+- SSE streaming no longer blocks the event loop on job-store I/O; non-finite objective values are mapped to null in progress events.
+
 ### Added (v1.4)
 - **Live pricing (opt-in)**: `SPARK_OPTIMA_LIVE_PRICING=1` fetches real hourly rates — Azure Retail Prices API (public) for Synapse, AWS Pricing API (optional boto3) for EMR/Glue — with a 24h JSON cache and silent fallback to the static tables on any failure. Cost breakdowns now carry `pricing_source: live|static`.
 - **Redis job store**: `SPARK_OPTIMA_JOB_STORE=redis` (+ `SPARK_OPTIMA_REDIS_URL`) — the real multi-replica answer for async jobs; guarded optional `redis` import, startup fallback to memory on connection failure.

@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 
 from spark_optima import __version__
 from spark_optima.api.dependencies import APIMetadata
-from spark_optima.api.routes import health_router, jobs_router, optimize_router, platforms_router
+from spark_optima.api.routes import health_router, jobs_router, optimize_router, platforms_router, templates_router
 from spark_optima.api.security import enforce_api_security
 
 if TYPE_CHECKING:
@@ -91,11 +91,15 @@ def create_app() -> FastAPI:
             },
             {
                 "name": "Jobs",
-                "description": "Asynchronous optimization job status endpoints",
+                "description": "Asynchronous optimization job status and live progress (SSE) endpoints",
             },
             {
                 "name": "Platforms",
                 "description": "Platform information and configuration endpoints",
+            },
+            {
+                "name": "Templates",
+                "description": "Curated workload template endpoints (read-only)",
             },
         ],
     )
@@ -117,6 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(optimize_router, dependencies=v1_security)
     app.include_router(jobs_router, dependencies=v1_security)
     app.include_router(platforms_router, dependencies=v1_security)
+    app.include_router(templates_router, dependencies=v1_security)
 
     # Add exception handlers
     @app.exception_handler(Exception)

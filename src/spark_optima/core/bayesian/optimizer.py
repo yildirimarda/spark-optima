@@ -10,11 +10,13 @@ for intelligent hyperparameter optimization of Spark configurations.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 from spark_optima.core.bayesian.models import (
@@ -161,6 +163,7 @@ class BayesianOptimizer:
         show_progress: bool = True,
         data_profile: dict[str, Any] | None = None,
         max_consecutive_failures: int | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> BayesianOptimizationResult:
         """Run Bayesian optimization.
 
@@ -171,6 +174,18 @@ class BayesianOptimizer:
             show_progress: Whether to show optimization progress.
             data_profile: Data characteristics for simulation.
             max_consecutive_failures: Stop after N consecutive failures (None for default).
+            progress_callback: Optional callable invoked after every finished
+                trial with a progress event dictionary containing
+                ``trial_number`` (int), ``n_trials`` (int requested for this
+                run), ``trials_completed`` (int, trials recorded in the study
+                so far), and ``state`` (str, Optuna trial state name). For
+                single-objective runs the event additionally carries
+                ``best_value`` (float | None); multi-objective runs carry
+                ``best_values`` (list[float] | None, objective values of one
+                Pareto-optimal trial) instead. Exceptions raised by the
+                callback are swallowed with a debug log so progress reporting
+                can never break the optimization. Default None (no behavior
+                change).
 
         Returns:
             BayesianOptimizationResult with optimal configuration.
@@ -205,7 +220,7 @@ class BayesianOptimizer:
                 )
 
         # Optimization callback for progress tracking and error recovery
-        def callback(_study: optuna.Study, _trial: optuna.Trial) -> None:
+        def callback(_study: optuna.Study, _trial: optuna.trial.FrozenTrial) -> None:
             if show_progress and _study.trials:
                 last_trial = _study.trials[-1]
                 if last_trial.number % 10 == 0 and last_trial.number > 0:
@@ -227,6 +242,20 @@ class BayesianOptimizer:
                     else:
                         break
 
+        # Optional external progress reporting (fired per finished trial).
+        # Exceptions are swallowed: progress must never break optimization.
+        callbacks = [callback]
+        if progress_callback is not None:
+            report = progress_callback  # Bind for the closure (and mypy narrowing)
+
+            def _report_progress(_study: optuna.Study, _trial: optuna.trial.FrozenTrial) -> None:
+                try:
+                    report(self._build_progress_event(_study, _trial, n_trials))
+                except Exception:  # noqa: BLE001 — progress reporting must never break optimization
+                    logger.debug("Progress callback raised; continuing optimization", exc_info=True)
+
+            callbacks.append(_report_progress)
+
         # Run optimization
         timeout_seconds = timeout_minutes * 60 if timeout_minutes else None
 
@@ -235,7 +264,7 @@ class BayesianOptimizer:
             n_trials=n_trials,
             timeout=timeout_seconds,
             n_jobs=n_jobs,
-            callbacks=[callback],  # type: ignore[list-item]
+            callbacks=callbacks,
             show_progress_bar=show_progress,
         )
 
@@ -296,6 +325,60 @@ class BayesianOptimizer:
             )
 
         return study
+
+    def _build_progress_event(
+        self,
+        study: optuna.Study,
+        trial: optuna.trial.FrozenTrial,
+        n_trials: int,
+    ) -> dict[str, Any]:
+        """Build the progress event dictionary for a finished trial.
+
+        Args:
+            study: The Optuna study the trial belongs to.
+            trial: The trial that just finished (FrozenTrial in callbacks).
+            n_trials: Number of trials requested for the current run.
+
+        Returns:
+            Progress event with ``trial_number``, ``n_trials``,
+            ``trials_completed``, ``state``, and ``best_value`` (single
+            objective) or ``best_values`` (multi-objective). Non-finite
+            objective values (the ``inf`` penalty of failed trials) are
+            reported as None so the event always serializes to strict JSON.
+
+        """
+        event: dict[str, Any] = {
+            "trial_number": trial.number,
+            "n_trials": n_trials,
+            "trials_completed": len(study.trials),
+            "state": trial.state.name,
+        }
+        if self._is_multi_objective:
+            # No single best value exists: report the objective values of one
+            # Pareto-optimal trial (None until a trial completes).
+            try:
+                best_trials = study.best_trials
+            except ValueError:
+                event["best_values"] = None
+            else:
+                if best_trials:
+                    # Failed trials are penalized with inf, which json.dumps
+                    # would emit as the invalid token 'Infinity'; map any
+                    # non-finite element to None to keep the payload valid.
+                    event["best_values"] = [value if math.isfinite(value) else None for value in best_trials[0].values]
+                else:
+                    event["best_values"] = None
+        else:
+            try:
+                best_value = study.best_value
+            except ValueError:
+                # No completed trial yet
+                event["best_value"] = None
+            else:
+                # Until the first successful trial, best_value is the inf
+                # penalty of a failed trial — not valid JSON; report None.
+                event["best_value"] = best_value if math.isfinite(best_value) else None
+        return event
 
     def get_seed_trial_params(self) -> dict[str, Any]:
         """Build Optuna trial parameters for the heuristic baseline configuration.

@@ -4,7 +4,7 @@
 """Code analysis module for Spark Optima.
 
 This module provides Spark code parsing, smell detection, and
-optimization recommendations for Python Spark applications.
+optimization recommendations for Python and Scala Spark applications.
 
 Example:
     >>> from spark_optima.analysis import analyze_code
@@ -32,6 +32,11 @@ from spark_optima.analysis.recommender import (
     RecommendationEngine,
     analyze_code,
 )
+from spark_optima.analysis.scala_parser import (
+    ScalaCodeParser,
+    detect_language,
+    parse_scala_code,
+)
 from spark_optima.analysis.smell_detector import (
     SmellDetector,
     detect_smells,
@@ -52,7 +57,10 @@ __all__ = [
     "SparkOperation",
     "SparkOperationType",
     # Parser
+    "ScalaCodeParser",
     "SparkCodeParser",
+    "detect_language",
+    "parse_scala_code",
     "parse_spark_code",
     # Smell Detection
     "SmellDetector",

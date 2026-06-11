@@ -21,6 +21,7 @@ from spark_optima.analysis.models import (
     CodeLocation,
     CodeSmell,
     SeverityLevel,
+    SparkOperation,
     SparkOperationType,
 )
 from spark_optima.analysis.parser import (
@@ -28,6 +29,7 @@ from spark_optima.analysis.parser import (
     ParseResult,
     SparkCodeParser,
 )
+from spark_optima.analysis.scala_parser import ScalaCodeParser, detect_language
 from spark_optima.analysis.sql_analyzer import SQLAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,7 @@ class SmellDetector:
     def __init__(self) -> None:
         """Initialize the smell detector."""
         self.parser = SparkCodeParser()
+        self.scala_parser = ScalaCodeParser()
         self.sql_analyzer = SQLAnalyzer()
         self.detected_smells: list[CodeSmell] = []
         self._detection_rules: list[Callable[[ParseResult], list[CodeSmell]]] = [
@@ -106,32 +109,81 @@ class SmellDetector:
             self._detect_select_star,
             self._detect_orderby_without_limit,
             self._detect_sql_antipatterns,
+            self._detect_groupbykey_usage,
+            self._detect_scala_large_collect,
+            self._detect_scala_single_partition_write,
         ]
 
-    def analyze_file(self, file_path: str) -> AnalysisResult:
-        """Analyze a Python file for code smells.
+    @staticmethod
+    def _resolve_language(
+        language: str,
+        file_path: str | None = None,
+        source_code: str | None = None,
+    ) -> str:
+        """Resolve the analysis language from an explicit or "auto" value.
 
         Args:
-            file_path: Path to the Python file.
+            language: "python", "scala", or "auto".
+            file_path: Optional file path used for suffix-based detection.
+            source_code: Optional source text used for heuristic detection.
+
+        Returns:
+            Resolved language ("python" or "scala").
+
+        Raises:
+            ValueError: If the language value is not recognized.
+
+        """
+        if language in ("python", "scala"):
+            return language
+        if language != "auto":
+            raise ValueError(f"Unsupported language: {language!r} (expected 'python', 'scala', or 'auto')")
+        if file_path is not None:
+            return "scala" if str(file_path).lower().endswith(".scala") else "python"
+        if source_code is not None:
+            return detect_language(source_code)
+        return "python"
+
+    def analyze_file(self, file_path: str, language: str = "auto") -> AnalysisResult:
+        """Analyze a Spark source file for code smells.
+
+        Args:
+            file_path: Path to the source file (.py or .scala).
+            language: Source language ("python", "scala", or "auto"; "auto"
+                routes .scala files to the Scala parser).
 
         Returns:
             AnalysisResult containing detected smells.
 
         """
-        parse_result = self.parser.parse_file(file_path)
+        resolved = self._resolve_language(language, file_path=file_path)
+        if resolved == "scala":
+            parse_result = self.scala_parser.parse_file(file_path)
+            # Drop any stale Python AST so AST-based detectors skip gracefully
+            self.parser.ast_tree = None
+        else:
+            parse_result = self.parser.parse_file(file_path)
         return self._analyze_parse_result(parse_result)
 
-    def analyze_source(self, source_code: str) -> AnalysisResult:
-        """Analyze Python source code for code smells.
+    def analyze_source(self, source_code: str, language: str = "auto") -> AnalysisResult:
+        """Analyze Spark source code for code smells.
 
         Args:
-            source_code: Python source code string.
+            source_code: Source code string (Python or Scala).
+            language: Source language ("python", "scala", or "auto"; "auto"
+                applies a conservative heuristic defaulting to Python).
 
         Returns:
             AnalysisResult containing detected smells.
 
         """
-        parse_result = self.parser.parse_source(source_code)
+        resolved = self._resolve_language(language, source_code=source_code)
+        if resolved == "scala":
+            parse_result = self.scala_parser.parse_source(source_code)
+            # Drop any stale Python AST so AST-based detectors skip gracefully
+            self.parser.ast_tree = None
+        else:
+            parse_result = self.parser.parse_source(source_code)
         return self._analyze_parse_result(parse_result)
 
     def _analyze_parse_result(self, parse_result: ParseResult) -> AnalysisResult:
@@ -162,6 +214,7 @@ class SmellDetector:
                 "total_operations": parse_result.operation_count,
                 "smell_count": len(self.detected_smells),
                 "dataframe_variables": list(parse_result.dataframe_vars.keys()),
+                "language": getattr(parse_result, "language", "python"),
             },
         )
 
@@ -527,15 +580,22 @@ class SmellDetector:
 
         """
         smells: list[CodeSmell] = []
+        is_scala = getattr(parse_result, "language", "python") == "scala"
 
         # Check for write operations without partitioning
         write_ops = [op for op in parse_result.operations if op.operation_type == SparkOperationType.WRITE]
 
         for op in write_ops:
-            args_str = " ".join(op.arguments).lower()
+            if is_scala:
+                # The Scala parser records the bare `write` accessor without
+                # arguments and partitionBy/bucketBy as separate operations,
+                # so partitioning is decided from the chain, not the args.
+                is_partitioned = self._scala_write_is_partitioned(op, parse_result)
+            else:
+                args_str = " ".join(op.arguments).lower()
 
-            # Check if partitioned write
-            is_partitioned = "partitionby" in args_str or "bucket" in args_str
+                # Check if partitioned write
+                is_partitioned = "partitionby" in args_str or "bucket" in args_str
 
             if not is_partitioned:
                 smell = CodeSmell(
@@ -557,6 +617,38 @@ class SmellDetector:
                 smells.append(smell)
 
         return smells
+
+    def _scala_write_is_partitioned(self, op: SparkOperation, parse_result: ParseResult) -> bool:
+        """Check whether a Scala write chain configures a partitioned output.
+
+        Scans the write's DataFrame lineage bucket for partitionBy/bucketBy
+        operations (or argument text mentioning them). A candidate counts
+        only when it shares the write's fluent statement chain, or when the
+        write's root variable was assigned from the statement containing it
+        (``val writer = df.write.partitionBy("dt")`` then ``writer.save``).
+
+        Args:
+            op: The write operation under inspection.
+            parse_result: Parse result the operation belongs to.
+
+        Returns:
+            True when the write is partitioned/bucketed, False otherwise.
+
+        """
+        lineage = parse_result.dataframe_vars.get(op.dataframe_var, [])
+        for other in lineage:
+            if other is op:
+                continue
+            mentions_partitioning = other.method_name in ("partitionBy", "bucketBy") or any(
+                "partitionby" in arg.lower() or "bucketby" in arg.lower() for arg in other.arguments
+            )
+            if not mentions_partitioning:
+                continue
+            if self.scala_parser.same_statement_chain(op, other):
+                return True
+            if op.dataframe_var in self.scala_parser.assignment_targets(other):
+                return True
+        return False
 
     def _detect_serialization_issues(self, parse_result: ParseResult) -> list[CodeSmell]:
         """Detect potential serialization configuration issues.
@@ -1063,6 +1155,154 @@ class SmellDetector:
 
         return smells
 
+    def _detect_groupbykey_usage(self, parse_result: ParseResult) -> list[CodeSmell]:
+        """Detect RDD groupByKey usage (Python and Scala paths).
+
+        groupByKey shuffles every value for a key to a single executor and
+        materializes them in memory; reduceByKey/aggregateByKey combine on
+        the map side first, and the DataFrame API lets Catalyst optimize.
+
+        Args:
+            parse_result: Parse result to analyze.
+
+        Returns:
+            List of detected smells.
+
+        """
+        smells: list[CodeSmell] = []
+        groupbykey_ops = [op for op in parse_result.operations if op.method_name == "groupByKey"]
+
+        for op in groupbykey_ops:
+            smells.append(
+                CodeSmell(
+                    smell_type="groupbykey_usage",
+                    description=(
+                        f"groupByKey() at line {op.location.line if op.location else 'unknown'} "
+                        "shuffles all values per key without map-side combining. Prefer "
+                        "reduceByKey/aggregateByKey, or the DataFrame groupBy().agg() API."
+                    ),
+                    severity=SeverityLevel.HIGH,
+                    location=op.location,
+                    affected_operation=op,
+                    impact=(
+                        "groupByKey moves every value across the network and buffers all "
+                        "values for a key in memory on one executor, causing large shuffle "
+                        "volumes and OOM on skewed keys. reduceByKey and aggregateByKey "
+                        "combine values on the map side before shuffling, and the "
+                        "DataFrame API benefits from Catalyst and Tungsten optimizations."
+                    ),
+                )
+            )
+
+        return smells
+
+    def _detect_scala_large_collect(self, parse_result: ParseResult) -> list[CodeSmell]:
+        """Detect collect() without a preceding limit() in Scala sources.
+
+        Operation-based equivalent of the Python AST detector
+        :meth:`_detect_large_collect`: a collect() is flagged unless a
+        limit() appears shortly before it in the lineage of the same
+        DataFrame variable (covering both fluent chains and ``val``
+        assignments). The window is measured in lineage positions of that
+        variable, so unrelated operations on other DataFrames elsewhere in
+        the file never push a limit() out of range.
+
+        Args:
+            parse_result: Parse result to analyze.
+
+        Returns:
+            List of detected smells (empty for non-Scala input).
+
+        """
+        smells: list[CodeSmell] = []
+        if getattr(parse_result, "language", "python") != "scala":
+            return smells
+
+        for op in parse_result.operations:
+            if op.method_name != "collect":
+                continue
+            lineage = sorted(
+                parse_result.dataframe_vars.get(op.dataframe_var, []),
+                key=lambda prev: prev.chain_position,
+            )
+            op_index = next((i for i, candidate in enumerate(lineage) if candidate is op), len(lineage))
+            window = lineage[max(0, op_index - 6) : op_index]
+            has_limit = any(prev.method_name == "limit" for prev in window)
+            if not has_limit:
+                smells.append(
+                    CodeSmell(
+                        smell_type="large_collect",
+                        description=("collect() without limit() can cause driver OOM on large datasets"),
+                        severity=SeverityLevel.MEDIUM,
+                        location=op.location,
+                        affected_operation=op,
+                        impact=(
+                            "Calling collect() pulls all data into driver memory. "
+                            "Use .limit(N).collect() or write to storage instead."
+                        ),
+                    )
+                )
+
+        return smells
+
+    def _detect_scala_single_partition_write(self, parse_result: ParseResult) -> list[CodeSmell]:
+        """Detect repartition(1)/coalesce(1) followed by a write in Scala.
+
+        Operation-based equivalent of the Python AST detector
+        :meth:`_detect_single_partition_write`: flags fluent chains such as
+        ``df.coalesce(1).write.parquet(...)`` as well as the two-statement
+        form where the single-partition DataFrame is assigned to a ``val``
+        that is written later. A write counts only when it shares the
+        repartition/coalesce call's fluent statement chain, or when its
+        root variable is the one assigned from that chain — writes of the
+        original (unrepartitioned) DataFrame are not flagged.
+
+        Args:
+            parse_result: Parse result to analyze.
+
+        Returns:
+            List of detected smells (empty for non-Scala input).
+
+        """
+        smells: list[CodeSmell] = []
+        if getattr(parse_result, "language", "python") != "scala":
+            return smells
+
+        for op in parse_result.operations:
+            if op.method_name not in ("repartition", "coalesce"):
+                continue
+            if not op.arguments or op.arguments[0].strip() != "1":
+                continue
+            assigned_vars = self.scala_parser.assignment_targets(op)
+            followed_by_write = any(
+                later.method_name in _WRITE_CHAIN_METHODS
+                and later.chain_position > op.chain_position
+                and (self.scala_parser.same_statement_chain(op, later) or later.dataframe_var in assigned_vars)
+                for later in parse_result.operations
+            )
+            if followed_by_write:
+                smells.append(
+                    CodeSmell(
+                        smell_type="single_partition_write",
+                        description=(
+                            f"{op.method_name}(1) before a write at line "
+                            f"{op.location.line if op.location else 'unknown'} "
+                            "forces the entire output through a single task."
+                        ),
+                        severity=SeverityLevel.MEDIUM,
+                        location=op.location,
+                        affected_operation=op,
+                        impact=(
+                            "Writing through one partition serializes the whole output "
+                            "on a single executor core, creating a bottleneck and a "
+                            "single large file. Let Spark write multiple files, or "
+                            "compact afterwards if a single file is truly required."
+                        ),
+                    )
+                )
+
+        return smells
+
     # ------------------------------------------------------------------
     # AST helper methods
     # ------------------------------------------------------------------
@@ -1310,11 +1550,12 @@ class SmellDetector:
         return value if isinstance(value, str) else None
 
 
-def detect_smells(source_code: str) -> AnalysisResult:
+def detect_smells(source_code: str, language: str = "auto") -> AnalysisResult:
     """Convenience function to detect smells in Spark code.
 
     Args:
-        source_code: Python source code string.
+        source_code: Source code string (Python or Scala).
+        language: Source language ("python", "scala", or "auto").
 
     Returns:
         AnalysisResult containing detected smells.
@@ -1332,4 +1573,4 @@ def detect_smells(source_code: str) -> AnalysisResult:
 
     """
     detector = SmellDetector()
-    return detector.analyze_source(source_code)
+    return detector.analyze_source(source_code, language=language)

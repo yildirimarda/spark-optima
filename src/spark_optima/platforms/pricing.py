@@ -8,7 +8,8 @@ relative to each platform's baseline region (multiplier 1.0). The values
 are curated approximations of typical regional price differences — they
 are NOT live quotes and may drift from actual cloud provider pricing.
 An opt-in live pricing layer (``SPARK_OPTIMA_LIVE_PRICING=1``) is available
-for aws_emr, aws_glue, and azure_synapse; see
+for aws_emr, aws_glue, azure_synapse, and gcp_dataproc (the latter
+additionally requires ``SPARK_OPTIMA_GCP_API_KEY``); see
 :mod:`spark_optima.platforms.live_pricing`. These static multipliers remain
 the default and the fallback whenever a live lookup fails.
 
@@ -19,6 +20,7 @@ Platform keys and their baseline regions:
 | ``aws_glue``    | us-east-1       | AWS region (``us-east-1``)   |
 | ``aws_emr``     | us-east-1       | AWS region (``us-east-1``)   |
 | ``azure_synapse`` | eastus        | Azure region (``eastus``)    |
+| ``gcp_dataproc`` | us-central1    | GCP region (``us-central1``) |
 | ``databricks``  | aws:us-east-1   | ``<cloud>:<region>`` (e.g. ``aws:us-east-1``, ``azure:eastus``) |
 
 Databricks runs on multiple clouds, so its table is keyed by a compound

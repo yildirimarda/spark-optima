@@ -37,7 +37,7 @@ parameters:
     description: "Amount of memory to use for the driver process"
     since_version: "1.0.0"
     constraints:
-      min_value: 512
+      min_value: "512m"
       pattern: "^\\d+[gGmMkK]?[bB]?$"
     applicable_platforms: [local, databricks, aws_glue, azure_synapse]
     heuristic:
@@ -55,7 +55,7 @@ parameters:
     description: "Overhead memory for driver non-heap memory (off-heap, VM overhead)"
     since_version: "2.3.0"
     constraints:
-      min_value: 384
+      min_value: "384m"
       pattern: "^\\d+[gGmMkK]?[bB]?$"
     applicable_platforms: [local, databricks, aws_glue, azure_synapse]
     heuristic:
@@ -92,7 +92,7 @@ parameters:
     description: "Amount of memory to use per executor process"
     since_version: "0.5.0"
     constraints:
-      min_value: 512
+      min_value: "512m"
       pattern: "^\\d+[gGmMkK]?[bB]?$"
     applicable_platforms: [local, databricks, aws_glue, azure_synapse]
     heuristic:
@@ -110,7 +110,7 @@ parameters:
     description: "Overhead memory for executor non-heap memory per executor"
     since_version: "2.3.0"
     constraints:
-      min_value: 384
+      min_value: "384m"
       pattern: "^\\d+[gGmMkK]?[bB]?$"
     applicable_platforms: [local, databricks, aws_glue, azure_synapse]
     heuristic:
@@ -146,7 +146,7 @@ parameters:
     description: "Memory for PySpark to use (in addition to JVM memory)"
     since_version: "2.4.0"
     constraints:
-      min_value: 512
+      min_value: "512m"
       pattern: "^\\d+[gGmMkK]?[bB]?$"
     applicable_platforms: [local, databricks, aws_glue, azure_synapse]
     heuristic:
@@ -541,7 +541,7 @@ parameters:
     since_version: "1.4.0"
     constraints:
       min_value: 1
-      max_value: 2048
+      max_value: "2048m"
       pattern: "^\\d+[gGmMkK]?[bB]?$"
     applicable_platforms: [local, databricks, aws_glue, azure_synapse]
     heuristic:

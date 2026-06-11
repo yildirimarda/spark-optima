@@ -9,8 +9,14 @@ Spark Optima is a professional tool that automatically finds the optimal Apache 
 ## Key Features
 
 - 🧠 **Hybrid Optimization**: Combines Spark best practices with intelligent Bayesian search
+- ⚖️ **Multi-Objective Optimization**: Optimize for time *and* cost simultaneously with a Pareto frontier of trade-offs
 - 🎯 **Multi-Platform Support**: Local, AWS Glue, AWS EMR, Databricks, Azure Synapse, GCP Dataproc, Kubernetes
-- 📊 **Code Analysis**: Detects Spark code smells and suggests improvements
+- 📊 **Code Analysis**: Detects Spark code smells (DataFrame and `spark.sql()` SQL) and suggests improvements
+- 📜 **Post-Run Analysis**: Parse Spark event logs or query a Spark History Server for GC, shuffle, spill, and skew metrics
+- 🤖 **ML Surrogate Model**: Optional scikit-learn model learns from real runs to sharpen simulation estimates
+- 💰 **Live Cloud Pricing**: Opt-in live on-demand rates with caching and static fallback
+- 🌐 **Async REST API**: Background optimization jobs, webhooks, and pluggable job stores (memory, SQLite, Redis)
+- 📋 **Workload Templates**: Curated baselines for batch ETL, streaming, ML training, and interactive analytics
 - 🚀 **Dual Mode**: Fast simulation mode or real execution mode with actual measurements
 - 📋 **200+ Config Parameters**: Comprehensive coverage of Spark 3.x and 4.x configurations
 - 🔧 **Professional Grade**: Docker-ready, Kubernetes-ready, production-ready
@@ -23,6 +29,12 @@ pip install spark-optima
 
 # Run optimization
 spark-optima optimize -c ./my_spark_job.py -p databricks -d 100
+
+# Analyze a finished run from its event log
+spark-optima analyze-log -l ./application_1234_eventlog
+
+# Start from a curated workload template
+spark-optima templates --show etl-batch
 ```
 
 ## Architecture Overview

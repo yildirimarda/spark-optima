@@ -813,3 +813,66 @@ class TestSearchSpaceBuilderToTrialParams:
         assert SearchSpaceBuilder._snap_to_grid(0, 138, 258, 6) == 138
         # Degenerate step is treated as 1
         assert SearchSpaceBuilder._snap_to_grid(5, 1, 10, 0) == 5
+
+
+class TestNumericConstraintBounds:
+    """Search-space behavior with load-time-canonicalized numeric bounds.
+
+    After load-time canonicalization every constraint bound is numeric.
+    These tests pin the consumption paths: integer/float builders read the
+    bounds directly, while BYTES parameters never consume constraint bounds
+    (their ranges derive from the heuristic baseline), so canonicalization
+    introduces no runtime behavior change for them.
+    """
+
+    def test_integer_search_space_uses_numeric_bounds(self) -> None:
+        """Integer builder consumes numeric bounds and emits int low/high."""
+        builder = SearchSpaceBuilder()
+        param = ConfigParameter(
+            name="spark.test.threads",
+            category=ParameterCategory.RUNTIME,
+            param_type=ParameterType.INTEGER,
+            default=8,
+            constraints=ValidationConstraint(min_value=1, max_value=64),
+        )
+        config_set = ConfigSet(version="3.5.0", parameters={"spark.test.threads": param})
+
+        space = builder.build_from_heuristic({"spark.test.threads": 8}, config_set)
+
+        entry = space["spark.test.threads"]
+        assert entry["type"] == "int"
+        assert entry["low"] == 1
+        assert entry["high"] == 64
+        assert isinstance(entry["low"], int)
+        assert isinstance(entry["high"], int)
+
+    def test_bytes_param_ignores_constraint_bounds(self) -> None:
+        """BYTES ranges derive from the heuristic value, not constraint bounds."""
+        builder = SearchSpaceBuilder()
+        param = ConfigParameter(
+            name="spark.kryoserializer.buffer.max",
+            category=ParameterCategory.SERIALIZATION,
+            param_type=ParameterType.BYTES,
+            default="64m",
+            # Canonicalized numeric bounds (1 byte .. 2048 MiB)
+            constraints=ValidationConstraint(min_value=1, max_value=2048 * 1024**2),
+        )
+        config_set = ConfigSet(
+            version="3.5.0",
+            parameters={"spark.kryoserializer.buffer.max": param},
+        )
+
+        space = builder.build_from_heuristic(
+            {"spark.kryoserializer.buffer.max": "64m"},
+            config_set,
+            SearchSpaceConfig(variation_percent=0.3),
+        )
+
+        entry = space["spark.kryoserializer.buffer.max"]
+        base = 64 * 1024**2
+        assert entry["type"] == "bytes"
+        assert entry["base_value"] == base
+        # Range comes from base value +/- variation (with builder clamps),
+        # unaffected by the numeric constraint bounds.
+        assert entry["low"] == int(base * 0.7)
+        assert entry["high"] == int(base * 1.3)

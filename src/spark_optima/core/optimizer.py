@@ -9,6 +9,7 @@ optimization.
 """
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -129,6 +130,7 @@ class Optimizer:
         bayesian_trials: int = 50,
         bayesian_timeout_minutes: int | None = None,
         objectives: list[str] | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> OptimizationResult:
         """Run optimization for the given Spark code.
 
@@ -144,6 +146,10 @@ class Optimizer:
             bayesian_trials: Number of Bayesian optimization trials.
             bayesian_timeout_minutes: Timeout for Bayesian optimization.
             objectives: List of optimization objectives (e.g., ["minimize_time"]).
+            progress_callback: Optional callable receiving per-trial progress
+                events from the Bayesian phase (see
+                :meth:`BayesianOptimizer.optimize` for the event format).
+                Ignored when ``use_bayesian`` is False. Default None.
 
         Returns:
             OptimizationResult containing the optimal configuration and metadata.
@@ -207,6 +213,7 @@ class Optimizer:
                     timeout_minutes=bayesian_timeout_minutes,
                     objectives=objectives,
                     code_path=code_path_obj,
+                    progress_callback=progress_callback,
                 )
                 final_config = bayesian_config
             except (RuntimeError, ValueError, KeyError, AttributeError, TypeError) as e:
@@ -252,6 +259,7 @@ class Optimizer:
         timeout_minutes: int | None,
         objectives: list[str] | None,
         code_path: Path | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         """Run Bayesian optimization to fine-tune heuristic configuration.
 
@@ -263,6 +271,8 @@ class Optimizer:
             timeout_minutes: Optimization timeout.
             objectives: Optimization objectives.
             code_path: Path to the Spark application code file (for execution mode).
+            progress_callback: Optional per-trial progress callback forwarded
+                to :meth:`BayesianOptimizer.optimize`.
 
         Returns:
             Optimized configuration dictionary.
@@ -293,6 +303,7 @@ class Optimizer:
             n_jobs=1,  # Sequential for stability
             show_progress=True,
             data_profile=data_profile,
+            progress_callback=progress_callback,
         )
 
         # Store result

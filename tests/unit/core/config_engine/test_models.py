@@ -494,3 +494,84 @@ class TestConfigSet:
         # Should return False when deprecated_in is None
         assert not param.is_deprecated_in("3.5.0")
         assert not param.is_deprecated_in("4.0.0")
+
+
+class TestLoadTimeBoundCanonicalization:
+    """Tests for load-time canonicalization of constraint bounds.
+
+    ``ConfigParameter.from_dict`` parses unit-suffixed string bounds for
+    BYTES/DURATION parameters into canonical base units (bytes/seconds), so
+    after load every bound in the system is numeric.
+    """
+
+    @staticmethod
+    def _param_dict(param_type: str, constraints: dict) -> dict:
+        """Build a minimal from_dict payload."""
+        return {
+            "name": "spark.test.param",
+            "category": "memory",
+            "type": param_type,
+            "constraints": constraints,
+        }
+
+    def test_bytes_string_bound_canonicalized(self) -> None:
+        """A "2048m" max bound becomes 2147483648 bytes."""
+        param = ConfigParameter.from_dict(self._param_dict("bytes", {"max_value": "2048m"}))
+        assert param.constraints.max_value == 2147483648
+        assert isinstance(param.constraints.max_value, int)
+
+    def test_bytes_min_and_max_canonicalized(self) -> None:
+        """Both bounds are parsed with the shared byte parser."""
+        param = ConfigParameter.from_dict(
+            self._param_dict("bytes", {"min_value": "64k", "max_value": "512m"}),
+        )
+        assert param.constraints.min_value == 64 * 1024
+        assert param.constraints.max_value == 512 * 1024**2
+
+    def test_duration_string_bound_canonicalized(self) -> None:
+        """A "5m" duration bound becomes 300 seconds."""
+        param = ConfigParameter.from_dict(self._param_dict("duration", {"max_value": "5m"}))
+        assert param.constraints.max_value == 300
+
+    def test_bare_numeric_bounds_pass_through(self) -> None:
+        """Numeric bounds already mean base units and are left unchanged."""
+        param = ConfigParameter.from_dict(
+            self._param_dict("bytes", {"min_value": 1024, "max_value": 2147483648}),
+        )
+        assert param.constraints.min_value == 1024
+        assert param.constraints.max_value == 2147483648
+
+    def test_non_sized_types_left_untouched(self) -> None:
+        """Bounds on non-BYTES/DURATION parameters are not canonicalized."""
+        param = ConfigParameter.from_dict(
+            {
+                "name": "spark.test.cores",
+                "category": "cpu",
+                "type": "integer",
+                "constraints": {"min_value": 1, "max_value": 64},
+            },
+        )
+        assert param.constraints.min_value == 1
+        assert param.constraints.max_value == 64
+
+    def test_unparsable_string_bound_raises(self) -> None:
+        """An invalid string bound fails loudly at load time, naming the parameter."""
+        with pytest.raises(ValueError, match="spark.test.param"):
+            ConfigParameter.from_dict(self._param_dict("bytes", {"max_value": "12parsecs"}))
+
+    def test_config_set_from_dict_canonicalizes(self) -> None:
+        """Bounds are numeric for parameters loaded through ConfigSet.from_dict."""
+        config_set = ConfigSet.from_dict(
+            {
+                "version": "3.5.0",
+                "parameters": {
+                    "spark.executor.memory": {
+                        "category": "memory",
+                        "type": "bytes",
+                        "default": "1g",
+                        "constraints": {"min_value": "512m"},
+                    },
+                },
+            },
+        )
+        assert config_set["spark.executor.memory"].constraints.min_value == 512 * 1024**2

@@ -14,8 +14,14 @@ Spark Optima is a professional, production-ready tool that automatically finds t
 ## ✨ Features
 
 - 🧠 **Hybrid Optimization**: Combines Spark best practices with intelligent Bayesian search
-- 🎯 **Multi-Platform Support**: Local, AWS Glue, AWS EMR, Databricks, Azure Synapse, GCP Dataproc, Kubernetes
-- 📊 **Code Analysis**: Detects Spark code smells and suggests improvements
+- ⚖️ **Multi-Objective Optimization**: Optimize for time *and* cost simultaneously with a Pareto frontier of trade-offs
+- 🎯 **Multi-Platform Support**: Local, AWS Glue, AWS EMR, Databricks, Azure Synapse, GCP Dataproc, Kubernetes (7 platforms)
+- 📊 **Code Analysis**: Detects Spark code smells (DataFrame *and* `spark.sql()` SQL via sqlglot) and suggests improvements
+- 📜 **Post-Run Analysis**: Parse Spark event logs or query a Spark History Server for GC, shuffle, spill, and skew metrics plus tuning hints
+- 🤖 **ML Surrogate Model**: Optional scikit-learn model learns from real runs to sharpen simulation estimates
+- 💰 **Live Cloud Pricing**: Opt-in live on-demand rates (AWS Pricing API, Azure Retail Prices, GCP Cloud Billing) with caching and static fallback
+- 🌐 **Async REST API**: FastAPI with background optimization jobs, webhooks, and pluggable job stores (memory, SQLite, Redis)
+- 📋 **Workload Templates**: Curated baselines for batch ETL, streaming, ML training, and interactive analytics
 - 🚀 **Dual Mode**: Fast simulation mode or real execution mode with actual measurements
 - 🔒 **Secure Execution**: Docker-based isolation for untrusted code execution
 - 📋 **200+ Config Parameters**: Comprehensive coverage of Spark 3.x and 4.x configurations
@@ -66,6 +72,26 @@ pip install pyspark  # If using pip
 ---
 
 ## 🔧 Local Usage Guide
+
+### CLI Commands at a Glance
+
+| Command | What it does |
+|---------|--------------|
+| `optimize` | Find the optimal Spark configuration for your code, platform, and data |
+| `analyze` | Detect code smells and improvement opportunities in Spark code (no optimization) |
+| `analyze-log` | Analyze a finished run from an event log file or a Spark History Server (`--history-server URL`) |
+| `wizard` | Interactive step-by-step optimization wizard |
+| `export` | Convert a saved result to platform formats (`databricks-json`, `aws-glue`, `azure-synapse`, `emr`, `kubernetes`, `airflow`, `env`, `properties`, `pareto-json`, `pareto-csv`, ...) |
+| `history` | Browse past optimization runs stored in the local history database |
+| `compare` | Diff two optimization result files |
+| `explain` | Explain the rationale behind each parameter in a result |
+| `pareto` | Display the Pareto frontier of a multi-objective result |
+| `validate` | Validate a spark-defaults.conf / JSON config against the parameter database and platform constraints |
+| `import` | Import an existing Spark config, optimize, and diff current vs. recommended |
+| `templates` | List curated workload templates or inspect one (`--show etl-batch`) |
+| `platforms list` | List supported platforms and their constraints |
+
+Run `uv run spark-optima <command> --help` for full options.
 
 ### 1. Basic Optimization (Simulation Mode)
 
@@ -221,6 +247,54 @@ uv run spark-optima export \
   --result-file result.json \
   --format azure-synapse
 ```
+
+### 7. Post-Run Analysis (Event Logs & History Server)
+
+Analyze a finished Spark run to get GC, shuffle, spill, and skew metrics plus tuning advice:
+
+```bash
+# From an event log file (plain JSON lines or .gz)
+uv run spark-optima analyze-log -l ./application_1234_eventlog
+
+# From a running Spark History Server
+uv run spark-optima analyze-log --history-server http://localhost:18080 --app-id app-1234
+```
+
+### 8. Multi-Objective Optimization (Pareto)
+
+Optimize for time and cost at once, then inspect the trade-off frontier:
+
+```bash
+uv run spark-optima optimize \
+  --code-path job.py --platform aws_glue --data-size 200 \
+  --objective minimize_time --objective minimize_cost \
+  --output json > result.json
+
+uv run spark-optima pareto -r result.json
+uv run spark-optima export -r result.json -f pareto-csv
+```
+
+---
+
+## ⚙️ Environment Variables
+
+All settings are optional — Spark Optima works out of the box with sensible defaults.
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `SPARK_OPTIMA_HISTORY_DB` | Path of the local optimization-history SQLite database (`history` command) | `~/.spark_optima/history.db` |
+| `SPARK_OPTIMA_MODEL_DIR` | Directory for trained ML surrogate models | `~/.spark_optima/models` |
+| `SPARK_OPTIMA_JOB_STORE` | REST API job store backend: `memory`, `sqlite`, or `redis` | `memory` |
+| `SPARK_OPTIMA_JOB_DB` | SQLite job store database path (when `JOB_STORE=sqlite`) | `~/.spark_optima/jobs.db` |
+| `SPARK_OPTIMA_REDIS_URL` | Redis connection URL (when `JOB_STORE=redis`) | `redis://localhost:6379/0` |
+| `SPARK_OPTIMA_API_KEYS` | Comma-separated API keys; setting this enables `X-API-Key` auth on the REST API | disabled |
+| `SPARK_OPTIMA_RATE_LIMIT` | Requests-per-minute budget for the REST API (opt-in) | disabled |
+| `SPARK_OPTIMA_LIVE_PRICING` | Set to `1`/`true` to fetch live cloud pricing instead of the static price tables | disabled |
+| `SPARK_OPTIMA_PRICING_CACHE` | Live pricing cache file path | `~/.spark_optima/pricing_cache.json` |
+| `SPARK_OPTIMA_PRICING_TTL_HOURS` | Live pricing cache time-to-live in hours | `24` |
+| `SPARK_OPTIMA_GCP_API_KEY` | Google Cloud Billing Catalog API key (required for GCP Dataproc live pricing) | unset |
+| `SPARK_OPTIMA_HOST` | REST API bind host | `127.0.0.1` |
+| `SPARK_OPTIMA_PORT` | REST API bind port | `8000` |
 
 ---
 

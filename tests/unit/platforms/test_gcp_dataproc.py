@@ -700,3 +700,184 @@ class TestGCPDataprocPlatformLivePricing:
         cost = platform.estimate_cost(cluster_config, duration_hours=2.0)
 
         assert cost["pricing_source"] == "static"
+
+
+class TestGCPDataprocPlatformLivePricingWired:
+    """Test cases for the opt-in GCP live pricing wiring in estimate_cost.
+
+    The ``get_live_hourly_rate`` facade is mocked at the adapter module
+    boundary — no test performs real network calls.
+    """
+
+    # Curated multiplier for europe-west1 in spark_optima.platforms.pricing
+    EUROPE_WEST1_MULTIPLIER = 1.1
+
+    def _get_cluster_config(self) -> ClusterConfig:
+        """Build a deterministic config: 2 x n2-standard-8 workers + n2-standard-4 master."""
+        platform = GCPDataprocPlatform()
+        worker = platform.get_worker_type("n2-standard-8")
+        master = platform.get_worker_type("n2-standard-4")
+        assert worker is not None and master is not None
+        return ClusterConfig(
+            worker_type=worker,
+            worker_count=2,
+            driver_type=master,
+            driver_count=1,
+            spark_version="3.5.0",
+        )
+
+    @staticmethod
+    def _expected_static_total(multiplier: float, duration_hours: float) -> float:
+        """Static math: (compute x multiplier + fee) per node, summed over nodes x hours."""
+        worker_hourly = 0.3885 * multiplier + 0.08  # n2-standard-8: compute + $0.01 x 8 vCPUs
+        master_hourly = 0.1942 * multiplier + 0.04  # n2-standard-4: compute + $0.01 x 4 vCPUs
+        return worker_hourly * 2 * duration_hours + master_hourly * 1 * duration_hours
+
+    def test_default_off_reports_static_and_keeps_existing_math(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that the default-off path is the unchanged static estimate."""
+        monkeypatch.delenv("SPARK_OPTIMA_LIVE_PRICING", raising=False)
+        monkeypatch.delenv("SPARK_OPTIMA_GCP_API_KEY", raising=False)
+        platform = GCPDataprocPlatform(region="europe-west1")
+
+        cost = platform.estimate_cost(self._get_cluster_config(), duration_hours=2.0)
+
+        assert cost["pricing_source"] == "static"
+        assert cost["total_cost"] == pytest.approx(self._expected_static_total(self.EUROPE_WEST1_MULTIPLIER, 2.0))
+        assert cost["breakdown"]["region_multiplier"] == self.EUROPE_WEST1_MULTIPLIER
+
+    def test_live_rates_replace_static_compute_math(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that live machine rates replace static compute (fee stays on top)."""
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        live_rates = {"n2-standard-8": 0.40, "n2-standard-4": 0.20}
+        monkeypatch.setattr(
+            "spark_optima.platforms.gcp_dataproc.get_live_hourly_rate",
+            lambda platform, *, region, instance_type=None, vcpus=None, memory_gb=None: live_rates[instance_type],
+        )
+        platform = GCPDataprocPlatform(region="europe-west1")
+
+        cost = platform.estimate_cost(self._get_cluster_config(), duration_hours=2.0)
+
+        # Workers: ($0.40 compute + $0.08 fee) x 2 nodes x 2h = $1.92
+        # Master: ($0.20 compute + $0.04 fee) x 1 node x 2h = $0.48
+        assert cost["pricing_source"] == "live"
+        assert cost["breakdown"]["worker_cost"] == pytest.approx(1.92)
+        assert cost["breakdown"]["master_cost"] == pytest.approx(0.48)
+        assert cost["total_cost"] == pytest.approx(2.40)
+        # The compute/fee split stays exact: fee is $0.01/vCPU-h regardless
+        assert cost["breakdown"]["compute_cost"] == pytest.approx(0.40 * 4 + 0.20 * 2)
+        assert cost["breakdown"]["dataproc_fee"] == pytest.approx(0.08 * 4 + 0.04 * 2)
+        assert cost["breakdown"]["region_multiplier"] == 1.0  # Live rates are region-specific
+        assert "live" in cost["notes"]
+
+    def test_live_lookup_passes_machine_specs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that the facade receives machine type, vCPUs, and RAM per node."""
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        calls: list[tuple[str, str, str | None, float | None, float | None]] = []
+
+        def fake_rate(
+            platform: str,
+            *,
+            region: str,
+            instance_type: str | None = None,
+            vcpus: float | None = None,
+            memory_gb: float | None = None,
+        ) -> float:
+            calls.append((platform, region, instance_type, vcpus, memory_gb))
+            return 0.40
+
+        monkeypatch.setattr("spark_optima.platforms.gcp_dataproc.get_live_hourly_rate", fake_rate)
+        platform = GCPDataprocPlatform(region="us-central1")
+
+        platform.estimate_cost(self._get_cluster_config(), duration_hours=1.0)
+
+        assert ("gcp_dataproc", "us-central1", "n2-standard-8", 8, 32) in calls
+        assert ("gcp_dataproc", "us-central1", "n2-standard-4", 4, 16) in calls
+
+    def test_partial_live_failure_falls_back_to_static(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that a missing master rate makes the whole estimate static."""
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        live_rates: dict[str, float | None] = {"n2-standard-8": 0.40, "n2-standard-4": None}
+        monkeypatch.setattr(
+            "spark_optima.platforms.gcp_dataproc.get_live_hourly_rate",
+            lambda platform, *, region, instance_type=None, vcpus=None, memory_gb=None: live_rates[instance_type],
+        )
+        platform = GCPDataprocPlatform(region="europe-west1")
+
+        cost = platform.estimate_cost(self._get_cluster_config(), duration_hours=2.0)
+
+        assert cost["pricing_source"] == "static"
+        assert cost["total_cost"] == pytest.approx(self._expected_static_total(self.EUROPE_WEST1_MULTIPLIER, 2.0))
+        assert cost["breakdown"]["region_multiplier"] == self.EUROPE_WEST1_MULTIPLIER
+
+    def test_facade_none_matches_default_off_exactly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that live-on-but-unresolved output equals the default-off output."""
+        cluster_config = self._get_cluster_config()
+        platform = GCPDataprocPlatform(region="asia-northeast1")
+
+        monkeypatch.delenv("SPARK_OPTIMA_LIVE_PRICING", raising=False)
+        default_off = platform.estimate_cost(cluster_config, duration_hours=3.0)
+
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        monkeypatch.setattr(
+            "spark_optima.platforms.gcp_dataproc.get_live_hourly_rate",
+            lambda platform, *, region, instance_type=None, vcpus=None, memory_gb=None: None,
+        )
+        live_on_unresolved = platform.estimate_cost(cluster_config, duration_hours=3.0)
+
+        assert live_on_unresolved == default_off
+
+    def test_preemptible_discount_applies_to_live_worker_compute(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test the live + preemptible interplay: discount on worker compute only."""
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        live_rates = {"n2-standard-8": 0.40, "n2-standard-4": 0.20}
+        monkeypatch.setattr(
+            "spark_optima.platforms.gcp_dataproc.get_live_hourly_rate",
+            lambda platform, *, region, instance_type=None, vcpus=None, memory_gb=None: live_rates[instance_type],
+        )
+        platform = GCPDataprocPlatform(use_preemptible_workers=True)
+
+        cost = platform.estimate_cost(self._get_cluster_config(), duration_hours=2.0)
+
+        # Worker compute: $0.40 x (1 - 0.65) = $0.14; fee unchanged at $0.08
+        # Workers: ($0.14 + $0.08) x 2 nodes x 2h = $0.88
+        # Master stays on-demand: ($0.20 + $0.04) x 1 node x 2h = $0.48
+        assert cost["pricing_source"] == "live"
+        assert cost["breakdown"]["worker_cost"] == pytest.approx(0.88)
+        assert cost["breakdown"]["master_cost"] == pytest.approx(0.48)
+        assert cost["total_cost"] == pytest.approx(1.36)
+        # The Dataproc fee is charged on all vCPUs regardless of preemptibility
+        assert cost["breakdown"]["dataproc_fee"] == pytest.approx(0.08 * 4 + 0.04 * 2)
+        assert cost["breakdown"]["preemptible_discount"] == 0.65
+
+    def test_same_machine_type_fetches_rate_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that identical worker/master machine types reuse one live lookup."""
+        monkeypatch.setenv("SPARK_OPTIMA_LIVE_PRICING", "1")
+        calls: list[str | None] = []
+
+        def fake_rate(
+            platform: str,
+            *,
+            region: str,
+            instance_type: str | None = None,
+            vcpus: float | None = None,
+            memory_gb: float | None = None,
+        ) -> float:
+            calls.append(instance_type)
+            return 0.40
+
+        monkeypatch.setattr("spark_optima.platforms.gcp_dataproc.get_live_hourly_rate", fake_rate)
+        platform = GCPDataprocPlatform()
+        worker = platform.get_worker_type("n2-standard-8")
+        assert worker is not None
+        cluster_config = ClusterConfig(
+            worker_type=worker,
+            worker_count=2,
+            driver_type=worker,
+            driver_count=1,
+            spark_version="3.5.0",
+        )
+
+        cost = platform.estimate_cost(cluster_config, duration_hours=2.0)
+
+        assert cost["pricing_source"] == "live"
+        assert calls == ["n2-standard-8"]

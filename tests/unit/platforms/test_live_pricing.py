@@ -4,10 +4,10 @@
 """Unit tests for the opt-in live pricing layer.
 
 This module contains tests for the Azure Retail Prices client, the guarded
-boto3 AWS Pricing client, the JSON file cache, and the never-raising
-``get_live_hourly_rate`` facade. All HTTP traffic is mocked with
-``httpx.MockTransport`` and boto3 is replaced with mocks — no test performs
-real network calls.
+boto3 AWS Pricing client, the API-key-gated GCP Cloud Billing Catalog
+client, the JSON file cache, and the never-raising ``get_live_hourly_rate``
+facade. All HTTP traffic is mocked with ``httpx.MockTransport`` and boto3 is
+replaced with mocks — no test performs real network calls.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import importlib.util
 import json
 import sys
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
@@ -25,8 +26,10 @@ import pytest
 from spark_optima.platforms import live_pricing
 from spark_optima.platforms.live_pricing import (
     DEFAULT_TTL_HOURS,
+    GCP_API_KEY_ENV_VAR,
     AWSPricingClient,
     AzureRetailPricesClient,
+    GCPCloudBillingClient,
     PricingCache,
     get_live_hourly_rate,
     is_live_pricing_enabled,
@@ -120,6 +123,77 @@ def _mock_pricing_client(price_list: list[Any]) -> MagicMock:
     client = MagicMock()
     client.get_products.return_value = {"PriceList": price_list}
     return client
+
+
+def _gcp_sku(
+    description: str,
+    *,
+    units: Any = "0",
+    nanos: Any = 0,
+    usage_type: str = "OnDemand",
+    regions: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build a minimal Cloud Billing Catalog SKU entry."""
+    return {
+        "skuId": "0000-0000-0000",
+        "description": description,
+        "category": {
+            "resourceFamily": "Compute",
+            "resourceGroup": "N2Standard",
+            "usageType": usage_type,
+        },
+        "serviceRegions": regions if regions is not None else ["us-central1"],
+        "pricingInfo": [
+            {
+                "pricingExpression": {
+                    "usageUnit": "h",
+                    "tieredRates": [
+                        {
+                            "startUsageAmount": 0,
+                            "unitPrice": {"currencyCode": "USD", "units": units, "nanos": nanos},
+                        },
+                    ],
+                },
+            },
+        ],
+    }
+
+
+def _gcp_core_sku(nanos: int = 31611000, **kwargs: Any) -> dict[str, Any]:
+    """Build an N2 core SKU (default $0.031611 per vCPU-hour)."""
+    return _gcp_sku("N2 Instance Core running in Iowa", nanos=nanos, **kwargs)
+
+
+def _gcp_ram_sku(nanos: int = 4237000, **kwargs: Any) -> dict[str, Any]:
+    """Build an N2 RAM SKU (default $0.004237 per GB-hour)."""
+    return _gcp_sku("N2 Instance Ram running in Iowa", nanos=nanos, **kwargs)
+
+
+def _gcp_transport_for_pages(
+    pages: list[list[dict[str, Any]]],
+    seen: list[httpx.Request] | None = None,
+) -> httpx.MockTransport:
+    """Serve canned SKU pages chained via numeric ``nextPageToken`` values."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append(request)
+        token = request.url.params.get("pageToken", "")
+        index = int(token) if token else 0
+        body: dict[str, Any] = {"skus": pages[min(index, len(pages) - 1)]}
+        if index < len(pages) - 1:
+            body["nextPageToken"] = str(index + 1)
+        return httpx.Response(200, json=body)
+
+    return httpx.MockTransport(handler)
+
+
+def _gcp_client_with_pages(
+    pages: list[list[dict[str, Any]]],
+    seen: list[httpx.Request] | None = None,
+) -> GCPCloudBillingClient:
+    """Build a GCP client whose transport serves the given SKU pages."""
+    return GCPCloudBillingClient(api_key="test-key", transport=_gcp_transport_for_pages(pages, seen))
 
 
 # =============================================================================
@@ -503,6 +577,233 @@ class TestAWSPricingClientWithRealBoto3:
 
 
 # =============================================================================
+# GCPCloudBillingClient
+# =============================================================================
+
+
+class TestGCPCloudBillingClient:
+    """Test cases for the GCP Cloud Billing Catalog client (httpx mocked)."""
+
+    def test_get_n2_machine_rate_success(self) -> None:
+        """Test the core/RAM SKU combination into a machine-hour price."""
+        client = _gcp_client_with_pages([[_gcp_core_sku(), _gcp_ram_sku()]])
+
+        rate = client.get_n2_machine_rate("us-central1", vcpus=8, memory_gb=32)
+
+        # 8 vCPUs x $0.031611 + 32 GB x $0.004237
+        assert rate == pytest.approx(8 * 0.031611 + 32 * 0.004237)
+
+    def test_request_url_service_id_and_params(self) -> None:
+        """Test the query construction: endpoint, service id, currency."""
+        seen: list[httpx.Request] = []
+        client = _gcp_client_with_pages([[_gcp_core_sku(), _gcp_ram_sku()]], seen)
+
+        client.get_n2_machine_rate("us-central1", vcpus=4, memory_gb=16)
+
+        request = seen[0]
+        assert request.url.host == "cloudbilling.googleapis.com"
+        # 6F81-5844-456A is Compute Engine's fixed Cloud Billing service id
+        assert request.url.path == "/v1/services/6F81-5844-456A/skus"
+        params = dict(request.url.params)
+        assert params["currencyCode"] == "USD"
+        assert params["pageSize"] == str(GCPCloudBillingClient.PAGE_SIZE)
+
+    def test_api_key_sent_as_header_and_never_in_url(self) -> None:
+        """Regression: the key rides in X-Goog-Api-Key, never in the (logged) URL.
+
+        httpx logs full request URLs at INFO level and embeds them in
+        HTTPStatusError messages, so a query-string key would leak the
+        secret into logs.
+        """
+        seen: list[httpx.Request] = []
+        client = _gcp_client_with_pages([[_gcp_core_sku()], [_gcp_ram_sku()]], seen)
+
+        client.get_n2_machine_rate("us-central1", vcpus=8, memory_gb=32)
+
+        assert len(seen) == 2  # Every page request must carry the header
+        for request in seen:
+            assert request.headers["X-Goog-Api-Key"] == "test-key"
+            assert "key" not in dict(request.url.params)
+            assert "test-key" not in str(request.url)
+
+    def test_lookup_deadline_aborts_slow_pagination(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that slow pages abort at the deadline instead of paging to MAX_PAGES.
+
+        The clock is monkeypatched (no real sleeping): each page "takes" 60%
+        of the deadline, so page 1 leaves budget for one more fetch and the
+        lookup must give up (None) right after page 2.
+        """
+        requests: list[httpx.Request] = []
+        clock = {"now": 0.0}
+        page_seconds = GCPCloudBillingClient.LOOKUP_DEADLINE_SECONDS * 0.6
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            clock["now"] += page_seconds  # Simulate a slow page without sleeping
+            # Never contains N2 SKUs and always advertises another page
+            return httpx.Response(200, json={"skus": [_gcp_sku("Unrelated SKU")], "nextPageToken": "more"})
+
+        monkeypatch.setattr(live_pricing, "time", SimpleNamespace(monotonic=lambda: clock["now"], time=time.time))
+        client = GCPCloudBillingClient(api_key="test-key", transport=httpx.MockTransport(handler))
+
+        assert client.get_n2_machine_rate("us-central1", vcpus=8, memory_gb=32) is None
+        assert len(requests) == 2  # Page 1 ends below the deadline, page 2 crosses it
+        assert len(requests) < GCPCloudBillingClient.MAX_PAGES
+
+    @pytest.mark.parametrize(
+        ("units", "nanos", "expected"),
+        [
+            ("0", 31611000, 0.031611),  # Sub-dollar rate from nanos only
+            ("1", 250000000, 1.25),  # Units + nanos combine
+            ("2", 0, 2.0),  # Whole-dollar rate, no nanos
+            (3, 500000000, 3.5),  # Numeric units are tolerated too
+        ],
+    )
+    def test_units_and_nanos_to_usd(self, units: Any, nanos: int, expected: float) -> None:
+        """Test the units + nanos -> USD float conversion exactly."""
+        core = _gcp_sku("N2 Instance Core running in Iowa", units=units, nanos=nanos)
+        client = _gcp_client_with_pages([[core, _gcp_ram_sku(nanos=1000000)]])
+
+        rate = client.get_n2_machine_rate("us-central1", vcpus=1, memory_gb=0)
+
+        assert rate == pytest.approx(expected, rel=1e-12)
+
+    def test_multi_page_pagination_follows_next_page_token(self) -> None:
+        """Test that the RAM SKU is found on a later page via nextPageToken."""
+        seen: list[httpx.Request] = []
+        client = _gcp_client_with_pages(
+            [
+                [_gcp_sku("Unrelated E2 SKU"), _gcp_core_sku()],
+                [_gcp_sku("Another unrelated SKU")],
+                [_gcp_ram_sku()],
+            ],
+            seen,
+        )
+
+        rate = client.get_n2_machine_rate("us-central1", vcpus=8, memory_gb=32)
+
+        assert rate == pytest.approx(8 * 0.031611 + 32 * 0.004237)
+        assert len(seen) == 3
+        assert seen[1].url.params["pageToken"] == "1"
+        assert seen[2].url.params["pageToken"] == "2"
+
+    def test_pagination_stops_at_hard_page_cap(self) -> None:
+        """Test that a never-ending catalog stops at MAX_PAGES requests."""
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            # Always advertises another page and never contains N2 SKUs
+            return httpx.Response(200, json={"skus": [_gcp_sku("Unrelated SKU")], "nextPageToken": "more"})
+
+        client = GCPCloudBillingClient(api_key="test-key", transport=httpx.MockTransport(handler))
+
+        with pytest.raises(LookupError):
+            client.get_n2_machine_rate("us-central1", vcpus=8, memory_gb=32)
+        assert len(requests) == GCPCloudBillingClient.MAX_PAGES
+
+    def test_stops_fetching_once_both_rates_found(self) -> None:
+        """Test that no extra page is fetched after both SKUs matched."""
+        seen: list[httpx.Request] = []
+        client = _gcp_client_with_pages(
+            [[_gcp_core_sku(), _gcp_ram_sku()], [_gcp_sku("Never fetched")]],
+            seen,
+        )
+
+        client.get_n2_machine_rate("us-central1", vcpus=8, memory_gb=32)
+
+        assert len(seen) == 1
+
+    def test_region_filtering_uses_service_regions(self) -> None:
+        """Test that SKUs of other regions are skipped via serviceRegions."""
+        skus = [
+            _gcp_core_sku(nanos=99999000, regions=["europe-west1"]),  # Wrong region
+            _gcp_ram_sku(nanos=88888000, regions=["europe-west1"]),  # Wrong region
+            _gcp_core_sku(regions=["us-east1", "us-central1"]),  # Multi-region entry matches
+            _gcp_ram_sku(regions=["US-CENTRAL1"]),  # Region match is case-insensitive
+        ]
+
+        rate = _gcp_client_with_pages([skus]).get_n2_machine_rate("us-central1", vcpus=8, memory_gb=32)
+
+        assert rate == pytest.approx(8 * 0.031611 + 32 * 0.004237)
+
+    def test_non_ondemand_usage_types_are_skipped(self) -> None:
+        """Test that preemptible/committed SKUs never win over OnDemand."""
+        skus = [
+            _gcp_core_sku(nanos=7000000, usage_type="Preemptible"),  # Cheaper but not on-demand
+            _gcp_core_sku(nanos=7000000, usage_type="Commit1Yr"),
+            _gcp_core_sku(),
+            _gcp_ram_sku(),
+        ]
+
+        rate = _gcp_client_with_pages([skus]).get_n2_machine_rate("us-central1", vcpus=1, memory_gb=0)
+
+        assert rate == pytest.approx(0.031611)
+
+    @pytest.mark.parametrize(
+        "skus",
+        [
+            [],  # Empty catalog
+            [_gcp_core_sku()],  # RAM SKU missing
+            [_gcp_ram_sku()],  # Core SKU missing
+        ],
+    )
+    def test_missing_skus_raise_lookup_error(self, skus: list[dict[str, Any]]) -> None:
+        """Test that a missing core or RAM SKU raises LookupError."""
+        with pytest.raises(LookupError):
+            _gcp_client_with_pages([skus]).get_n2_machine_rate("us-central1", vcpus=8, memory_gb=32)
+
+    def test_malformed_sku_is_skipped_for_next_match(self) -> None:
+        """Test that a matching SKU without usable pricing does not block a later one."""
+        broken_core = _gcp_core_sku()
+        broken_core["pricingInfo"] = []  # No pricing tiers at all
+        zero_priced_ram = _gcp_ram_sku(nanos=0)  # Non-positive rate is rejected
+        skus = [broken_core, zero_priced_ram, "not-a-dict", _gcp_core_sku(), _gcp_ram_sku()]
+
+        rate = _gcp_client_with_pages([skus]).get_n2_machine_rate("us-central1", vcpus=8, memory_gb=32)  # type: ignore[list-item]
+
+        assert rate == pytest.approx(8 * 0.031611 + 32 * 0.004237)
+
+    def test_no_api_key_raises_runtime_error_only_on_use(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test the keyless path: construction succeeds, lookup raises."""
+        monkeypatch.delenv(GCP_API_KEY_ENV_VAR, raising=False)
+
+        client = GCPCloudBillingClient()  # Construction must succeed without a key
+
+        assert client.api_key is None
+        with pytest.raises(RuntimeError, match=GCP_API_KEY_ENV_VAR):
+            client.get_n2_machine_rate("us-central1", vcpus=8, memory_gb=32)
+
+    def test_api_key_read_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that the API key falls back to SPARK_OPTIMA_GCP_API_KEY."""
+        monkeypatch.setenv(GCP_API_KEY_ENV_VAR, "env-key")
+
+        assert GCPCloudBillingClient().api_key == "env-key"
+
+    def test_http_error_raises(self) -> None:
+        """Test that a 403 (bad API key) raises an httpx error."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, json={"error": {"message": "API key not valid"}})
+
+        client = GCPCloudBillingClient(api_key="bad-key", transport=httpx.MockTransport(handler))
+
+        with pytest.raises(httpx.HTTPStatusError):
+            client.get_n2_machine_rate("us-central1", vcpus=8, memory_gb=32)
+
+    def test_timeout_raises(self) -> None:
+        """Test that a timeout propagates as an httpx exception."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectTimeout("connection timed out")
+
+        client = GCPCloudBillingClient(api_key="test-key", transport=httpx.MockTransport(handler))
+
+        with pytest.raises(httpx.TimeoutException):
+            client.get_n2_machine_rate("us-central1", vcpus=8, memory_gb=32)
+
+
+# =============================================================================
 # get_live_hourly_rate facade
 # =============================================================================
 
@@ -547,7 +848,7 @@ class TestGetLiveHourlyRateFacade:
         assert get_live_hourly_rate("aws_glue", region="us-east-1") is None
         assert not cache_path.exists()
 
-    @pytest.mark.parametrize("platform", ["gcp_dataproc", "databricks", "local", "unknown"])
+    @pytest.mark.parametrize("platform", ["databricks", "local", "unknown"])
     def test_unsupported_platforms_return_none(
         self,
         cache_path: Path,
@@ -749,3 +1050,265 @@ class TestGetLiveHourlyRateFacade:
         assert get_live_hourly_rate("aws_glue", region="us-east-1") is None
         cached = json.loads(cache_path.read_text(encoding="utf-8"))
         assert cached["aws_glue|us-east-1|"]["rate"] is None
+
+
+class TestGetLiveHourlyRateGCP:
+    """Test cases for the gcp_dataproc path of the live pricing facade."""
+
+    @pytest.fixture
+    def gcp_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Provide a GCP API key for the duration of a test."""
+        monkeypatch.setenv(GCP_API_KEY_ENV_VAR, "test-key")
+
+    def _patch_gcp(self, monkeypatch: pytest.MonkeyPatch, result: Any) -> MagicMock:
+        """Replace the GCP client class with a mock returning ``result``."""
+        instance = MagicMock()
+        if isinstance(result, BaseException):
+            instance.get_n2_machine_rate.side_effect = result
+        else:
+            instance.get_n2_machine_rate.return_value = result
+        monkeypatch.setattr(live_pricing, "GCPCloudBillingClient", MagicMock(return_value=instance))
+        return instance
+
+    def test_disabled_returns_none_even_with_key(
+        self,
+        cache_path: Path,
+        gcp_key: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that the default-off path stays inert despite a key being set."""
+        monkeypatch.delenv("SPARK_OPTIMA_LIVE_PRICING", raising=False)
+        fetch = MagicMock()
+        monkeypatch.setattr(live_pricing, "_fetch_rate", fetch)
+
+        rate = get_live_hourly_rate(
+            "gcp_dataproc",
+            region="us-central1",
+            instance_type="n2-standard-8",
+            vcpus=8,
+            memory_gb=32,
+        )
+
+        assert rate is None
+        fetch.assert_not_called()
+        assert not cache_path.exists()
+
+    def test_no_api_key_returns_none_without_fetch_or_cache(
+        self,
+        cache_path: Path,
+        live_enabled: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test the env gate: no SPARK_OPTIMA_GCP_API_KEY means no lookup at all."""
+        monkeypatch.delenv(GCP_API_KEY_ENV_VAR, raising=False)
+        fetch = MagicMock()
+        monkeypatch.setattr(live_pricing, "_fetch_rate", fetch)
+
+        rate = get_live_hourly_rate(
+            "gcp_dataproc",
+            region="us-central1",
+            instance_type="n2-standard-8",
+            vcpus=8,
+            memory_gb=32,
+        )
+
+        assert rate is None
+        fetch.assert_not_called()
+        assert not cache_path.exists()
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"vcpus": 8, "memory_gb": 32},  # Missing instance_type
+            {"instance_type": "n2-standard-8", "memory_gb": 32},  # Missing vcpus
+            {"instance_type": "n2-standard-8", "vcpus": 8},  # Missing memory_gb
+            {"instance_type": "n2-standard-8", "vcpus": 0, "memory_gb": 32},  # Non-positive vcpus
+            {"instance_type": "n2-standard-8", "vcpus": 8, "memory_gb": -1},  # Non-positive memory
+        ],
+    )
+    def test_missing_machine_specs_return_none(
+        self,
+        cache_path: Path,
+        live_enabled: None,
+        gcp_key: None,
+        monkeypatch: pytest.MonkeyPatch,
+        kwargs: dict[str, Any],
+    ) -> None:
+        """Test that incomplete machine specs skip the lookup entirely."""
+        fetch = MagicMock()
+        monkeypatch.setattr(live_pricing, "_fetch_rate", fetch)
+
+        assert get_live_hourly_rate("gcp_dataproc", region="us-central1", **kwargs) is None
+        fetch.assert_not_called()
+
+    def test_dispatch_and_cache_key_by_machine_type(
+        self,
+        cache_path: Path,
+        live_enabled: None,
+        gcp_key: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test the happy path: client dispatch, rate, and cache key shape."""
+        instance = self._patch_gcp(monkeypatch, 0.388472)
+
+        rate = get_live_hourly_rate(
+            "gcp_dataproc",
+            region="us-central1",
+            instance_type="n2-standard-8",
+            vcpus=8,
+            memory_gb=32,
+        )
+
+        assert rate == pytest.approx(0.388472)
+        instance.get_n2_machine_rate.assert_called_once_with("us-central1", vcpus=8.0, memory_gb=32.0)
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert cached["gcp_dataproc|us-central1|n2-standard-8"]["rate"] == pytest.approx(0.388472)
+
+    def test_second_call_served_from_cache(
+        self,
+        cache_path: Path,
+        live_enabled: None,
+        gcp_key: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that a fresh cache entry avoids a second fetch."""
+        instance = self._patch_gcp(monkeypatch, 0.388472)
+
+        first = get_live_hourly_rate(
+            "gcp_dataproc",
+            region="us-central1",
+            instance_type="n2-standard-8",
+            vcpus=8,
+            memory_gb=32,
+        )
+        second = get_live_hourly_rate(
+            "gcp_dataproc",
+            region="us-central1",
+            instance_type="n2-standard-8",
+            vcpus=8,
+            memory_gb=32,
+        )
+
+        assert first == second == pytest.approx(0.388472)
+        assert instance.get_n2_machine_rate.call_count == 1
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            httpx.ConnectTimeout("timed out"),
+            httpx.HTTPStatusError("403", request=MagicMock(), response=MagicMock()),
+            LookupError("no N2 SKUs"),
+            ValueError("bad json"),
+            RuntimeError("API key required"),
+        ],
+    )
+    def test_any_fetch_failure_returns_none(
+        self,
+        cache_path: Path,
+        live_enabled: None,
+        gcp_key: None,
+        monkeypatch: pytest.MonkeyPatch,
+        error: BaseException,
+    ) -> None:
+        """Test that every fetch failure mode yields None, never an exception."""
+        self._patch_gcp(monkeypatch, error)
+
+        rate = get_live_hourly_rate(
+            "gcp_dataproc",
+            region="us-central1",
+            instance_type="n2-standard-8",
+            vcpus=8,
+            memory_gb=32,
+        )
+
+        assert rate is None
+
+    def test_failure_is_negative_cached(
+        self,
+        cache_path: Path,
+        live_enabled: None,
+        gcp_key: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that a failed GCP lookup is cached and not retried immediately."""
+        instance = self._patch_gcp(monkeypatch, httpx.ConnectTimeout("timed out"))
+        kwargs: dict[str, Any] = {
+            "region": "us-central1",
+            "instance_type": "n2-standard-8",
+            "vcpus": 8,
+            "memory_gb": 32,
+        }
+
+        assert get_live_hourly_rate("gcp_dataproc", **kwargs) is None
+        assert get_live_hourly_rate("gcp_dataproc", **kwargs) is None
+
+        assert instance.get_n2_machine_rate.call_count == 1  # Second call hit the negative entry
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert cached["gcp_dataproc|us-central1|n2-standard-8"]["rate"] is None
+
+    def test_deadline_exceeded_returns_none_and_is_negative_cached(
+        self,
+        cache_path: Path,
+        live_enabled: None,
+        gcp_key: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that an over-deadline lookup yields None plus a negative cache entry.
+
+        Uses a monkeypatched clock (no real sleeping): the very first page
+        consumes the whole lookup budget, so the client gives up and the
+        facade records the failure like any other.
+        """
+        requests: list[httpx.Request] = []
+        clock = {"now": 0.0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            clock["now"] += GCPCloudBillingClient.LOOKUP_DEADLINE_SECONDS  # Each page blows the budget
+            return httpx.Response(200, json={"skus": [_gcp_sku("Unrelated SKU")], "nextPageToken": "more"})
+
+        monkeypatch.setattr(live_pricing, "time", SimpleNamespace(monotonic=lambda: clock["now"], time=time.time))
+        transport = httpx.MockTransport(handler)
+        monkeypatch.setattr(
+            live_pricing,
+            "GCPCloudBillingClient",
+            lambda: GCPCloudBillingClient(api_key="test-key", transport=transport),
+        )
+
+        rate = get_live_hourly_rate(
+            "gcp_dataproc",
+            region="us-central1",
+            instance_type="n2-standard-8",
+            vcpus=8,
+            memory_gb=32,
+        )
+
+        assert rate is None
+        assert len(requests) == 1  # Gave up right after the first slow page
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert cached["gcp_dataproc|us-central1|n2-standard-8"]["rate"] is None
+
+    def test_end_to_end_gcp_with_mock_transport(
+        self,
+        cache_path: Path,
+        live_enabled: None,
+        gcp_key: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test the full facade -> httpx path with a MockTransport."""
+        transport = _gcp_transport_for_pages([[_gcp_core_sku(), _gcp_ram_sku()]])
+        monkeypatch.setattr(
+            live_pricing,
+            "GCPCloudBillingClient",
+            lambda: GCPCloudBillingClient(api_key="test-key", transport=transport),
+        )
+
+        rate = get_live_hourly_rate(
+            "gcp_dataproc",
+            region="us-central1",
+            instance_type="n2-standard-8",
+            vcpus=8,
+            memory_gb=32,
+        )
+
+        assert rate == pytest.approx(8 * 0.031611 + 32 * 0.004237)

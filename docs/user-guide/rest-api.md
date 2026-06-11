@@ -8,8 +8,10 @@ The REST API is a [FastAPI](https://fastapi.tiangolo.com/) application that expo
 
 - **Synchronous optimization** — `POST /api/v1/optimize`
 - **Asynchronous optimization jobs** — `POST /api/v1/optimize/async` plus the `/api/v1/jobs` polling endpoints
+- **Live job progress (SSE)** — `GET /api/v1/jobs/{job_id}/events`
 - **Code analysis** — `POST /api/v1/analyze`
 - **Platform discovery** — `GET /api/v1/platforms`
+- **Workload templates** — `GET /api/v1/templates`
 - **Health and probes** — `GET /health`, `/health/ready`, `/health/live`
 
 The API always runs optimizations in **simulation mode** (fast performance prediction, no real Spark execution).
@@ -392,6 +394,77 @@ Poll the status and result of a job submitted via `POST /api/v1/optimize/async`.
 | `result` | object or null | Full optimization result (same shape as the synchronous response) when `status` is `completed` |
 | `error` | string or null | Failure message when `status` is `failed` |
 | `webhook_status` | string or null | Webhook delivery outcome (`delivered` or `failed`); `null` when no `webhook_url` was given or delivery has not finished yet |
+| `progress` | object or null | Latest optimization progress snapshot from the Bayesian phase; `null` before the first trial finishes (or when `use_bayesian` is `false`) |
+
+The `progress` object carries per-trial counters, updated while the job is `running` (writes are throttled to roughly one every 0.5 seconds):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `trial_number` | integer | Number of the trial that just finished (0-based) |
+| `n_trials` | integer | Total trials requested for the run |
+| `trials_completed` | integer | Trials recorded in the study so far |
+| `state` | string | Optuna state of the trial (`COMPLETE`, `PRUNED`, `FAIL`) |
+| `best_value` | number or null | Best objective value so far (single-objective runs) |
+| `best_values` | array of number or null | Objective values of one Pareto-optimal trial (multi-objective runs; replaces `best_value`) |
+
+```json
+{
+  "job_id": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+  "status": "running",
+  "progress": {
+    "trial_number": 17,
+    "n_trials": 50,
+    "trials_completed": 18,
+    "best_value": 9.21,
+    "state": "COMPLETE"
+  }
+}
+```
+
+### GET /api/v1/jobs/{job_id}/events
+
+Stream live job progress as [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) until the job reaches a terminal state. This avoids polling `GET /api/v1/jobs/{job_id}` in a loop: connect once and receive a push whenever the progress snapshot changes.
+
+**Status codes**
+
+| Code | Meaning |
+|------|---------|
+| `200` | Stream opened; body is a `text/event-stream` |
+| `404` | Unknown job id (checked before streaming starts) |
+
+**Event format**
+
+The stream emits three kinds of frames:
+
+- `event: progress` — sent whenever the job's `progress` snapshot changes. The `data` line is the JSON progress object described above.
+- `: keep-alive` — comment heartbeat sent after roughly 10 seconds of silence so proxies and load balancers do not close the idle connection. SSE clients ignore comment lines automatically.
+- `event: done` — final frame sent once the job reaches a terminal state (`completed` or `failed`); the stream closes right after. The `data` payload is `{"job_id": ..., "status": ..., "error": ...}` (`error` is `null` for completed jobs). Fetch the full result with `GET /api/v1/jobs/{job_id}`.
+
+**Example**
+
+Use `curl -N` (no buffering) to watch the stream:
+
+```bash
+curl -N http://localhost:8000/api/v1/jobs/9f8e7d6c5b4a39281706f5e4d3c2b1a0/events
+```
+
+```text
+event: progress
+data: {"trial_number": 0, "n_trials": 50, "trials_completed": 1, "best_value": 12.06, "state": "COMPLETE"}
+
+event: progress
+data: {"trial_number": 9, "n_trials": 50, "trials_completed": 10, "best_value": 9.21, "state": "COMPLETE"}
+
+: keep-alive
+
+event: done
+data: {"job_id": "9f8e7d6c5b4a39281706f5e4d3c2b1a0", "status": "completed", "error": null}
+```
+
+With API-key authentication enabled, pass the header as usual: `curl -N -H "X-API-Key: key-one" ...`.
+
+!!! note
+    The server polls the job store internally (about twice per second), so events may lag the underlying trial completions slightly. If a finished job is evicted while a stream is open, the stream closes with a `done` frame whose `status` is `expired`. Multi-objective runs report `best_values` (a list) instead of `best_value` in each progress frame.
 
 ### GET /api/v1/jobs
 
@@ -467,6 +540,74 @@ List all Spark versions supported by the configuration database.
 ```bash
 curl -s http://localhost:8000/api/v1/platforms/spark-versions
 # {"versions": ["3.5.0", "4.0.0", ...]}
+```
+
+### GET /api/v1/templates
+
+List the curated workload templates — the same baselines exposed by the `spark-optima templates` CLI command (batch ETL, streaming, ML training, interactive analytics).
+
+**Response body** (`200`): `{"templates": [...]}` where each entry is a summary:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Template identifier (use it in the detail endpoint) |
+| `display_name` | string | Human-readable name |
+| `description` | string | What the template is for |
+| `parameter_count` | integer | Number of curated Spark parameters |
+
+```bash
+curl -s http://localhost:8000/api/v1/templates
+```
+
+```json
+{
+  "templates": [
+    {
+      "name": "etl-batch",
+      "display_name": "Batch ETL",
+      "description": "Throughput-oriented baseline for scheduled batch ETL pipelines...",
+      "parameter_count": 10
+    },
+    {"name": "interactive", "display_name": "Interactive Analytics", "description": "...", "parameter_count": 9}
+  ]
+}
+```
+
+### GET /api/v1/templates/{name}
+
+Get a single template including its full configuration and the rationale behind every parameter. Returns `404` for unknown template names (the error message lists the available templates).
+
+**Response body** (`200`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Template identifier |
+| `display_name` | string | Human-readable name |
+| `description` | string | What the template is for |
+| `workload_traits` | array of string | Characteristics of the targeted workload |
+| `config` | object | Parameter name → `{"value": ..., "comment": ...}` (curated value plus rationale) |
+| `recommended_for` | array of string | Scenarios where the template is a good fit |
+| `not_recommended_for` | array of string | Scenarios where the template should be avoided |
+
+```bash
+curl -s http://localhost:8000/api/v1/templates/etl-batch
+```
+
+```json
+{
+  "name": "etl-batch",
+  "display_name": "Batch ETL",
+  "description": "Throughput-oriented baseline for scheduled batch ETL pipelines...",
+  "workload_traits": ["Large sequential reads and writes", "..."],
+  "config": {
+    "spark.sql.adaptive.enabled": {
+      "value": "true",
+      "comment": "AQE re-plans shuffles at runtime using real statistics, the single biggest win for batch SQL."
+    }
+  },
+  "recommended_for": ["Nightly or hourly scheduled pipelines", "..."],
+  "not_recommended_for": ["Latency-sensitive interactive queries", "..."]
+}
 ```
 
 ### GET /health

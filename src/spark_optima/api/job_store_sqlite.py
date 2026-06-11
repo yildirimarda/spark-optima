@@ -70,10 +70,18 @@ CREATE TABLE IF NOT EXISTS jobs (
     result_json TEXT,
     error TEXT,
     webhook_status TEXT,
+    progress_json TEXT,
     submitted_ts REAL NOT NULL DEFAULT 0.0,
     finished_ts REAL
 )
 """
+
+#: Statements adding columns introduced after the initial schema, applied
+#: as idempotent migrations (each a no-op when the column already exists).
+_MIGRATION_STATEMENTS = (
+    "ALTER TABLE jobs ADD COLUMN webhook_status TEXT",  # v1.4
+    "ALTER TABLE jobs ADD COLUMN progress_json TEXT",  # v1.5
+)
 
 
 def _default_db_path() -> Path:
@@ -99,6 +107,7 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         Populated Job instance.
     """
     result_json = row["result_json"]
+    progress_json = row["progress_json"]
     return Job(
         job_id=str(row["job_id"]),
         platform=str(row["platform"]),
@@ -110,6 +119,7 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         result=json.loads(result_json) if result_json else None,
         error=row["error"],
         webhook_status=row["webhook_status"],
+        progress=json.loads(progress_json) if progress_json else None,
         submitted_ts=float(row["submitted_ts"]),
         finished_ts=row["finished_ts"],
     )
@@ -166,10 +176,11 @@ class SQLiteJobStore(BaseJobStore):
             # which is what makes multi-worker single-node setups safe.
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(_CREATE_TABLE_SQL)
-            # Migration for databases created before v1.4 (no-op when the
-            # column already exists).
-            with suppress(sqlite3.OperationalError):
-                conn.execute("ALTER TABLE jobs ADD COLUMN webhook_status TEXT")
+            # Migrations for databases created by earlier versions (each a
+            # no-op when the column already exists).
+            for statement in _MIGRATION_STATEMENTS:
+                with suppress(sqlite3.OperationalError):
+                    conn.execute(statement)
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -229,8 +240,8 @@ class SQLiteJobStore(BaseJobStore):
             conn.execute(
                 "INSERT INTO jobs "
                 "(job_id, status, submitted_at, started_at, finished_at, platform, "
-                "spark_version, result_json, error, webhook_status, submitted_ts, finished_ts) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "spark_version, result_json, error, webhook_status, progress_json, submitted_ts, finished_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job.job_id,
                     job.status,
@@ -242,6 +253,7 @@ class SQLiteJobStore(BaseJobStore):
                     json.dumps(job.result) if job.result is not None else None,
                     job.error,
                     job.webhook_status,
+                    json.dumps(job.progress) if job.progress is not None else None,
                     job.submitted_ts,
                     job.finished_ts,
                 ),
@@ -301,6 +313,20 @@ class SQLiteJobStore(BaseJobStore):
             conn.execute(
                 "UPDATE jobs SET webhook_status = ? WHERE job_id = ?",
                 (webhook_status, job_id),
+            )
+            conn.commit()
+
+    def set_progress(self, job_id: str, progress: dict[str, Any]) -> None:
+        """Record the latest optimization progress snapshot on a job.
+
+        Args:
+            job_id: Identifier of the job to update.
+            progress: JSON-serializable progress payload (per-trial counters).
+        """
+        with closing(self._connect()) as conn:
+            conn.execute(
+                "UPDATE jobs SET progress_json = ? WHERE job_id = ?",
+                (json.dumps(progress), job_id),
             )
             conn.commit()
 

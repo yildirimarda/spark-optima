@@ -26,7 +26,7 @@ The tool collects the user's Spark code, target platform, resource constraints, 
 | — | UV Migration (Poetry → UV) | ✅ Done |
 | 12 | v1.1 Improvements (EMR, history, new smells, exports, warm-start) | ✅ Done |
 
-**Active:** v1.4 implementation (see "Backlog" at the bottom).
+**Active:** v1.5 implementation (see "Backlog" at the bottom).
 
 ---
 
@@ -462,10 +462,56 @@ Scope: the two remaining backlog items plus the highest-value gaps left from the
 | I8 | history-server option into analyze-log; docs (cli.md/rest-api.md) updates | ✅ Done |
 | I9 | Quality gates + end-to-end smoke + CHANGELOG | ✅ Done |
 
-### Backlog (v1.5+) — identified but deliberately deferred
+## v1.5 Improvement Plan (2026-06-11)
 
-- **Scala/Java code analysis** — analysis module is Python-only (planned since v1.0)
-- **GCP live pricing** — Cloud Billing Catalog API requires an API key; v1.4 live pricing covers Azure (public) + AWS (boto3)
-- **Streaming progress (SSE)** — live Bayesian trial progress over the API
-- **Config DB byte-unit cleanup** — some byte params express `max_value` in mixed units (e.g. `spark.kryoserializer.buffer.max: 2048` meaning MB) while the validator compares parsed bytes; `validate` skips numeric range checks for BYTES/DURATION params until the DB is normalized
+Scope: the four v1.5 backlog items plus an examples/docs refresh. Five parallel workstreams.
+
+### Workstream X — Scala Code Analysis
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| X1 | `analysis/scala_parser.py` | Lightweight lexer-based Scala Spark parser producing the existing SparkOperation models (comment/string masking, val-assignment tracking, chained calls, triple-quoted strings) | ✅ Done |
+| X2 | Smell coverage for Scala | Operation-based smells work as-is; Python-AST-specific detectors skip gracefully; `spark.sql("...")` strings reuse the sqlglot analyzer; new `groupbykey_usage` smell | ✅ Done |
+| X3 | CLI language detection | `analyze`/`optimize` accept `.scala` files | ✅ Done |
+
+### Workstream Y — GCP Live Pricing
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| Y1 | Cloud Billing Catalog client | `SPARK_OPTIMA_GCP_API_KEY`-gated; N2 core/RAM SKU rates per region → hourly machine price; same cache/fallback rules | ✅ Done |
+| Y2 | Dataproc wiring | Live compute rate replaces static baseline×multiplier (Dataproc fee stays $0.01/vCPU-h); `pricing_source` labeling | ✅ Done |
+
+### Workstream Z — SSE Progress + Templates API
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| Z1 | Trial progress plumbing | Optional `progress_callback` on BayesianOptimizer/Optimizer (per-trial: n/total, best value) — additive | ✅ Done |
+| Z2 | Job progress + SSE | `progress` on job records (all 3 stores); `GET /api/v1/jobs/{id}/events` — text/event-stream polling the store until terminal state | ✅ Done |
+| Z3 | Templates API | `GET /api/v1/templates`, `GET /api/v1/templates/{name}` (parity with the CLI) | ✅ Done |
+
+### Workstream AA — Config DB Unit Normalization
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| AA1 | Audit + normalize | BYTES/DURATION params with mixed-unit min/max in database.py + data/configs/*.yaml normalized to one canonical convention the validator actually compares | ✅ Done |
+| AA2 | Validator + regression tests | Range checks correct for unit-suffixed values; CLI `validate` re-enables numeric range checks for BYTES/DURATION (wired at integration) | ✅ Done |
+
+### Workstream BB — Examples & Docs Refresh
+
+| # | Item | Detail | Status |
+|---|------|--------|--------|
+| BB1 | New examples | event-log analysis, multi-objective/Pareto, EMR/Dataproc/K8s platform examples, templates usage | ✅ Done |
+| BB2 | README + getting-started refresh | Command catalogue (history/compare/explain/analyze-log/validate/import/templates/pareto), env-var table, feature list current | ✅ Done |
+
+### Integration & Cleanup (v1.5)
+
+| # | Item | Status |
+|---|------|--------|
+| I10 | CLI validate range-check re-enable; review-finding fixes; quality gates + smoke + CHANGELOG | ✅ Done |
+
+### Backlog (v1.6+) — identified but deliberately deferred
+
+- **Java code analysis** — v1.5 adds Scala; Java Spark sources remain unsupported
+- **API validate endpoint** — needs the CLI validate logic extracted into a core module first
+
 
