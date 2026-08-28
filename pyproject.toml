@@ -1,6 +1,6 @@
 [project]
 name = "spark-optima"
-version = "0.1.0"
+version = "0.1.1"
 description = "Intelligent Apache Spark configuration optimization tool"
 authors = [
     {name = "Spark Optima Contributors"},
