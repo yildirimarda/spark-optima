@@ -5,6 +5,14 @@ All notable changes to the Spark Optima project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1](https://github.com/yildirimarda/spark-optima/compare/v0.1.0...v0.1.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* **ci:** load built image into the daemon so the smoke test can run it ([990abb3](https://github.com/yildirimarda/spark-optima/commit/990abb30ade109c788695e37c8bcf96d862d0c10))
+* **docker:** copy README.md into builder stage — hatchling requires the declared readme ([c6ea0dc](https://github.com/yildirimarda/spark-optima/commit/c6ea0dc92d95853d90dca56f178b87cae2b8f76c))
+
 ## 0.1.0 (2026-08-28)
 
 
