@@ -114,3 +114,6 @@ kubeconfig
 tmp/
 temp/
 *.tmp
+graphify-out/
+.opencode/
+*.agentloop-new

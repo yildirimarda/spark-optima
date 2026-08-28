@@ -199,3 +199,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every PR and push to `main`/
 ## Kubernetes
 
 Manifests in `kubernetes/base/` (raw) and `kubernetes/helm/spark-optima/` (Helm chart). Production deployment guide: `kubernetes/PRODUCTION.md`.
+
+@AGENTS.md
+<!-- agentloop: the import above pulls in the autonomous-loop workflow
+     contract. Keep it; everything else in this file is yours. -->
