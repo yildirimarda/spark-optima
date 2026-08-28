@@ -22,41 +22,63 @@ CHECK="${CHECK:-}"       # empty = auto-detect from the checks that ran on main
 # Branch protection that requires a check which never reports = nothing ever
 # merges, silently. So instead of guessing, ask GitHub which checks actually
 # ran on main and validate/auto-detect against that list.
+#
+# Source: Actions job names via the workflow-runs API (a job's name IS its
+# status-check context). Not the check-runs API — fine-grained PATs have no
+# "Checks" permission, but "Actions: Read-only" covers this.
 detect_checks() {
-  local sha
-  sha="$(gh api "repos/$REPO/branches/main" --jq .commit.sha 2>/dev/null)" || return 0
-  gh api "repos/$REPO/commits/$sha/check-runs" --paginate \
-    --jq '.check_runs[].name' 2>/dev/null | sort -u
+  gh api "repos/$REPO/actions/runs?branch=main&per_page=10" \
+      --jq '.workflow_runs[].id' 2>/dev/null \
+    | head -5 \
+    | while read -r run_id; do
+        gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" \
+          --jq '.jobs[].name' 2>/dev/null || true
+      done | sort -u
 }
 NAMES="$(detect_checks || true)"
 
+# CHECK accepts a comma-separated list: CHECK="Lint & Format,Tests (3.12)".
+# IMPORTANT: only require checks that run on EVERY pull request. A job that
+# only runs on main, tags or releases (deploy, release-please, publish...)
+# will never report on a PR — requiring it means nothing can ever merge.
+CHECK_LIST=()
 if [[ -n "$CHECK" ]]; then
-  if [[ -n "$NAMES" ]] && ! grep -qxF "$CHECK" <<<"$NAMES"; then
-    echo "error: no check named '$CHECK' has reported on main." >&2
-    echo "Checks seen on main:" >&2
-    sed 's/^/  - /' <<<"$NAMES" >&2
-    echo "Re-run with CHECK set to one of the above." >&2
-    exit 1
-  fi
+  IFS=',' read -r -a CHECK_LIST <<<"$CHECK"
+  for i in "${!CHECK_LIST[@]}"; do
+    CHECK_LIST[$i]="$(echo "${CHECK_LIST[$i]}" | sed 's/^ *//; s/ *$//')"
+  done
+  for c in "${CHECK_LIST[@]}"; do
+    if [[ -n "$NAMES" ]] && ! grep -qxF "$c" <<<"$NAMES"; then
+      echo "error: no check named '$c' has reported on main." >&2
+      echo "Checks seen on main:" >&2
+      sed 's/^/  - /' <<<"$NAMES" >&2
+      echo "Re-run with CHECK set to one or more of the above (comma-separated)." >&2
+      exit 1
+    fi
+  done
 elif [[ -n "$NAMES" ]] && grep -qxF "ci" <<<"$NAMES"; then
-  CHECK="ci"
+  CHECK_LIST=(ci)
 elif [[ -n "$NAMES" && "$(wc -l <<<"$NAMES" | tr -d ' ')" == "1" ]]; then
-  CHECK="$NAMES"
-  echo "note: auto-detected required check '$CHECK' (the only check reporting on main)"
+  CHECK_LIST=("$NAMES")
+  echo "note: auto-detected required check '$NAMES' (the only check reporting on main)"
 elif [[ -z "$NAMES" ]]; then
-  CHECK="ci"
+  CHECK_LIST=(ci)
   echo "note: no check runs found on main yet — defaulting to 'ci'."
   echo "      If your CI job is named differently, re-run with CHECK=<name>."
 else
   echo "error: several checks report on main and none is named 'ci':" >&2
   sed 's/^/  - /' <<<"$NAMES" >&2
-  echo "Pick the one that must gate merges:" >&2
-  echo "  CHECK=<name> ./run.sh --github-setup     (or CHECK=<name> ./setup-github.sh)" >&2
+  echo "Pick the one(s) that must gate merges — comma-separated, and ONLY jobs" >&2
+  echo "that run on every pull request (never release/deploy-only jobs):" >&2
+  echo "  CHECK=\"Lint & Format,Tests (3.12)\" ./run.sh --github-setup" >&2
   exit 1
 fi
 
+CONTEXTS_JSON="$(printf '"%s",' "${CHECK_LIST[@]}")"
+CONTEXTS_JSON="[${CONTEXTS_JSON%,}]"
+
 echo "repo:            $REPO"
-echo "required check:  $CHECK"
+echo "required checks: ${CHECK_LIST[*]}"
 echo
 if [[ "${AGENTLOOP_YES:-}" == "1" ]]; then
   echo "AGENTLOOP_YES=1 — proceeding without confirmation."
@@ -72,7 +94,7 @@ gh api -X PUT "repos/$REPO/branches/main/protection" \
 {
   "required_status_checks": {
     "strict": true,
-    "contexts": ["$CHECK"]
+    "contexts": $CONTEXTS_JSON
   },
   "enforce_admins": false,
   "required_pull_request_reviews": {
@@ -113,8 +135,8 @@ Done. Two manual steps remain:
      · Repository access -> Only select repositories -> your agentloop repos
      · Permissions -> Contents: Read and write
      · Permissions -> Pull requests: Read and write
-     · Permissions -> Checks: Read-only          (CI verdict polling)
-     · Permissions -> Commit statuses: Read-only (CI verdict polling)
+     · Permissions -> Actions: Read-only   (CI verdict polling — note:
+       GitHub offers no "Checks" permission on fine-grained PATs)
      · Select NOTHING else (no admin, no org scopes)
 
    Then store it in the keychain:
