@@ -20,8 +20,11 @@ WORKDIR /build
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Copy source and install the project into the venv
+# Copy source and install the project into the venv.
+# README.md is required here: pyproject.toml declares it as the package
+# readme, and hatchling refuses to build the project without the file.
 COPY src/ ./src/
+COPY README.md ./
 RUN uv sync --frozen --no-dev
 
 # =============================================================================
