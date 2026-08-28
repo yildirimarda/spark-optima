@@ -195,6 +195,11 @@ jobs:
           file: ./docker/Dockerfile
           target: production
           push: false
+          # load the built image into the local docker daemon so the smoke
+          # test below can `docker run` it (buildx keeps it in cache otherwise)
+          load: true
+          # provenance attestations are incompatible with `load: true`
+          provenance: false
           tags: spark-optima:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
