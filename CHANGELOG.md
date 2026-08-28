@@ -5,6 +5,18 @@ All notable changes to the Spark Optima project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.0 (2026-08-28)
+
+
+### Features
+
+* add Azure Synapse export configuration and update status to ready ([12a308a](https://github.com/yildirimarda/spark-optima/commit/12a308af6bc8b518f7459ed7003c87716e3d4844))
+
+
+### Bug Fixes
+
+* github cache refresh ([76d371f](https://github.com/yildirimarda/spark-optima/commit/76d371f8913dc73dfb0479c2269608c359710c8e))
+
 ## [Unreleased]
 
 ### Added (v1.5)
