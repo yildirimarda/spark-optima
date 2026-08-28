@@ -156,6 +156,18 @@ docker info >/dev/null 2>&1 \
 docker image inspect "$IMAGE" >/dev/null 2>&1 \
   || die "image '$IMAGE' not found. Build it:  docker build -t $IMAGE -f Dockerfile.agent ."
 
+# The agent works in THIS checkout — same directory, same branches. Anything
+# you leave uncommitted would be swept into its commits or dragged across its
+# branch switches. Refuse to start dirty. (Corollary, not enforceable here:
+# don't run git in this repo yourself while a run is in progress.)
+if [[ "$MODE" != "ghsetup" ]] && git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  if [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]]; then
+    die "working tree is not clean — commit or stash before starting a run.
+The agent works in this same checkout; uncommitted changes would end up in
+its commits. See what's pending with:  git status"
+  fi
+fi
+
 GH_RUN_TOKEN=""
 GH_AGENT_TOKEN=""
 OPENROUTER_KEY=""
