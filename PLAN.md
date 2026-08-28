@@ -493,6 +493,8 @@ are real gaps, not nice-to-haves.
       import logic into a reusable core module first (the logic currently
       lives in `cli/main.py` around the `validate` and `import_config`
       commands).
+- [ ] Switch to dynamic versioning via hatch-vcs so release PRs 
+      no longer desync uv.lock
 
 ## Discovered
 
