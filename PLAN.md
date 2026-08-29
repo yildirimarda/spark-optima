@@ -483,7 +483,7 @@ the core plugin/registry abstractions that everything else is built on.
 These items were identified during v1.0–v1.5 and explicitly deferred. They
 are real gaps, not nice-to-haves.
 
-- [ ] Add Java code analysis. Java is the third major Spark source
+- [x] Add Java code analysis. Java is the third major Spark source
       language. v1.5 added Scala; the lexer-based approach in
       `analysis/scala_parser.py` is a reasonable template. Java-specific
       concerns include checked-exception handling, `SparkSession.builder`

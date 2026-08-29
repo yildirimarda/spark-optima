@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+from spark_optima.analysis.java_parser import JavaCodeParser, detect_language
 from spark_optima.analysis.models import (
     AnalysisResult,
     CodeLocation,
@@ -29,7 +30,7 @@ from spark_optima.analysis.parser import (
     ParseResult,
     SparkCodeParser,
 )
-from spark_optima.analysis.scala_parser import ScalaCodeParser, detect_language
+from spark_optima.analysis.scala_parser import ScalaCodeParser
 from spark_optima.analysis.sql_analyzer import SQLAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ class SmellDetector:
         """Initialize the smell detector."""
         self.parser = SparkCodeParser()
         self.scala_parser = ScalaCodeParser()
+        self.java_parser = JavaCodeParser()
         self.sql_analyzer = SQLAnalyzer()
         self.detected_smells: list[CodeSmell] = []
         self._detection_rules: list[Callable[[ParseResult], list[CodeSmell]]] = [
@@ -123,23 +125,28 @@ class SmellDetector:
         """Resolve the analysis language from an explicit or "auto" value.
 
         Args:
-            language: "python", "scala", or "auto".
+            language: "python", "scala", "java", or "auto".
             file_path: Optional file path used for suffix-based detection.
             source_code: Optional source text used for heuristic detection.
 
         Returns:
-            Resolved language ("python" or "scala").
+            Resolved language ("python", "scala", or "java").
 
         Raises:
             ValueError: If the language value is not recognized.
 
         """
-        if language in ("python", "scala"):
+        if language in ("python", "scala", "java"):
             return language
         if language != "auto":
-            raise ValueError(f"Unsupported language: {language!r} (expected 'python', 'scala', or 'auto')")
+            raise ValueError(f"Unsupported language: {language!r} (expected 'python', 'scala', 'java', or 'auto')")
         if file_path is not None:
-            return "scala" if str(file_path).lower().endswith(".scala") else "python"
+            suffix = str(file_path).lower()
+            if suffix.endswith(".scala"):
+                return "scala"
+            if suffix.endswith(".java"):
+                return "java"
+            return "python"
         if source_code is not None:
             return detect_language(source_code)
         return "python"
@@ -161,6 +168,9 @@ class SmellDetector:
             parse_result = self.scala_parser.parse_file(file_path)
             # Drop any stale Python AST so AST-based detectors skip gracefully
             self.parser.ast_tree = None
+        elif resolved == "java":
+            parse_result = self.java_parser.parse_file(file_path)
+            self.parser.ast_tree = None
         else:
             parse_result = self.parser.parse_file(file_path)
         return self._analyze_parse_result(parse_result)
@@ -181,6 +191,9 @@ class SmellDetector:
         if resolved == "scala":
             parse_result = self.scala_parser.parse_source(source_code)
             # Drop any stale Python AST so AST-based detectors skip gracefully
+            self.parser.ast_tree = None
+        elif resolved == "java":
+            parse_result = self.java_parser.parse_source(source_code)
             self.parser.ast_tree = None
         else:
             parse_result = self.parser.parse_source(source_code)
@@ -580,20 +593,36 @@ class SmellDetector:
 
         """
         smells: list[CodeSmell] = []
-        is_scala = getattr(parse_result, "language", "python") == "scala"
+        is_lexer_based = getattr(parse_result, "language", "python") in ("scala", "java")
 
         # Check for write operations without partitioning
         write_ops = [op for op in parse_result.operations if op.operation_type == SparkOperationType.WRITE]
 
         for op in write_ops:
-            if is_scala:
-                # The Scala parser records the bare `write` accessor without
-                # arguments and partitionBy/bucketBy as separate operations,
-                # so partitioning is decided from the chain, not the args.
-                is_partitioned = self._scala_write_is_partitioned(op, parse_result)
+            if is_lexer_based:
+                # The Scala/Java parser records the bare `write` accessor
+                # without arguments; partitioning must be decided from chain.
+                chain_parser = (
+                    self.java_parser if getattr(parse_result, "language", "python") == "java" else self.scala_parser
+                )
+                is_partitioned = False
+                lineage = parse_result.dataframe_vars.get(op.dataframe_var, [])
+                for other in lineage:
+                    if other is op:
+                        continue
+                    mentions_partitioning = other.method_name in ("partitionBy", "bucketBy") or any(
+                        "partitionby" in arg.lower() or "bucketby" in arg.lower() for arg in other.arguments
+                    )
+                    if not mentions_partitioning:
+                        continue
+                    if chain_parser.same_statement_chain(op, other):
+                        is_partitioned = True
+                        break
+                    if op.dataframe_var in chain_parser.assignment_targets(other):
+                        is_partitioned = True
+                        break
             else:
                 args_str = " ".join(op.arguments).lower()
-
                 # Check if partitioned write
                 is_partitioned = "partitionby" in args_str or "bucket" in args_str
 
@@ -1215,7 +1244,8 @@ class SmellDetector:
 
         """
         smells: list[CodeSmell] = []
-        if getattr(parse_result, "language", "python") != "scala":
+        language = getattr(parse_result, "language", "python")
+        if language not in ("scala", "java"):
             return smells
 
         for op in parse_result.operations:
@@ -1265,7 +1295,8 @@ class SmellDetector:
 
         """
         smells: list[CodeSmell] = []
-        if getattr(parse_result, "language", "python") != "scala":
+        language = getattr(parse_result, "language", "python")
+        if language not in ("scala", "java"):
             return smells
 
         for op in parse_result.operations:
@@ -1273,11 +1304,12 @@ class SmellDetector:
                 continue
             if not op.arguments or op.arguments[0].strip() != "1":
                 continue
-            assigned_vars = self.scala_parser.assignment_targets(op)
+            chain_parser = self.java_parser if language == "java" else self.scala_parser
+            assigned_vars = chain_parser.assignment_targets(op)
             followed_by_write = any(
                 later.method_name in _WRITE_CHAIN_METHODS
                 and later.chain_position > op.chain_position
-                and (self.scala_parser.same_statement_chain(op, later) or later.dataframe_var in assigned_vars)
+                and (chain_parser.same_statement_chain(op, later) or later.dataframe_var in assigned_vars)
                 for later in parse_result.operations
             )
             if followed_by_write:

@@ -315,7 +315,7 @@ class TestLanguageRouting:
     def test_invalid_language_rejected(self) -> None:
         """Unknown language values raise ValueError."""
         with pytest.raises(ValueError, match="Unsupported language"):
-            SmellDetector().analyze_source("df.show()", language="java")
+            SmellDetector().analyze_source("df.show()", language="rust")
 
     def test_scala_path_never_flags_python_only_detectors(self) -> None:
         """A realistic Scala job analyzes end-to-end without crashing."""
