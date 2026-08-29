@@ -1,8 +1,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
 
-  "model": "openrouter/poolside/laguna-s-2.1:free",
-  "small_model": "openrouter/poolside/laguna-s-2.1:free",
+  "model": "openrouter/thinkingmachines/inkling:free",
+  "small_model": "openrouter/thinkingmachines/inkling:free",
 
   "permission": {
     "*": "allow",
