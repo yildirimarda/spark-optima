@@ -495,6 +495,15 @@ are real gaps, not nice-to-haves.
       commands).
 - [ ] Switch to dynamic versioning via hatch-vcs so release PRs 
       no longer desync uv.lock
+- [ ] Extend the supported PySpark range in pyproject.toml to include 4.2 
+      (keep the current lower bound), refresh uv.lock, and make the full test 
+      suite pass against PySpark 4.2.0, fixing any incompatibilities
+- [ ] Audit the code for Spark APIs deprecated or behavior-changed in 4.x 
+      that we rely on, using the official 4.2 migration guide, 
+      and add regression tests for each affected path
+- [ ] Write a CI matrix proposal (ci-proposals/spark-42-matrix.yml) that adds a 
+      PySpark 4.2 test leg alongside the existing Python versions, 
+      with a PR description explaining the git mv to apply it      
 
 ## Discovered
 
