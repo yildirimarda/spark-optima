@@ -14,6 +14,12 @@ Example:
 
 """
 
+# detect_language from java_parser handles python/scala/java
+from spark_optima.analysis.java_parser import (
+    JavaCodeParser,
+    detect_language,
+    parse_java_code,
+)
 from spark_optima.analysis.models import (
     AnalysisResult,
     CodeLocation,
@@ -34,7 +40,6 @@ from spark_optima.analysis.recommender import (
 )
 from spark_optima.analysis.scala_parser import (
     ScalaCodeParser,
-    detect_language,
     parse_scala_code,
 )
 from spark_optima.analysis.smell_detector import (
@@ -57,9 +62,11 @@ __all__ = [
     "SparkOperation",
     "SparkOperationType",
     # Parser
+    "JavaCodeParser",
     "ScalaCodeParser",
     "SparkCodeParser",
     "detect_language",
+    "parse_java_code",
     "parse_scala_code",
     "parse_spark_code",
     # Smell Detection

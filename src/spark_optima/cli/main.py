@@ -180,10 +180,11 @@ def optimize(
     # Convert to Path
     code_path_obj = Path(actual_code_path)
 
-    # Scala sources are supported for the code-analysis phase: the analysis
-    # engine auto-detects the .scala suffix and routes to the Scala parser.
+    # Scala and Java sources are supported for the code-analysis phase.
     if code_path_obj.suffix.lower() == ".scala":
         display.print("[dim]Scala source detected — code analysis will use the Scala parser[/dim]")
+    elif code_path_obj.suffix.lower() == ".java":
+        display.print("[dim]Java source detected — code analysis will use the Java parser[/dim]")
 
     # Validate objectives (deduplicated, order-preserving); empty means default
     from spark_optima.core.bayesian.objectives import ObjectiveFunctionFactory
@@ -398,12 +399,15 @@ def analyze(
         ),
     )
 
-    # Run analysis (route .scala sources to the Scala parser)
+    # Route .scala and .java sources to their respective parsers
     from spark_optima.analysis.recommender import analyze_code
 
-    language = "scala" if code_path_obj.suffix.lower() == ".scala" else "python"
+    suffix = code_path_obj.suffix.lower()
+    language = "scala" if suffix == ".scala" else ("java" if suffix == ".java" else "python")
     if language == "scala":
         display.print("[dim]Scala source detected — using the Scala code parser[/dim]")
+    elif language == "java":
+        display.print("[dim]Java source detected — using the Java code parser[/dim]")
 
     with display.status("[bold green]Analyzing code..."):
         try:

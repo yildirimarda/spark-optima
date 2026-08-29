@@ -54,9 +54,10 @@ class RecommendationEngine:
         """Analyze a file and generate recommendations.
 
         Args:
-            file_path: Path to the source file (.py or .scala).
-            language: Source language ("python", "scala", or "auto"; "auto"
-                routes .scala files to the Scala parser, otherwise Python).
+            file_path: Path to the source file (.py, .scala, or .java).
+            language: Source language ("python", "scala", "java", or "auto"; "auto"
+                routes .scala files to the Scala parser, .java to the Java parser,
+                otherwise Python).
 
         Returns:
             AnalysisResult with smells and recommendations.
