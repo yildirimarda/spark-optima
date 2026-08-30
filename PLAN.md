@@ -500,7 +500,7 @@ are real gaps, not nice-to-haves.
       and verify the package builds with a correct version from a git tag.
       In the PR description, note that release automation must then switch to
       release-type "simple" — a human applies that workflow change.
-- [ ] Harden hatch-vcs dynamic versioning for git-less builds: the Docker image
+- [x] Harden hatch-vcs dynamic versioning for git-less builds: the Docker image
       build has no .git in its context, so hatch-vcs cannot derive a version and
       `uv sync` fails there. Add a fallback (e.g. [tool.hatch.version.raw-options]
       fallback_version = "0.0.0.dev0") or an equivalent mechanism, verify
