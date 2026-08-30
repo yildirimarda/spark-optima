@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from spark_optima import __version__
 from spark_optima.cli.main import app
 
 if TYPE_CHECKING:
@@ -58,7 +59,7 @@ class TestCLIMain:
         result = runner.invoke(app, ["--version"])
 
         assert result.exit_code == 0
-        assert "0.1.0" in result.output or "version" in result.output.lower()
+        assert __version__ in result.output or "version" in result.output.lower()
 
 
 class TestCLIOptimizeCommand:
