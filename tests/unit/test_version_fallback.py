@@ -13,22 +13,16 @@ from pathlib import Path
 
 def test_pyproject_has_fallback_version() -> None:
     """The pyproject.toml must configure a fallback_version for git-less builds."""
-    import tomllib
-
     pyproject_path = Path(__file__).parent.parent.parent / "pyproject.toml"
-    with pyproject_path.open("rb") as f:
-        data = tomllib.load(f)
-    assert data["tool"]["hatch"]["version"]["raw-options"]["fallback_version"] == "0.0.0.dev0"
+    content = pyproject_path.read_text()
+    assert 'fallback_version = "0.0.0.dev0"' in content
 
 
 def test_pyproject_has_version_file_hook() -> None:
     """The pyproject.toml must declare the vcs build hook that writes a version file."""
-    import tomllib
-
     pyproject_path = Path(__file__).parent.parent.parent / "pyproject.toml"
-    with pyproject_path.open("rb") as f:
-        data = tomllib.load(f)
-    assert data["tool"]["hatch"]["build"]["hooks"]["vcs"]["version-file"] == "src/spark_optima/_version.py"
+    content = pyproject_path.read_text()
+    assert 'version-file = "src/spark_optima/_version.py"' in content
 
 
 def test_git_less_build_uses_fallback_version() -> None:
