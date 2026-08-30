@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version as package_version
+
+from spark_optima import __version__
 from spark_optima.api.dependencies import (
     APIMetadata,
     OptimizationService,
@@ -111,7 +114,9 @@ class TestAPIMetadata:
     def test_api_metadata_attributes(self) -> None:
         """Test API metadata has required attributes."""
         assert APIMetadata.TITLE == "Spark Optima API"
-        assert APIMetadata.VERSION == "0.1.0"
+        # Assert version consistency between package metadata, __version__, and APIMetadata
+        assert __version__ == APIMetadata.VERSION
+        assert __version__ == package_version("spark-optima")
         assert isinstance(APIMetadata.DESCRIPTION, str)
         assert isinstance(APIMetadata.CONTACT, dict)
         assert isinstance(APIMetadata.LICENSE_INFO, dict)

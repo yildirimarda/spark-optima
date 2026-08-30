@@ -55,7 +55,7 @@ async def health_check() -> HealthResponse:
         GET /health
         {
             "status": "healthy",
-            "version": "0.1.0",
+            "version": __version__,
             "uptime_seconds": 3600.5,
             "components": {
                 "config_database": "healthy",

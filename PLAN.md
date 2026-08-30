@@ -488,7 +488,7 @@ are real gaps, not nice-to-haves.
       `analysis/scala_parser.py` is a reasonable template. Java-specific
       concerns include checked-exception handling, `SparkSession.builder`
       chaining, and Java UDFs (`org.apache.spark.api.java.function.MapFunction`).
-- [ ] Remove hardcoded version strings from tests: no test may assert a literal
+- [x] Remove hardcoded version strings from tests: no test may assert a literal
       package version. Read the version via importlib.metadata (or
       spark_optima.__version__) and assert consistency between package metadata
       and pyproject instead of literal strings. Fix
