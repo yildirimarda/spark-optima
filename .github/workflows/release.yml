@@ -35,7 +35,10 @@ jobs:
         id: rp
         with:
           # Match your project: python | node | simple | terraform-module ...
-          release-type: python
+          # "simple" manages only version.txt + CHANGELOG + tag. The package
+          # version is dynamic (hatch-vcs, from git tags), so release PRs no
+          # longer touch pyproject.toml — which is what kept desyncing uv.lock.
+          release-type: simple
 
   # ── Auto-merge the release PR too ────────────────────────────────────────
   # automerge-release:

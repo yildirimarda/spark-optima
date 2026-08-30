@@ -500,6 +500,13 @@ are real gaps, not nice-to-haves.
       and verify the package builds with a correct version from a git tag.
       In the PR description, note that release automation must then switch to
       release-type "simple" — a human applies that workflow change.
+- [ ] Harden hatch-vcs dynamic versioning for git-less builds: the Docker image
+      build has no .git in its context, so hatch-vcs cannot derive a version and
+      `uv sync` fails there. Add a fallback (e.g. [tool.hatch.version.raw-options]
+      fallback_version = "0.0.0.dev0") or an equivalent mechanism, verify
+      `docker build -f docker/Dockerfile --target production .` succeeds locally,
+      and verify editable installs still report the real tag-derived version
+      (consider [tool.hatch.build.hooks.vcs] version-file if needed).
 - [ ] Add `POST /api/v1/validate` and `POST /api/v1/import` API endpoints
       mirroring the CLI commands. Depends on extracting the CLI validate /
       import logic into a reusable core module first (the logic currently
@@ -517,5 +524,3 @@ are real gaps, not nice-to-haves.
 
 ## Discovered
 
-- [ ] Update `.github/workflows/release.yml` to switch `release-type` from `python` to `simple` so release-please no longer tries to bump `pyproject.toml` version (now dynamic via hatch-vcs). Propose the change under `ci-proposals/release-simple.yml` with the `git mv` command in PR description.
-- [ ] Verify that `hatch-vcs` build hook writes a version file or that editable installs reflect the correct version — may need a `[tool.hatch.build.hooks.vcs]` `version-file` config.

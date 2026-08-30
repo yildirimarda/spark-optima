@@ -302,6 +302,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # hatch-vcs derives the package version from git tags; a shallow
+          # checkout has no tags and the build would fail or misversion.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
