@@ -28,7 +28,13 @@ Attributes:
 
 """
 
-__version__ = "0.2.0"
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
+
+try:
+    __version__ = package_version("spark-optima")
+except PackageNotFoundError:
+    __version__ = "unknown"
 __author__ = "Spark Optima Contributors"
 __email__ = "your-email@example.com"
 __license__ = "Apache-2.0"
