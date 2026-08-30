@@ -28,7 +28,7 @@ Attributes:
 
 """
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 __author__ = "Spark Optima Contributors"
 __email__ = "your-email@example.com"
 __license__ = "Apache-2.0"
