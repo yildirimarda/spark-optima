@@ -493,7 +493,7 @@ are real gaps, not nice-to-haves.
       spark_optima.__version__) and assert consistency between package metadata
       and pyproject instead of literal strings. Fix
       tests/unit/api/test_dependencies.py::TestAPIMetadata accordingly.
-- [ ] Switch to git-tag-based dynamic versioning with hatch-vcs so release PRs
+- [x] Switch to git-tag-based dynamic versioning with hatch-vcs so release PRs
       no longer desync uv.lock: drop the static version field from
       pyproject.toml (dynamic = ["version"], hatch-vcs as the source), make
       __version__ resolve from package metadata at runtime, refresh uv.lock,
@@ -517,4 +517,5 @@ are real gaps, not nice-to-haves.
 
 ## Discovered
 
-Nothing added this session.
+- [ ] Update `.github/workflows/release.yml` to switch `release-type` from `python` to `simple` so release-please no longer tries to bump `pyproject.toml` version (now dynamic via hatch-vcs). Propose the change under `ci-proposals/release-simple.yml` with the `git mv` command in PR description.
+- [ ] Verify that `hatch-vcs` build hook writes a version file or that editable installs reflect the correct version — may need a `[tool.hatch.build.hooks.vcs]` `version-file` config.
