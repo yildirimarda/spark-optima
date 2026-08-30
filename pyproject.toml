@@ -67,6 +67,12 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 source = "vcs"
 
+[tool.hatch.version.raw-options]
+fallback_version = "0.0.0.dev0"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/spark_optima/_version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/spark_optima"]
 
