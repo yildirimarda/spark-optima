@@ -488,13 +488,23 @@ are real gaps, not nice-to-haves.
       `analysis/scala_parser.py` is a reasonable template. Java-specific
       concerns include checked-exception handling, `SparkSession.builder`
       chaining, and Java UDFs (`org.apache.spark.api.java.function.MapFunction`).
+- [ ] Remove hardcoded version strings from tests: no test may assert a literal
+      package version. Read the version via importlib.metadata (or
+      spark_optima.__version__) and assert consistency between package metadata
+      and pyproject instead of literal strings. Fix
+      tests/unit/api/test_dependencies.py::TestAPIMetadata accordingly.
+- [ ] Switch to git-tag-based dynamic versioning with hatch-vcs so release PRs
+      no longer desync uv.lock: drop the static version field from
+      pyproject.toml (dynamic = ["version"], hatch-vcs as the source), make
+      __version__ resolve from package metadata at runtime, refresh uv.lock,
+      and verify the package builds with a correct version from a git tag.
+      In the PR description, note that release automation must then switch to
+      release-type "simple" — a human applies that workflow change.
 - [ ] Add `POST /api/v1/validate` and `POST /api/v1/import` API endpoints
       mirroring the CLI commands. Depends on extracting the CLI validate /
       import logic into a reusable core module first (the logic currently
       lives in `cli/main.py` around the `validate` and `import_config`
       commands).
-- [ ] Switch to dynamic versioning via hatch-vcs so release PRs 
-      no longer desync uv.lock
 - [ ] Extend the supported PySpark range in pyproject.toml to include 4.2 
       (keep the current lower bound), refresh uv.lock, and make the full test 
       suite pass against PySpark 4.2.0, fixing any incompatibilities
