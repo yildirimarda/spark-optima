@@ -56,9 +56,7 @@ def parse_config_file(config_path: Path | str) -> dict[str, Any]:
             continue
         match = _PROPERTIES_LINE_RE.match(line)
         if match is None:
-            raise ValueError(
-                f"cannot parse line {line_number} of {config_path_obj}: {raw_line!r}"
-            )
+            raise ValueError(f"cannot parse line {line_number} of {config_path_obj}: {raw_line!r}")
         config[match.group(1)] = match.group(2).strip()
     return config
 
@@ -344,9 +342,7 @@ def diff_configs(
 ) -> tuple[list[str], list[str], list[str]]:
     """Compute the difference between a current and a recommended config."""
     shared = set(current) & set(recommended)
-    changed = sorted(
-        key for key in shared if str(current[key]).strip() != str(recommended[key]).strip()
-    )
+    changed = sorted(key for key in shared if str(current[key]).strip() != str(recommended[key]).strip())
     only_in_current = sorted(set(current) - set(recommended))
     only_in_recommended = sorted(set(recommended) - set(current))
     return changed, only_in_current, only_in_recommended
@@ -428,10 +424,7 @@ def import_config(
         "current": current,
         "recommended": recommended,
         "diff": {
-            "changed": {
-                key: {"current": current[key], "recommended": recommended[key]}
-                for key in changed
-            },
+            "changed": {key: {"current": current[key], "recommended": recommended[key]} for key in changed},
             "only_in_current": {key: current[key] for key in only_in_current},
             "only_in_recommended": {key: recommended[key] for key in only_in_recommended},
         },

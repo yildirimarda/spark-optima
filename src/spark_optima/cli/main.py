@@ -1579,6 +1579,7 @@ def _memory_to_gb(value: Any, validator: Any) -> float | None:
 
 def _coerce_typed_value(value: Any, param_type: Any, validator: Any) -> tuple[Any, str | None]:
     from spark_optima.core.validate_import import coerce_typed_value as _ctv
+
     return _ctv(value, param_type, validator)
 
 
@@ -1590,7 +1591,9 @@ def _collect_platform_issues(config: dict[str, Any], platform_name: str, validat
     return collect_platform_issues(config, platform_name, validator)
 
 
-def _collect_anti_pattern_issues(config: dict[str, Any], resolved_version: str, loader: Any, validator: Any) -> list[dict[str, str]]:
+def _collect_anti_pattern_issues(
+    config: dict[str, Any], resolved_version: str, loader: Any, validator: Any
+) -> list[dict[str, str]]:
     return collect_anti_pattern_issues(config, resolved_version, loader, validator)
 
 
