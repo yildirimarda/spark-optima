@@ -11,5 +11,13 @@ from spark_optima.api.routes.jobs import router as jobs_router
 from spark_optima.api.routes.optimize import router as optimize_router
 from spark_optima.api.routes.platforms import router as platforms_router
 from spark_optima.api.routes.templates import router as templates_router
+from spark_optima.api.routes.validate_import import router as validate_import_router
 
-__all__ = ["health_router", "jobs_router", "optimize_router", "platforms_router", "templates_router"]
+__all__ = [
+    "health_router",
+    "jobs_router",
+    "optimize_router",
+    "platforms_router",
+    "templates_router",
+    "validate_import_router",
+]

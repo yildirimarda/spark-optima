@@ -19,7 +19,14 @@ from fastapi.responses import JSONResponse
 
 from spark_optima import __version__
 from spark_optima.api.dependencies import APIMetadata
-from spark_optima.api.routes import health_router, jobs_router, optimize_router, platforms_router, templates_router
+from spark_optima.api.routes import (
+    health_router,
+    jobs_router,
+    optimize_router,
+    platforms_router,
+    templates_router,
+    validate_import_router,
+)
 from spark_optima.api.security import enforce_api_security
 
 if TYPE_CHECKING:
@@ -122,6 +129,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router, dependencies=v1_security)
     app.include_router(platforms_router, dependencies=v1_security)
     app.include_router(templates_router, dependencies=v1_security)
+    app.include_router(validate_import_router, dependencies=v1_security)
 
     # Add exception handlers
     @app.exception_handler(Exception)

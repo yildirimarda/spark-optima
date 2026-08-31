@@ -9,7 +9,6 @@ allowing users to run configuration optimization from the terminal.
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,11 +19,19 @@ from rich.table import Table
 
 from spark_optima import __version__
 from spark_optima.core.optimizer import Optimizer
+from spark_optima.core.validate_import import (
+    collect_anti_pattern_issues,
+    collect_db_issues,
+    collect_platform_issues,
+    config_bool,
+    config_int,
+    diff_configs,
+    memory_to_gb,
+    parse_config_file,
+    validation_issue,
+)
 
 if TYPE_CHECKING:
-    from spark_optima.core.config_engine.loader import VersionLoader
-    from spark_optima.core.config_engine.models import ConfigSet, ParameterType
-    from spark_optima.core.config_engine.validator import ConfigValidator
     from spark_optima.core.execution.event_log import EventLogSummary
 
 logger = logging.getLogger(__name__)
@@ -1551,420 +1558,47 @@ def explain(
 # v1.4 — validate / import / templates (Workstream S)
 # =============================================================================
 
-# Matches "key value", "key=value", and "key = value" properties lines
-_PROPERTIES_LINE_RE = re.compile(r"^(\S+?)(?:\s*=\s*|\s+)(.+)$")
+_config_bool = config_bool
 
 
 def _parse_config_file(config_path: Path) -> dict[str, Any]:
-    """Parse a Spark configuration file in properties or JSON format.
-
-    Supports the spark-defaults.conf properties format ("key value" or
-    "key=value" lines with # comments) and JSON dictionaries. The format is
-    detected from the file extension and content.
-
-    Args:
-        config_path: Path to the configuration file.
-
-    Returns:
-        Dictionary of parameter names to raw values.
-
-    Raises:
-        typer.Exit: If the file cannot be read or parsed.
-
-    """
-    try:
-        content = config_path.read_text(encoding="utf-8")
-    except OSError as e:
-        console.print(f"[bold red]Error reading config file:[/bold red] {e}")
-        raise typer.Exit(1) from e
-
-    if config_path.suffix.lower() == ".json" or content.lstrip().startswith("{"):
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError as e:
-            console.print(f"[bold red]Error parsing JSON config:[/bold red] {e}")
-            raise typer.Exit(1) from e
-        if not isinstance(data, dict):
-            console.print(f"[bold red]Error:[/bold red] {config_path} must contain a JSON object")
-            raise typer.Exit(1)
-        return {str(key): value for key, value in data.items()}
-
-    config: dict[str, Any] = {}
-    for line_number, raw_line in enumerate(content.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        match = _PROPERTIES_LINE_RE.match(line)
-        if match is None:
-            console.print(
-                f"[bold red]Error:[/bold red] cannot parse line {line_number} of {config_path}: {raw_line!r}",
-            )
-            raise typer.Exit(1)
-        config[match.group(1)] = match.group(2).strip()
-    return config
+    return parse_config_file(config_path)
 
 
 def _validation_issue(severity: str, param: str, message: str, check: str) -> dict[str, str]:
-    """Build a single validation issue record.
-
-    Args:
-        severity: Issue severity ("error" or "warning").
-        param: Parameter name the issue refers to.
-        message: Human-readable issue description.
-        check: Machine-readable name of the check that produced the issue.
-
-    Returns:
-        Issue dictionary.
-
-    """
-    return {"severity": severity, "param": param, "message": message, "check": check}
-
-
-def _config_bool(value: Any) -> bool | None:
-    """Interpret a raw config value as a boolean.
-
-    Args:
-        value: Raw value (bool or "true"/"false" string).
-
-    Returns:
-        Boolean value, or None when the value is not a recognizable boolean.
-
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered == "true":
-            return True
-        if lowered == "false":
-            return False
-    return None
+    return validation_issue(severity, param, message, check)
 
 
 def _config_int(value: Any) -> int | None:
-    """Interpret a raw config value as an integer.
-
-    Args:
-        value: Raw value (int or numeric string).
-
-    Returns:
-        Integer value, or None when the value is not a valid integer.
-
-    """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError:
-            return None
-    return None
+    return config_int(value)
 
 
-def _memory_to_gb(value: Any, validator: "ConfigValidator") -> float | None:
-    """Convert a Spark byte-size value (e.g. "4g") to gigabytes.
-
-    Args:
-        value: Raw memory value from a config file.
-        validator: Validator used to parse byte strings.
-
-    Returns:
-        Size in GB, or None when the value cannot be parsed.
-
-    """
-    from spark_optima.core.config_engine.models import ParameterType
-
-    if value is None:
-        return None
-    try:
-        bytes_value = validator.normalize_value(str(value).strip(), ParameterType.BYTES)
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(bytes_value, int) or bytes_value <= 0:
-        return None
-    return bytes_value / float(1024**3)
+def _memory_to_gb(value: Any, validator: Any) -> float | None:
+    return memory_to_gb(value, validator)
 
 
-def _coerce_typed_value(
-    value: Any,
-    param_type: "ParameterType",
-    validator: "ConfigValidator",
-) -> tuple[Any, str | None]:
-    """Coerce a raw config value (usually a string) into the parameter's type.
+def _coerce_typed_value(value: Any, param_type: Any, validator: Any) -> tuple[Any, str | None]:
+    from spark_optima.core.validate_import import coerce_typed_value as _ctv
 
-    Args:
-        value: Raw value from the parsed config file.
-        param_type: Expected parameter type from the database.
-        validator: Validator used for byte/duration format checks.
-
-    Returns:
-        Tuple of (coerced value, error message or None when the value is valid).
-
-    """
-    from spark_optima.core.config_engine.models import ParameterType
-
-    if not isinstance(value, str):
-        # JSON configs may carry natively typed values; the validator checks them
-        return value, None
-
-    text = value.strip()
-    if param_type == ParameterType.BOOLEAN:
-        boolean = _config_bool(text)
-        if boolean is None:
-            return value, f"expected a boolean (true/false), got '{value}'"
-        return boolean, None
-    if param_type == ParameterType.INTEGER:
-        try:
-            return int(text), None
-        except ValueError:
-            return value, f"expected an integer, got '{value}'"
-    if param_type == ParameterType.FLOAT:
-        try:
-            return float(text), None
-        except ValueError:
-            return value, f"expected a number, got '{value}'"
-    if param_type == ParameterType.BYTES and not validator.is_valid_bytes(text):
-        return value, f"expected a byte size like '4g' or '512m', got '{value}'"
-    if param_type == ParameterType.DURATION and not validator.is_valid_duration(text):
-        return value, f"expected a duration like '60s' or '5m', got '{value}'"
-    return text, None
+    return _ctv(value, param_type, validator)
 
 
-def _collect_db_issues(
-    config: dict[str, Any],
-    config_set: "ConfigSet",
-    validator: "ConfigValidator",
-) -> list[dict[str, str]]:
-    """Check a config against the Spark parameter database.
-
-    Flags unknown parameters, parameters deprecated in the target version,
-    and values that fail type/format or constraint validation. Range, pattern,
-    and allowed-value checks are delegated to ConfigValidator for all
-    parameter types, including BYTES/DURATION values whose bounds are
-    compared in canonical base units.
-
-    Args:
-        config: Parsed user configuration.
-        config_set: Parameter database for the resolved Spark version.
-        validator: Shared validator instance.
-
-    Returns:
-        List of validation issues.
-
-    """
-    issues: list[dict[str, str]] = []
-    for param_name in sorted(config):
-        raw_value = config[param_name]
-        db_param = config_set.parameters.get(param_name)
-        if db_param is None:
-            issues.append(
-                _validation_issue(
-                    "warning",
-                    param_name,
-                    f"unknown parameter (not in the Spark {config_set.version} parameter database)",
-                    "unknown_parameter",
-                ),
-            )
-            continue
-
-        if db_param.deprecated_in and db_param.is_deprecated_in(config_set.version):
-            message = f"deprecated since Spark {db_param.deprecated_in}"
-            if db_param.alternatives:
-                message += f"; use {', '.join(db_param.alternatives)} instead"
-            issues.append(_validation_issue("warning", param_name, message, "deprecated_parameter"))
-
-        coerced, type_error = _coerce_typed_value(raw_value, db_param.param_type, validator)
-        if type_error is not None:
-            issues.append(_validation_issue("error", param_name, type_error, "invalid_value"))
-            continue
-
-        if not validator.validate(db_param, coerced):
-            for error in validator.get_errors():
-                issues.append(_validation_issue("error", param_name, str(error), "invalid_value"))
-    return issues
+def _collect_db_issues(config: dict[str, Any], config_set: Any, validator: Any) -> list[dict[str, str]]:
+    return collect_db_issues(config, config_set, validator)
 
 
-def _collect_platform_issues(
-    config: dict[str, Any],
-    platform_name: str,
-    validator: "ConfigValidator",
-) -> list[dict[str, str]]:
-    """Check executor memory/cores against a platform's resource constraints.
-
-    Args:
-        config: Parsed user configuration.
-        platform_name: Platform identifier from PLATFORM_REGISTRY.
-        validator: Shared validator instance (for memory parsing).
-
-    Returns:
-        List of validation issues.
-
-    Raises:
-        typer.Exit: If the platform name is unknown.
-
-    """
-    from spark_optima.platforms import get_platform
-
-    try:
-        platform_obj = get_platform(platform_name)
-    except (ValueError, RuntimeError, ImportError) as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        raise typer.Exit(1) from e
-
-    constraints = platform_obj.constraints
-    issues: list[dict[str, str]] = []
-
-    executor_memory_gb = _memory_to_gb(config.get("spark.executor.memory"), validator)
-    if executor_memory_gb is not None:
-        if executor_memory_gb > constraints.max_memory_gb:
-            issues.append(
-                _validation_issue(
-                    "error",
-                    "spark.executor.memory",
-                    f"{executor_memory_gb:.1f} GB exceeds the {platform_obj.name} maximum of "
-                    f"{constraints.max_memory_gb:.0f} GB per worker",
-                    "platform_constraint",
-                ),
-            )
-        elif executor_memory_gb < constraints.min_memory_gb:
-            issues.append(
-                _validation_issue(
-                    "error",
-                    "spark.executor.memory",
-                    f"{executor_memory_gb:.1f} GB is below the {platform_obj.name} minimum of "
-                    f"{constraints.min_memory_gb:.0f} GB per worker",
-                    "platform_constraint",
-                ),
-            )
-
-    executor_cores = _config_int(config.get("spark.executor.cores"))
-    if executor_cores is not None:
-        if executor_cores > constraints.max_cores:
-            issues.append(
-                _validation_issue(
-                    "error",
-                    "spark.executor.cores",
-                    f"{executor_cores} cores exceeds the {platform_obj.name} maximum of "
-                    f"{constraints.max_cores} cores per worker",
-                    "platform_constraint",
-                ),
-            )
-        elif executor_cores < constraints.min_cores:
-            issues.append(
-                _validation_issue(
-                    "error",
-                    "spark.executor.cores",
-                    f"{executor_cores} cores is below the {platform_obj.name} minimum of "
-                    f"{constraints.min_cores} cores per worker",
-                    "platform_constraint",
-                ),
-            )
-
-    return issues
+def _collect_platform_issues(config: dict[str, Any], platform_name: str, validator: Any) -> list[dict[str, str]]:
+    return collect_platform_issues(config, platform_name, validator)
 
 
 def _collect_anti_pattern_issues(
-    config: dict[str, Any],
-    resolved_version: str,
-    loader: "VersionLoader",
-    validator: "ConfigValidator",
+    config: dict[str, Any], resolved_version: str, loader: Any, validator: Any
 ) -> list[dict[str, str]]:
-    """Check a config against a curated list of Spark anti-patterns.
+    return collect_anti_pattern_issues(config, resolved_version, loader, validator)
 
-    Args:
-        config: Parsed user configuration.
-        resolved_version: Spark version resolved from the parameter database.
-        loader: Version loader used for version comparisons.
-        validator: Shared validator instance (for memory parsing).
 
-    Returns:
-        List of validation issues.
-
-    """
-    issues: list[dict[str, str]] = []
-
-    # Driver memory larger than executor memory
-    driver_gb = _memory_to_gb(config.get("spark.driver.memory"), validator)
-    executor_gb = _memory_to_gb(config.get("spark.executor.memory"), validator)
-    if driver_gb is not None and executor_gb is not None and driver_gb > executor_gb:
-        issues.append(
-            _validation_issue(
-                "warning",
-                "spark.driver.memory",
-                f"driver memory ({driver_gb:.1f} GB) is larger than executor memory ({executor_gb:.1f} GB); "
-                "the driver rarely needs more memory than the executors",
-                "driver_memory_exceeds_executor",
-            ),
-        )
-
-    # Dynamic allocation misconfigurations
-    if _config_bool(config.get("spark.dynamicAllocation.enabled")):
-        min_executors = _config_int(config.get("spark.dynamicAllocation.minExecutors"))
-        max_executors = _config_int(config.get("spark.dynamicAllocation.maxExecutors"))
-        if min_executors is not None and max_executors is not None:
-            if max_executors < min_executors:
-                issues.append(
-                    _validation_issue(
-                        "error",
-                        "spark.dynamicAllocation.maxExecutors",
-                        f"maxExecutors ({max_executors}) is less than minExecutors ({min_executors})",
-                        "dynamic_allocation_bounds",
-                    ),
-                )
-            elif max_executors == min_executors:
-                issues.append(
-                    _validation_issue(
-                        "warning",
-                        "spark.dynamicAllocation.maxExecutors",
-                        f"maxExecutors equals minExecutors ({max_executors}); dynamic allocation cannot scale",
-                        "dynamic_allocation_bounds",
-                    ),
-                )
-
-        shuffle_service = _config_bool(config.get("spark.shuffle.service.enabled"))
-        shuffle_tracking = _config_bool(config.get("spark.dynamicAllocation.shuffleTracking.enabled"))
-        if not shuffle_service and not shuffle_tracking:
-            issues.append(
-                _validation_issue(
-                    "warning",
-                    "spark.dynamicAllocation.enabled",
-                    "dynamic allocation needs spark.shuffle.service.enabled=true or "
-                    "spark.dynamicAllocation.shuffleTracking.enabled=true to release executors safely",
-                    "dynamic_allocation_shuffle",
-                ),
-            )
-
-    # Java serializer combined with Kryo-dependent settings
-    serializer = str(config.get("spark.serializer", "") or "").strip()
-    if serializer.endswith("JavaSerializer"):
-        kryo_settings = sorted(name for name in config if name.startswith("spark.kryo"))
-        if kryo_settings:
-            issues.append(
-                _validation_issue(
-                    "warning",
-                    "spark.serializer",
-                    f"Java serializer is configured but Kryo settings are present "
-                    f"({', '.join(kryo_settings)}); they will have no effect",
-                    "serializer_mismatch",
-                ),
-            )
-
-    # AQE disabled on Spark >= 3.2
-    aqe_enabled = _config_bool(config.get("spark.sql.adaptive.enabled"))
-    if aqe_enabled is False and loader.is_at_least(resolved_version, "3.2.0"):
-        issues.append(
-            _validation_issue(
-                "warning",
-                "spark.sql.adaptive.enabled",
-                f"Adaptive Query Execution is disabled; on Spark {resolved_version} (>= 3.2) "
-                "AQE is mature and usually improves performance",
-                "aqe_disabled",
-            ),
-        )
-
-    return issues
+def _diff_configs(current: dict[str, Any], recommended: dict[str, Any]) -> tuple[list[str], list[str], list[str]]:
+    return diff_configs(current, recommended)
 
 
 @app.command()
@@ -2017,7 +1651,11 @@ def validate(
         console.print(f"[bold red]Error:[/bold red] config file not found: {config_path}")
         raise typer.Exit(1)
 
-    config = _parse_config_file(config_path)
+    try:
+        config = _parse_config_file(config_path)
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(1) from e
 
     loader = VersionLoader()
     config_set = loader.load(spark_version)
@@ -2026,10 +1664,14 @@ def validate(
         raise typer.Exit(1)
 
     validator = ConfigValidator()
-    issues = _collect_db_issues(config, config_set, validator)
-    if platform:
-        issues.extend(_collect_platform_issues(config, platform, validator))
-    issues.extend(_collect_anti_pattern_issues(config, config_set.version, loader, validator))
+    try:
+        issues = _collect_db_issues(config, config_set, validator)
+        if platform:
+            issues.extend(_collect_platform_issues(config, platform, validator))
+        issues.extend(_collect_anti_pattern_issues(config, config_set.version, loader, validator))
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(1) from e
 
     severity_rank = {"error": 0, "warning": 1}
     issues.sort(key=lambda issue: (severity_rank.get(issue["severity"], 2), issue["param"]))
@@ -2075,29 +1717,6 @@ def validate(
 
     if error_issues:
         raise typer.Exit(1)
-
-
-def _diff_configs(
-    current: dict[str, Any],
-    recommended: dict[str, Any],
-) -> tuple[list[str], list[str], list[str]]:
-    """Compute the difference between a current and a recommended config.
-
-    Values are compared as trimmed strings so "200" and 200 are equal.
-
-    Args:
-        current: User's existing configuration.
-        recommended: Optimizer-recommended configuration.
-
-    Returns:
-        Tuple of sorted key lists: (changed, only_in_current, only_in_recommended).
-
-    """
-    shared = set(current) & set(recommended)
-    changed = sorted(key for key in shared if str(current[key]).strip() != str(recommended[key]).strip())
-    only_in_current = sorted(set(current) - set(recommended))
-    only_in_recommended = sorted(set(recommended) - set(current))
-    return changed, only_in_current, only_in_recommended
 
 
 @app.command("import")
@@ -2160,7 +1779,11 @@ def import_config(
         console.print(f"[bold red]Error:[/bold red] config file not found: {config_path_obj}")
         raise typer.Exit(1)
 
-    current = _parse_config_file(config_path_obj)
+    try:
+        current = _parse_config_file(config_path_obj)
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(1) from e
 
     if output_format != "json":
         console.print(

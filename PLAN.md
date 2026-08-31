@@ -507,7 +507,7 @@ are real gaps, not nice-to-haves.
       `docker build -f docker/Dockerfile --target production .` succeeds locally,
       and verify editable installs still report the real tag-derived version
       (consider [tool.hatch.build.hooks.vcs] version-file if needed).
-- [ ] Add `POST /api/v1/validate` and `POST /api/v1/import` API endpoints
+- [x] Add `POST /api/v1/validate` and `POST /api/v1/import` API endpoints
       mirroring the CLI commands. Depends on extracting the CLI validate /
       import logic into a reusable core module first (the logic currently
       lives in `cli/main.py` around the `validate` and `import_config`
