@@ -5,6 +5,18 @@ All notable changes to the Spark Optima project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/yildirimarda/spark-optima/compare/v0.2.0...v0.3.0) (2026-08-31)
+
+
+### Features
+
+* add POST /api/v1/validate and POST /api/v1/import endpoints ([#17](https://github.com/yildirimarda/spark-optima/issues/17)) ([596c4ef](https://github.com/yildirimarda/spark-optima/commit/596c4efbaca4e35fb4cd8ed0a0e3c7b9e538e28f))
+* extend PySpark range to include 4.2 ([#18](https://github.com/yildirimarda/spark-optima/issues/18)) ([d2a55d1](https://github.com/yildirimarda/spark-optima/commit/d2a55d1af78d890c5c3926e4a9b5804f1a633dbd))
+* harden hatch-vcs dynamic versioning for git-less builds ([#15](https://github.com/yildirimarda/spark-optima/issues/15)) ([2f02b95](https://github.com/yildirimarda/spark-optima/commit/2f02b95e4774ef9bfe4e37a2c9abe05c606e307f))
+* Spark 4.2 CI matrix proposal ([8e44518](https://github.com/yildirimarda/spark-optima/commit/8e44518ff4d19a47ebd2dc961d169a0da786a17e))
+* switch to git-tag-based dynamic versioning with hatch-vcs ([#13](https://github.com/yildirimarda/spark-optima/issues/13)) ([2f247be](https://github.com/yildirimarda/spark-optima/commit/2f247be1727ccb9c03cfbfad88b34726e40ccb46))
+* write CI matrix proposal for Spark 4.2 test leg ([b0995aa](https://github.com/yildirimarda/spark-optima/commit/b0995aa190eea4e19ed5dd8db3ab6ab27c9a424d))
+
 ## [0.2.0](https://github.com/yildirimarda/spark-optima/compare/v0.1.1...v0.2.0) (2026-08-29)
 
 
