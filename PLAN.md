@@ -518,7 +518,7 @@ are real gaps, not nice-to-haves.
 - [x] Audit the code for Spark APIs deprecated or behavior-changed in 4.x 
       that we rely on, using the official 4.2 migration guide, 
       and add regression tests for each affected path
-- [ ] Write a CI matrix proposal (ci-proposals/spark-42-matrix.yml) that adds a 
+- [x] Write a CI matrix proposal (ci-proposals/spark-42-matrix.yml) that adds a 
       PySpark 4.2 test leg alongside the existing Python versions, 
       with a PR description explaining the git mv to apply it      
 
