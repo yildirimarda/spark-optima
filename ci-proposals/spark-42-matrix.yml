@@ -1,0 +1,52 @@
+# CI proposal: add PySpark 4.2 test leg
+# Apply with: git mv ci-proposals/spark-42-matrix.yml .github/workflows/spark-42-matrix.yml
+#
+# Adds a dedicated matrix leg that runs the full test suite against
+# PySpark 4.2.0 (already allowed by pyproject.toml: pyspark>=4.1.1,<4.3.0)
+# so incompatibilities are caught before release.
+
+name: Spark 4.2 Matrix
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  spark-42:
+    name: Tests (Python 3.12 + PySpark 4.2)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+        pyspark-version: ["4.2.0"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies (force PySpark ${{ matrix.pyspark-version }})
+        run: |
+          uv sync --frozen
+          uv run pip install --force-reinstall "pyspark==${{ matrix.pyspark-version }}"
+
+      - name: Verify PySpark version
+        run: uv run python -c "import pyspark; print(pyspark.__version__)"
+
+      - name: Run unit tests
+        run: uv run pytest -v --tb=short --cov=src/spark_optima --cov-fail-under=80 --cov-report=xml
+
+      - name: Run Spark 4.2 regression tests
+        run: uv run pytest tests/unit/test_spark_42_deprecations.py tests/unit/test_pyspark_range.py -v --tb=short
