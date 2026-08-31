@@ -515,7 +515,7 @@ are real gaps, not nice-to-haves.
 - [x] Extend the supported PySpark range in pyproject.toml to include 4.2 
       (keep the current lower bound), refresh uv.lock, and make the full test 
       suite pass against PySpark 4.2.0, fixing any incompatibilities
-- [ ] Audit the code for Spark APIs deprecated or behavior-changed in 4.x 
+- [x] Audit the code for Spark APIs deprecated or behavior-changed in 4.x 
       that we rely on, using the official 4.2 migration guide, 
       and add regression tests for each affected path
 - [ ] Write a CI matrix proposal (ci-proposals/spark-42-matrix.yml) that adds a 
@@ -523,4 +523,7 @@ are real gaps, not nice-to-haves.
       with a PR description explaining the git mv to apply it      
 
 ## Discovered
+
+- [ ] Fix `metrics_collector.py` to gracefully handle Spark 4.x removal of `sc.getExecutorMemoryStatus()` (currently relies on `hasattr` check, but should explicitly guard against AttributeError for 4.x compatibility)
+- [ ] Update `data/samplers.py` reservoir sampling `.drop()` to filter missing columns before drop for Spark 4.2 `KeyError` behavior change
 
