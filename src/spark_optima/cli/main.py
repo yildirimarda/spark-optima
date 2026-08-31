@@ -1719,29 +1719,6 @@ def validate(
         raise typer.Exit(1)
 
 
-def _diff_configs(
-    current: dict[str, Any],
-    recommended: dict[str, Any],
-) -> tuple[list[str], list[str], list[str]]:
-    """Compute the difference between a current and a recommended config.
-
-    Values are compared as trimmed strings so "200" and 200 are equal.
-
-    Args:
-        current: User's existing configuration.
-        recommended: Optimizer-recommended configuration.
-
-    Returns:
-        Tuple of sorted key lists: (changed, only_in_current, only_in_recommended).
-
-    """
-    shared = set(current) & set(recommended)
-    changed = sorted(key for key in shared if str(current[key]).strip() != str(recommended[key]).strip())
-    only_in_current = sorted(set(current) - set(recommended))
-    only_in_recommended = sorted(set(recommended) - set(current))
-    return changed, only_in_current, only_in_recommended
-
-
 @app.command("import")
 def import_config(
     config_file: str = typer.Option(
