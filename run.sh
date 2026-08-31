@@ -16,12 +16,30 @@ COUNT=1
 WAIT=1
 TIMEOUT_MIN=20
 CI_RETRIES=1
+
 MODEL=""
 USE_GRAPH=1
 DISCOVER=1
 MAX_GROWTH=10
 ARG_TEXT=""
 ANTHROPIC_KEY=""
+
+# ── Local per-machine overrides: .agentloop.local (gitignored) ───────────────
+# Change model/engine without touching git. KEY=VALUE lines, no quotes:
+#   MODEL=openrouter/vendor/model
+#   ENGINE=opencode          (or claude)
+#   CI_RETRIES=5
+#   TIMEOUT_MIN=40
+# Precedence: CLI flags > this file > committed defaults (opencode.json).
+if [[ -f "$REPO_DIR/.agentloop.local" ]]; then
+  while IFS='=' read -r _k _v; do
+    [[ "$_k" =~ ^[A-Z_]+$ ]] || continue
+    case "$_k" in
+      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE)
+        printf -v "$_k" '%s' "$_v" ;;
+    esac
+  done < "$REPO_DIR/.agentloop.local"
+fi
 
 usage() {
 cat <<'EOF'
@@ -54,6 +72,10 @@ Options
       --no-graph            skip the Graphify index step
       --image NAME          container image (default "agent")
   -h, --help                this
+
+Per-machine defaults (no git involved): put KEY=VALUE lines in
+.agentloop.local (gitignored) — e.g. MODEL=openrouter/vendor/model,
+ENGINE=claude, CI_RETRIES=5. CLI flags still win.
 
 Examples
   ./run.sh --init "A CLI that validates CSV exports and loads them to Postgres"
@@ -233,11 +255,47 @@ graph_sync() {
   fi
 }
 
+# Live view: the raw event stream is unreadable NDJSON, so the terminal gets
+# a human-readable heartbeat (tool calls + errors) while the FULL stream is
+# tee'd to the log file. Handles both engines' event shapes.
+stream_view() {
+  if command -v jq >/dev/null 2>&1; then
+    jq --unbuffered -Rr '
+      fromjson? |
+      # ── OpenCode events: payload lives under .part ──
+      if .type == "tool_use" then
+        "  → " + (.part.tool // .tool // .name // "tool")
+        + ( (.part.state.input // {}) as $in
+            | if $in.command  then ": " + ($in.command | gsub("[\\n\\r]+"; " ⏎ ") | .[0:100])
+              elif $in.filePath then ": " + ($in.filePath | tostring)
+              elif $in.pattern  then ": " + ($in.pattern | tostring | .[0:80])
+              elif $in.question then ": " + ($in.question | tostring | .[0:100])
+              else "" end )
+      elif .type == "text" then
+        ((.part.text // .text // empty) | tostring | "  " + gsub("\n"; "\n  "))
+      elif .type == "step_finish" then
+        ( .part.tokens.total // empty
+          | if . >= 1000 then "        · step done (" + (. / 1000 | floor | tostring) + "k tok)"
+            else "        · step done (" + tostring + " tok)" end )
+      elif .type == "error" then
+        "  ✖ " + ((.error.message? // .error // .message // "error") | tostring)
+      # ── Claude Code events: assistant messages with content blocks ──
+      elif .type == "assistant" then
+        (.message.content[]?
+         | if .type == "tool_use" then "  → " + .name
+           elif .type == "text" then ("  " + (.text | gsub("\n"; "\n  ")))
+           else empty end)
+      else empty end' 2>/dev/null
+  else
+    cat
+  fi
+}
+
 run_agent() {
   local prompt="$1" log
   log="logs/$(date +%Y%m%d-%H%M%S)-$ENGINE.jsonl"
   info "engine: $ENGINE"
-  info "log: $log"
+  info "log: $log (full transcript; terminal shows tool calls only)"
   echo
 
   if [[ "$ENGINE" == "claude" ]]; then
@@ -247,22 +305,24 @@ run_agent() {
     in_container claude -p "$prompt" \
       --permission-mode bypassPermissions \
       --output-format stream-json --verbose \
-      ${MODEL:+--model "$MODEL"} | tee "$log"
+      ${MODEL:+--model "$MODEL"} | tee "$log" | stream_view
   else
-    in_container opencode run --format json ${MODEL:+-m "$MODEL"} "$prompt" | tee "$log"
+    in_container opencode run --format json ${MODEL:+-m "$MODEL"} "$prompt" | tee "$log" | stream_view
   fi
   local rc=${PIPESTATUS[0]}
 
   echo
   if command -v jq >/dev/null 2>&1 && [[ -s "$log" ]]; then
     echo "  tools used:"
-    # Two shapes: OpenCode emits flat {"type":"tool_use",...} events; Claude
-    # Code nests tool_use blocks inside assistant messages.
+    # OpenCode nests the payload under .part; Claude Code nests tool_use
+    # blocks inside assistant messages.
     {
-      jq -r 'select(.type=="tool_use") | .tool // .name // empty' "$log" 2>/dev/null
+      jq -r 'select(.type=="tool_use") | .part.tool // .tool // .name // empty' "$log" 2>/dev/null
       jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name // empty' "$log" 2>/dev/null
     } | sed 's/^/    /' | sort | uniq -c | sort -rn || true
-    # Claude Code's final result event carries the session cost — surface it.
+    # Totals: OpenCode reports per-step tokens; Claude Code reports cost.
+    jq -sr '[.[] | select(.type=="step_finish") | .part.tokens.total // 0] | add
+            | select(. > 0) | "  session tokens: " + tostring' "$log" 2>/dev/null || true
     jq -r 'select(.type=="result") | .total_cost_usd? // empty
            | "  session cost: $" + (.|tostring)' "$log" 2>/dev/null | tail -1 || true
   fi
@@ -376,6 +436,35 @@ and do not touch main. Do this:
 $3
 --- END LOG ---
 EOF
+}
+
+# Wait for a PR to merge; on CI failure, feed the failing log back to the
+# agent on the same branch and retry — bounded by --ci-retries. Bash fetches
+# the log and switches branches (deterministic work); the model only fixes
+# code. Result in AWAIT_RC (wait_for_merge codes), attempts in AWAIT_FIXES.
+AWAIT_RC=1
+AWAIT_FIXES=0
+await_merge_and_autofix() {
+  local pr="$1" desc="$2" fb faillog
+  AWAIT_FIXES=0
+  while :; do
+    wait_for_merge "$pr"
+    AWAIT_RC=$?
+    [[ "$AWAIT_RC" != "3" ]] && return 0
+    if (( AWAIT_FIXES >= CI_RETRIES )); then return 0; fi
+    AWAIT_FIXES=$((AWAIT_FIXES + 1))
+    echo
+    rule
+    echo "CI failed on PR #$pr — automatic fix attempt $AWAIT_FIXES/$CI_RETRIES"
+    rule
+    fb="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || true)"
+    if [[ -z "$fb" ]] || ! git switch "$fb" --quiet 2>/dev/null; then
+      echo "  could not switch to the PR branch — leaving it to you."
+      return 0
+    fi
+    faillog="$(ci_fail_log "$pr")"
+    run_agent "$(prompt_ci_fix "$desc" "$pr" "${faillog:-<log unavailable — reproduce locally>}")"
+  done
 }
 
 # Show the "- [ ]" lines that appeared in PLAN.md during this iteration.
@@ -575,9 +664,33 @@ existing PR updates. The 'create a branch' step in AGENTS.md does not apply."
       new_work_branch "task" "$ARG_TEXT"
     fi
     run_agent "$ARG_TEXT"; rc=$?
-    made_commits || abandon_work_branch
-    made_commits && git log --oneline origin/main..HEAD | sed 's/^/  /' \
-                 || echo "  no commits — the agent wrote nothing"
+    if ! made_commits; then
+      echo "  no commits — the agent wrote nothing"
+      abandon_work_branch
+      exit "$rc"
+    fi
+    git log --oneline origin/main..HEAD | sed 's/^/  /'
+    pr="$(current_pr || true)"
+    if [[ -n "$pr" ]]; then
+      info "PR #$pr opened"
+      if (( WAIT )); then
+        await_merge_and_autofix "$pr" "$ARG_TEXT"
+        case "$AWAIT_RC" in
+          0) head_branch="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || true)"
+             git switch main --quiet 2>/dev/null || true
+             git_pull_c
+             [[ -n "$head_branch" ]] && git branch -D "$head_branch" >/dev/null 2>&1 || true
+             info "merged — back on main" ;;
+          3) echo
+             echo "CI is still failing on PR #$pr after $AWAIT_FIXES automatic fix attempt(s)."
+             echo "Take over:  git switch \$(gh pr view $pr --json headRefName -q .headRefName)" ;;
+          *) pu="$(gh_c pr view "$pr" --json url -q .url 2>/dev/null || true)"
+             echo "PR #$pr did not merge yet: ${pu:-open it on GitHub}" ;;
+        esac
+      else
+        info "--no-wait: not waiting for the merge (automerge lands it when CI is green)"
+      fi
+    fi
     exit "$rc" ;;
 esac
 
@@ -652,35 +765,12 @@ for (( i = 1; i <= COUNT; i++ )); do
     continue
   fi
 
-  # Wait for the merge; on CI failure, feed the failing log back to the agent
-  # on the same branch and retry — bounded by --ci-retries. Bash fetches the
-  # log and switches branches (deterministic work); the model only fixes code.
-  fix_attempt=0
-  wrc=1
-  while :; do
-    wait_for_merge "$pr"
-    wrc=$?
-    [[ "$wrc" != "3" ]] && break
-    if (( fix_attempt >= CI_RETRIES )); then break; fi
-    fix_attempt=$((fix_attempt + 1))
-    echo
-    rule
-    echo "CI failed on PR #$pr — automatic fix attempt $fix_attempt/$CI_RETRIES"
-    rule
-    fb="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || true)"
-    if [[ -z "$fb" ]] || ! git switch "$fb" --quiet 2>/dev/null; then
-      echo "  could not switch to the PR branch — leaving it to you."
-      break
-    fi
-    faillog="$(ci_fail_log "$pr")"
-    run_agent "$(prompt_ci_fix "$item" "$pr" "${faillog:-<log unavailable — reproduce locally>}")"
-  done
-
-  case "$wrc" in
+  await_merge_and_autofix "$pr" "$item"
+  case "$AWAIT_RC" in
     0) : ;;
     3) fb="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || echo '<branch>')"
        echo
-       echo "STOPPING: CI is still failing on PR #$pr after $fix_attempt automatic fix attempt(s)."
+       echo "STOPPING: CI is still failing on PR #$pr after $AWAIT_FIXES automatic fix attempt(s)."
        echo "Take over on the same branch:"
        echo "  git switch $fb"
        echo "  ./run.sh --task \"<what to fix>\""
