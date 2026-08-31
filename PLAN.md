@@ -526,4 +526,5 @@ are real gaps, not nice-to-haves.
 
 - [ ] Fix `metrics_collector.py` to gracefully handle Spark 4.x removal of `sc.getExecutorMemoryStatus()` (currently relies on `hasattr` check, but should explicitly guard against AttributeError for 4.x compatibility)
 - [ ] Update `data/samplers.py` reservoir sampling `.drop()` to filter missing columns before drop for Spark 4.2 `KeyError` behavior change
+- [ ] Make `_generate_value` respect `config.random_seed` independently (currently only seeded inside `_generate_rdd`) so single-value calls are deterministic
 
