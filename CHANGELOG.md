@@ -5,6 +5,13 @@ All notable changes to the Spark Optima project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1](https://github.com/yildirimarda/spark-optima/compare/v0.3.0...v0.3.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* merge with AUTOMERGE_TOKEN so bot merges trigger release-please ([1d323d7](https://github.com/yildirimarda/spark-optima/commit/1d323d778269d1b996b9aad3cc8eeef84cf8e448))
+
 ## [0.3.0](https://github.com/yildirimarda/spark-optima/compare/v0.2.0...v0.3.0) (2026-08-31)
 
 
