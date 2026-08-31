@@ -659,12 +659,24 @@ class TestGenerateValue:
     """Tests for _generate_value method."""
 
     def test_generate_string_value(self) -> None:
-        """Test generating string values."""
+        """Test generating string values with seeded RNG (non-null path)."""
+        import random
+
         generator = DataGenerator()
         col = ColumnSpec(name="test", data_type="string", cardinality=10)
-        value = generator._generate_value(col, DataGeneratorConfig())
+        config = DataGeneratorConfig(null_ratio=0.05, random_seed=42)
+        random.seed(config.random_seed)
+        value = generator._generate_value(col, config)
         assert isinstance(value, str)
         assert value.startswith("category_")
+
+    def test_generate_string_value_contract(self) -> None:
+        """String field may return None (nullable + null_ratio > 0) or str."""
+        generator = DataGenerator()
+        col = ColumnSpec(name="test", data_type="string", cardinality=10, nullable=True)
+        config = DataGeneratorConfig(null_ratio=0.05)
+        value = generator._generate_value(col, config)
+        assert value is None or isinstance(value, str)
 
     def test_generate_int_value(self) -> None:
         """Test generating integer values."""
