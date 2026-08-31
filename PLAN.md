@@ -512,7 +512,7 @@ are real gaps, not nice-to-haves.
       import logic into a reusable core module first (the logic currently
       lives in `cli/main.py` around the `validate` and `import_config`
       commands).
-- [ ] Extend the supported PySpark range in pyproject.toml to include 4.2 
+- [x] Extend the supported PySpark range in pyproject.toml to include 4.2 
       (keep the current lower bound), refresh uv.lock, and make the full test 
       suite pass against PySpark 4.2.0, fixing any incompatibilities
 - [ ] Audit the code for Spark APIs deprecated or behavior-changed in 4.x 
