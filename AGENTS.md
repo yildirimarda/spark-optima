@@ -6,13 +6,19 @@ work you discovered along the way, open a pull request, and stop.
 
 ## Workflow
 
-1. `git switch -c feat/<short-slug>` — never work directly on `main`.
+1. `run.sh` has already created and switched to a fresh work branch for this
+   session. Stay on it — never switch branches, never touch `main`.
 2. Implement **only** the item you were given. Do not start other items, do not
    refactor unrelated code, do not "improve things while you're here".
 3. Write or extend tests that prove the item works.
 4. Run the project's lint and test commands (see Project reference below).
-   Fix failures until everything is green.
-5. In `PLAN.md`, change that item's `- [ ]` to `- [x]`.
+   Fix failures until everything is green. If you changed dependencies
+   (pyproject.toml or equivalent), refresh the lockfile (`uv lock`) and
+   COMMIT it — CI rejects a stale lockfile.
+5. In `PLAN.md`, change that item's `- [ ]` to `- [x]`. The tick travels
+   with your branch: it reaches `main` only if this PR merges, so ticking
+   here never falsely marks unfinished work as done. If you end the session
+   without completing the item, revert the tick before pushing.
 6. Record any new work you discovered — see "Growing the plan" below.
 7. Commit using Conventional Commits: `feat:`, `fix:`, `chore:`, `docs:`,
    `refactor:`, `test:`. Small, single-purpose commits.
