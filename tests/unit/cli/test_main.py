@@ -2885,3 +2885,19 @@ class TestCLIValidateByteDurationRanges:
         payload = json.loads(result.output)
         assert payload["valid"] is True
         assert _issues_for_check(payload, "invalid_value") == []
+
+
+class TestCLIWhatIfCommand:
+    def test_what_if_command_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["what-if", "--help"])
+        assert result.exit_code == 0
+        assert "what-if" in result.output.lower()
+
+    def test_what_if_json_output(self, runner: CliRunner) -> None:
+        result = runner.invoke(
+            app, ["what-if", "--duration-hours", "0.5", "--platforms", "aws_emr", "--output", "json"]
+        )
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert isinstance(payload, list)
+        assert any(p.get("platform") == "aws_emr" for p in payload)
