@@ -166,6 +166,8 @@ class DynamicAllocationAdvisor:
 
     @staticmethod
     def _parse_int(value: str | int | float | None, default: int) -> int | None:
+        if value is None:
+            return None
         try:
             return int(float(value))  # handles "20" and 20.0
         except (TypeError, ValueError):
