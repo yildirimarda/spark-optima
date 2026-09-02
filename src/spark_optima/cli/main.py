@@ -2018,6 +2018,296 @@ def import_config(
     console.print("[dim]Tip: validate your current config with: spark-optima validate -c <file>[/dim]")
 
 
+@app.command("check")
+def check(
+    repo_path: str = typer.Option(
+        ".",
+        "--repo",
+        "-r",
+        help="Path to the repository to scan",
+    ),
+    baseline_file: str = typer.Option(
+        ".spark-optima/check-baseline.json",
+        "--baseline",
+        "-b",
+        help="Path to the committed baseline JSON file",
+    ),
+    config_file: str = typer.Option(
+        "",
+        "--config",
+        "-c",
+        help="Spark config file (properties or JSON) to validate",
+    ),
+    code_patterns: str = typer.Option(
+        ".py,.scala,.java",
+        "--patterns",
+        "-p",
+        help="Comma-separated source file extensions to scan",
+    ),
+    create_baseline: bool = typer.Option(
+        False,
+        "--create-baseline",
+        help="Create/update the baseline file instead of comparing",
+    ),
+    output_format: str = typer.Option(
+        "table",
+        "--output",
+        "-o",
+        help="Output format (table, json)",
+    ),
+) -> None:
+    """CI guardrail: run smell detector + config validator against a repo.
+
+    Compares results to a committed baseline (`--baseline`). Exits with code 1
+    when new smells or config drift are found, so it can be used in CI.
+
+    Example:
+        $ spark-optima check --repo . --baseline .spark-optima/check-baseline.json
+        $ spark-optima check --repo . --create-baseline
+
+    """
+    import json
+    import os
+    from pathlib import Path
+
+    repo_obj = Path(repo_path)
+    if not repo_obj.exists():
+        console.print(f"[bold red]Error:[/bold red] repo path not found: {repo_obj}")
+        raise typer.Exit(1)
+
+    patterns = [ext.strip() for ext in code_patterns.split(",") if ext.strip()]
+    source_suffixes = tuple(p if p.startswith(".") else f".{p}" for p in patterns)
+
+    # Discover source files
+    source_files: list[Path] = []
+    for root, _dirs, files in os.walk(repo_obj):
+        # Skip hidden directories and common non-source dirs
+        rel_root = Path(root).relative_to(repo_obj) if root != str(repo_obj) else Path(".")
+        skip_dirs = {
+            ".git",
+            ".github",
+            ".venv",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".spark-optima",
+            ".spark_optima",
+            "node_modules",
+            "dist",
+            "build",
+            "__pycache__",
+        }
+        if any(part in skip_dirs for part in rel_root.parts):
+            continue
+        for fname in files:
+            if fname.endswith(source_suffixes):
+                source_files.append(Path(root) / fname)
+
+    # Discover config files if none explicitly provided
+    config_paths: list[Path] = []
+    if config_file:
+        config_paths = [repo_obj / config_file if not Path(config_file).is_absolute() else Path(config_file)]
+    else:
+        for root, _dirs, files in os.walk(repo_obj):
+            rel_root = Path(root).relative_to(repo_obj) if root != str(repo_obj) else Path(".")
+            skip_dirs = {
+                ".git",
+                ".github",
+                ".venv",
+                ".mypy_cache",
+                ".pytest_cache",
+                ".ruff_cache",
+                ".spark-optima",
+                ".spark_optima",
+                "node_modules",
+                "dist",
+                "build",
+                "__pycache__",
+            }
+            if any(part in skip_dirs for part in rel_root.parts):
+                continue
+            for fname in files:
+                if fname.lower().endswith((".conf", ".json", ".yaml", ".yml")):
+                    config_paths.append(Path(root) / fname)
+
+    # Run smell detection
+    from spark_optima.analysis.smell_detector import SmellDetector
+
+    smells: dict[str, list[str]] = {}
+    detector = SmellDetector()
+    for file_path in sorted(source_files):
+        try:
+            result = detector.analyze_file(str(file_path), language="auto")
+            smell_types = sorted({s.smell_type for s in result.smells})
+            if smell_types:
+                rel_path = (
+                    str(file_path.relative_to(repo_obj)) if file_path.is_relative_to(repo_obj) else str(file_path)
+                )
+                smells[rel_path] = smell_types
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Failed to analyze %s: %s", file_path, exc)
+
+    # Run config validation
+    config_issues: list[dict[str, Any]] = []
+    if config_paths:
+        from spark_optima.core.validate_import import validate_config
+
+        for cfg_path in sorted(config_paths):
+            if not cfg_path.is_file():
+                continue
+            try:
+                validation_result = validate_config(str(cfg_path), spark_version="3.5.0")
+                for issue in validation_result.get("issues", []):
+                    if issue.get("severity") == "error" or issue.get("param"):
+                        config_issues.append(
+                            {
+                                "config_file": str(cfg_path.relative_to(repo_obj))
+                                if cfg_path.is_relative_to(repo_obj)
+                                else str(cfg_path),
+                                "param": issue.get("param", "-"),
+                                "severity": issue.get("severity", "warning"),
+                                "message": issue.get("message", ""),
+                            }
+                        )
+            except (OSError, ValueError, RuntimeError) as exc:
+                logger.warning("Failed to validate %s: %s", cfg_path, exc)
+
+    # Create/update baseline
+    if create_baseline:
+        baseline_path = repo_obj / baseline_file if not Path(baseline_file).is_absolute() else Path(baseline_file)
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_data = {
+            "created_at": __import__("datetime")
+            .datetime.now(__import__("datetime").timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "repo_path": str(repo_obj.resolve()),
+            "smells": smells,
+            "config_issues": config_issues,
+        }
+        with open(baseline_path, "w", encoding="utf-8") as f:
+            json.dump(baseline_data, f, indent=2)
+        console.print(f"[green]✓ Baseline created:[/green] {baseline_path}")
+        console.print(f"  Source smells: {len(smells)} files affected")
+        console.print(f"  Config issues: {len(config_issues)}")
+        raise typer.Exit(0)
+
+    # Load baseline for comparison
+    baseline_path = repo_obj / baseline_file if not Path(baseline_file).is_absolute() else Path(baseline_file)
+    if not baseline_path.is_file():
+        console.print(f"[bold red]Error:[/bold red] baseline file not found: {baseline_path}")
+        console.print(f"[dim]Create one with: spark-optima check --repo {repo_path} --create-baseline[/dim]")
+        raise typer.Exit(2)
+
+    try:
+        with open(baseline_path, encoding="utf-8") as f:
+            baseline_data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        console.print(f"[bold red]Error:[/bold red] cannot read baseline: {exc}")
+        raise typer.Exit(2) from exc
+
+    baseline_smells = baseline_data.get("smells", {})
+    baseline_issues = baseline_data.get("config_issues", [])
+
+    # Compare smells: new smell types in files, or new files with smells
+    new_smell_files = set(smells) - set(baseline_smells)
+    new_smell_types: dict[str, list[str]] = {}
+    for file_path, current_types in smells.items():
+        base_types = set(baseline_smells.get(file_path, []))
+        added = sorted(set(current_types) - base_types)
+        if added:
+            new_smell_types[file_path] = added
+
+    # Compare config issues: new errors (same param + message not in baseline)
+    baseline_issues_set = {(i.get("config_file"), i.get("param"), i.get("message")) for i in baseline_issues}
+    new_config_issues: list[dict[str, Any]] = []
+    for issue in config_issues:
+        key = (issue.get("config_file"), issue.get("param"), issue.get("message"))
+        if key not in baseline_issues_set:
+            new_config_issues.append(issue)
+
+    if output_format == "json":
+        payload = {
+            "repo_path": str(repo_obj.resolve()),
+            "baseline": str(baseline_path.resolve()),
+            "new_smell_files": sorted(new_smell_files),
+            "new_smell_types": new_smell_types,
+            "new_config_issues": new_config_issues,
+            "current_smells": smells,
+            "current_config_issues": config_issues,
+            "failed": bool(new_smell_files or new_smell_types or new_config_issues),
+        }
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        # Table / panel output
+        if new_smell_files or new_smell_types or new_config_issues:
+            console.print(
+                Panel.fit(
+                    "[bold red]🛑 CI Guardrail Failed[/bold red]\n"
+                    f"[dim]New smells or config drift vs baseline: {baseline_path}[/dim]",
+                    border_style="red",
+                )
+            )
+        else:
+            console.print(
+                Panel.fit(
+                    "[bold green]✅ CI Guardrail Passed[/bold green]\n"
+                    f"[dim]No new smells or config drift vs baseline: {baseline_path}[/dim]",
+                    border_style="green",
+                )
+            )
+
+        if smells or new_smell_types:
+            smell_table = Table(title="Code Smells (current)")
+            smell_table.add_column("File", style="cyan", no_wrap=True)
+            smell_table.add_column("Smell Types", style="yellow")
+            smell_table.add_column("Status", style="green")
+            for file_path in sorted(smells):
+                current_types = smells[file_path]
+                status = (
+                    "[red]NEW[/red]"
+                    if file_path in new_smell_types or file_path in new_smell_files
+                    else "[green]existing[/green]"
+                )
+                smell_table.add_row(file_path, ", ".join(current_types), status)
+            console.print(smell_table)
+
+        if config_issues or new_config_issues:
+            issue_table = Table(title="Config Validation Issues (current)")
+            issue_table.add_column("Config File", style="cyan", no_wrap=True)
+            issue_table.add_column("Param", style="yellow")
+            issue_table.add_column("Severity", style="red")
+            issue_table.add_column("Status", style="green")
+            for issue in sorted(config_issues, key=lambda i: i.get("config_file", "")):
+                is_new = any(
+                    i.get("param") == issue.get("param")
+                    and i.get("message") == issue.get("message")
+                    and i.get("config_file") == issue.get("config_file")
+                    for i in new_config_issues
+                )
+                # Actually just check if issue is in new_config_issues
+                is_new = issue in new_config_issues
+                status = "[red]NEW[/red]" if is_new else "[green]existing[/green]"
+                issue_table.add_row(
+                    issue.get("config_file", "-"), issue.get("param", "-"), issue.get("severity", "-"), status
+                )
+            console.print(issue_table)
+
+        summary_lines = []
+        if new_smell_files:
+            summary_lines.append(f"New smell files: {len(new_smell_files)}")
+        if new_smell_types:
+            summary_lines.append(f"New smell types: {len(new_smell_types)} files affected")
+        if new_config_issues:
+            summary_lines.append(f"New config issues: {len(new_config_issues)}")
+        if not summary_lines:
+            summary_lines.append("No new smells or config drift.")
+        console.print(f"\n{' '.join(summary_lines)}")
+
+    if new_smell_files or new_smell_types or new_config_issues:
+        raise typer.Exit(1)
+
+
 @app.command()
 def templates(
     show: str = typer.Option(
