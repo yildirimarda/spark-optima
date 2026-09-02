@@ -1262,6 +1262,148 @@ def pareto(
     )
 
 
+@app.command()
+def what_if(
+    result_file: str = typer.Option(
+        "",
+        "--workload",
+        "-w",
+        help="Path to a tuned workload result JSON file (optional)",
+    ),
+    duration_hours: float = typer.Option(
+        1.0,
+        "--duration-hours",
+        "-d",
+        help="Expected job duration in hours for cost comparison",
+    ),
+    platforms: str = typer.Option(
+        "aws_emr,databricks,gcp_dataproc",
+        "--platforms",
+        "-p",
+        help="Comma-separated platforms to sweep",
+    ),
+    region: str = typer.Option(
+        "",
+        "--region",
+        "-r",
+        help="Cloud region override",
+    ),
+    output_format: str = typer.Option(
+        "table",
+        "--output",
+        "-o",
+        help="Output format (table, json)",
+    ),
+) -> None:
+    """Cross-platform what-if explorer: same SLA, cheapest platform.
+
+    Sweeps instance families/sizes across EMR, Databricks and Dataproc
+    using the live-pricing module and reports a ranked cost table.
+    This extends the existing Pareto frontier across platforms.
+
+    Example:
+        $ spark-optima what-if --workload result.json --duration-hours 2.0
+        $ spark-optima what-if --platforms aws_emr,gcp_dataproc --region eu-west-1
+
+    """
+    from spark_optima.platforms.explorer import explore_what_if
+    from spark_optima.platforms.models import ResourceSpec
+
+    workload_resources: ResourceSpec | None = None
+    spark_version = "3.5.0"
+
+    if result_file:
+        try:
+            with open(Path(result_file)) as f:
+                import json
+                workload_data = json.load(f)
+            # Derive resource spec from result metadata if present
+            meta = workload_data.get("metadata", {})
+            resources_dict = meta.get("resources", {})
+            if resources_dict:
+                workload_resources = ResourceSpec.from_dict(resources_dict)
+            # Use platform-specific config to infer spark version
+            spark_version = meta.get("spark_version", "3.5.0")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]Warning: could not load workload file: {exc}[/yellow]")
+
+    if workload_resources is None:
+        workload_resources = ResourceSpec(cpu_cores=16, memory_gb=64)
+
+    platform_list = [p.strip() for p in platforms.split(",") if p.strip()]
+    region_val = region or None
+
+    with console.status("[bold green]Running cross-platform what-if sweep..."):
+        results = explore_what_if(
+            workload_resources=workload_resources,
+            duration_hours=duration_hours,
+            platforms=platform_list,
+            region=region_val,
+            spark_version=str(spark_version),
+            use_pareto=True,
+        )
+
+    if output_format == "json":
+        import json
+        typer.echo(json.dumps(results, indent=2, default=str))
+        return
+
+    console.print(
+        Panel.fit(
+            "[bold blue]What-If Explorer[/bold blue]\n[dim]Same SLA (fixed duration) — ranked by total cost[/dim]",
+            border_style="blue",
+        ),
+    )
+
+    table = Table(title=f"Cross-Platform Cost Ranking — {duration_hours}h duration")
+    table.add_column("Rank", style="cyan", justify="right", no_wrap=True)
+    table.add_column("Platform", style="green")
+    table.add_column("Instance", style="yellow")
+    table.add_column("Family", style="dim")
+    table.add_column("Workers", justify="right")
+    table.add_column("Cost (USD)", justify="right", style="bold green")
+    table.add_column("Pricing Source", style="magenta")
+    table.add_column("Live Rate", justify="right")
+
+    for idx, item in enumerate(results[:30], start=1):
+        live_rate_str = f"${item.get('instance_rate_live', 0) or 0:.4f}" if item.get("instance_rate_live") is not None else "-"
+        table.add_row(
+            str(idx),
+            item.get("platform_display", item.get("platform", "-")),
+            item.get("instance_size", item.get("instance_type", "-")),
+            item.get("instance_family", "-"),
+            str(item.get("cluster_config", {}).get("worker_count", "-")) if isinstance(item.get("cluster_config"), dict) else "-",
+            f"${item.get('total_cost', 0):.2f}",
+            item.get("pricing_source", "-"),
+            live_rate_str,
+        )
+    console.print(table)
+
+    if len(results) > 30:
+        console.print(f"[dim]... and {len(results) - 30} more configurations omitted[/dim]")
+
+    # Show cheapest per platform
+    best_per_platform: dict[str, dict[str, Any]] = {}
+    for item in results:
+        plat = item.get("platform", "unknown")
+        if plat not in best_per_platform or item.get("total_cost", float("inf")) < best_per_platform[plat].get("total_cost", float("inf")):
+            best_per_platform[plat] = item
+
+    if best_per_platform:
+        console.print("\n[bold]Cheapest per platform (same SLA):[/bold]")
+        best_table = Table(show_header=False)
+        best_table.add_column("Platform", style="cyan")
+        best_table.add_column("Instance", style="yellow")
+        best_table.add_column("Cost (USD)", justify="right")
+        for plat, item in sorted(best_per_platform.items(), key=lambda x: x[1].get("total_cost", float("inf"))):
+            best_table.add_row(
+                plat,
+                item.get("instance_size", "-"),
+                f"${item.get('total_cost', 0):.2f}",
+            )
+        console.print(best_table)
+
+
 def _display_history_entry(entry: Any) -> None:
     """Display the full details of a single history entry.
 
