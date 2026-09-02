@@ -2212,11 +2212,11 @@ def check(
     # Compare smells: new smell types in files, or new files with smells
     new_smell_files = set(smells) - set(baseline_smells)
     new_smell_types: dict[str, list[str]] = {}
-    for file_path, current_types in smells.items():
-        base_types = set(baseline_smells.get(file_path, []))
+    for smell_file, current_types in smells.items():
+        base_types = set(baseline_smells.get(smell_file, []))
         added = sorted(set(current_types) - base_types)
         if added:
-            new_smell_types[file_path] = added
+            new_smell_types[smell_file] = added
 
     # Compare config issues: new errors (same param + message not in baseline)
     baseline_issues_set = {(i.get("config_file"), i.get("param"), i.get("message")) for i in baseline_issues}
@@ -2262,14 +2262,14 @@ def check(
             smell_table.add_column("File", style="cyan", no_wrap=True)
             smell_table.add_column("Smell Types", style="yellow")
             smell_table.add_column("Status", style="green")
-            for file_path in sorted(smells):
-                current_types = smells[file_path]
+            for smell_file in sorted(smells):
+                current_types = smells[smell_file]
                 status = (
                     "[red]NEW[/red]"
-                    if file_path in new_smell_types or file_path in new_smell_files
+                    if smell_file in new_smell_types or smell_file in new_smell_files
                     else "[green]existing[/green]"
                 )
-                smell_table.add_row(file_path, ", ".join(current_types), status)
+                smell_table.add_row(smell_file, ", ".join(current_types), status)
             console.print(smell_table)
 
         if config_issues or new_config_issues:
