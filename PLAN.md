@@ -526,7 +526,7 @@ are real gaps, not nice-to-haves.
 
 - [x] Continuous re-tuning from production history: poll a Spark History Server (execution/history_server.py) on a schedule, detect workload drift vs the config's original profile, and open a "re-tune recommended" report when the surrogate model predicts >10% improvement — with a test using recorded event-log fixtures
 - [x] Dynamic allocation advisor: reconstruct the executor timeline from event logs and recommend spark.dynamicAllocation min/max/initial + shuffle tracking settings, showing idle-executor waste in the current config as evidence
-- [ ] Skew doctor: from event-log task-time distributions, identify skewed stages and map them back to the responsible join/groupBy via the existing SQL/DataFrame analyzers; emit AQE skew-join configs or a salting snippet per finding — this cross-references analysis/ and execution/, which no mainstream tool does
+- [x] Skew doctor: from event-log task-time distributions, identify skewed stages and map them back to the responsible join/groupBy via the existing SQL/DataFrame analyzers; emit AQE skew-join configs or a salting snippet per finding — this cross-references analysis/ and execution/, which no mainstream tool does
 - [ ] Structured Streaming tuning mode: streaming-specific objectives (end-to-end latency, throughput) fed by StreamingQueryProgress metrics; tune trigger interval, maxOffsetsPerTrigger and state-store configs; extend the streaming workload template
 
 ## Milestone 19: Cost Intelligence
@@ -553,3 +553,4 @@ are real gaps, not nice-to-haves.
 - [ ] Make `_generate_value` respect `config.random_seed` independently (currently only seeded inside `_generate_rdd`) so single-value calls are deterministic
 - [ ] Continuous retuner: train the online surrogate on real measured trials from the SQLite `OptimizationHistory` rather than synthetic samples, so predictions reflect actual production workload drift
 - [ ] Continuous retuner: wire the retuned config derivation through `HeuristicEngine.evaluate()` instead of the basic hint-based rules, for consistent optimization recommendations
+- [ ] Wire `SkewDoctor` into CLI `analyze-log` output so skew findings with AQE/salting recommendations are shown alongside tuning hints
