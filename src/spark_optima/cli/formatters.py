@@ -649,13 +649,16 @@ def display_results_table(result: OptimizationResult) -> None:
         for key in priority_keys:
             if key in result.configuration:
                 exp = explanations.get(key)
-                why_text = exp.why if hasattr(exp, "why") else exp.get("why", "") if isinstance(exp, dict) else ""
-                doc_url = (
-                    exp.doc_url if hasattr(exp, "doc_url") else exp.get("doc_url", "") if isinstance(exp, dict) else ""
-                )
-                source = (
-                    exp.source if hasattr(exp, "source") else exp.get("source", "") if isinstance(exp, dict) else ""
-                )
+                if exp is None:
+                    why_text, doc_url, source = "", "", ""
+                elif isinstance(exp, dict):
+                    why_text = exp.get("why", "")
+                    doc_url = exp.get("doc_url", "")
+                    source = exp.get("source", "")
+                else:
+                    why_text = exp.why
+                    doc_url = exp.doc_url
+                    source = exp.source
                 why_display = (why_text[:35] + "..." if len(str(why_text)) > 35 else why_text) or source
                 doc_display = doc_url[:25] + "..." if len(str(doc_url)) > 25 else doc_url
                 config_table.add_row(
@@ -667,13 +670,16 @@ def display_results_table(result: OptimizationResult) -> None:
         for key, value in result.configuration.items():
             if key not in priority_keys and shown < 15:
                 exp = explanations.get(key)
-                why_text = exp.why if hasattr(exp, "why") else exp.get("why", "") if isinstance(exp, dict) else ""
-                doc_url = (
-                    exp.doc_url if hasattr(exp, "doc_url") else exp.get("doc_url", "") if isinstance(exp, dict) else ""
-                )
-                source = (
-                    exp.source if hasattr(exp, "source") else exp.get("source", "") if isinstance(exp, dict) else ""
-                )
+                if exp is None:
+                    why_text, doc_url, source = "", "", ""
+                elif isinstance(exp, dict):
+                    why_text = exp.get("why", "")
+                    doc_url = exp.get("doc_url", "")
+                    source = exp.get("source", "")
+                else:
+                    why_text = exp.why
+                    doc_url = exp.doc_url
+                    source = exp.source
                 why_display = (why_text[:35] + "..." if len(str(why_text)) > 35 else why_text) or source
                 doc_display = doc_url[:25] + "..." if len(str(doc_url)) > 25 else doc_url
                 config_table.add_row(key, str(value), why_display, doc_display if doc_display else "-")
