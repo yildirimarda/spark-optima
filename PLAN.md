@@ -348,7 +348,7 @@ the core plugin/registry abstractions that everything else is built on.
 - [x] README command catalogue and environment-variable table
 - [x] CHANGELOG entries per release
 
-## Milestone 12: v1.1 — Code Analysis, EMR, History, Exports, Warm Start
+## Milestone 12: Code Analysis, EMR, History, Exports, Warm Start
 
 - [x] A1: cartesian/cross-join smell (HIGH)
 - [x] A2: `toPandas()` smell (HIGH)
@@ -386,7 +386,7 @@ the core plugin/registry abstractions that everything else is built on.
       --strict)
 - [x] I4: CHANGELOG entry
 
-## Milestone 13: v1.2 — Event Log, Async API, New Platforms, SQL, Pricing
+## Milestone 13: Event Log, Async API, New Platforms, SQL, Pricing
 
 - [x] F1: `core/execution/event_log.py` `EventLogParser` and
       `EventLogSummary`
@@ -414,7 +414,7 @@ the core plugin/registry abstractions that everything else is built on.
 - [x] I6: CLI help text platform list
 - [x] I7: quality gates + end-to-end smoke + CHANGELOG
 
-## Milestone 14: v1.3 — ML Predictor, Performance Model, Pareto, REST Docs
+## Milestone 14: ML Predictor, Performance Model, Pareto, REST Docs
 
 - [x] L1: shared deterministic feature extraction
 - [x] L2: online training in `SimulationEngine`, R²-gated blend of
@@ -432,7 +432,7 @@ the core plugin/registry abstractions that everything else is built on.
 - [x] P1: SQLite-backed `JobStore` via `SPARK_OPTIMA_JOB_STORE=sqlite`
 - [x] P2: store selection + PRODUCTION.md note
 
-## Milestone 15: v1.4 — Live Pricing, Redis, Validate/Import/Templates, History Server
+## Milestone 15: Live Pricing, Redis, Validate/Import/Templates, History Server
 
 - [x] Q1: `platforms/live_pricing.py` (Azure Retail Prices, AWS Pricing,
       GCP Cloud Billing)
@@ -456,7 +456,7 @@ the core plugin/registry abstractions that everything else is built on.
       doc updates
 - [x] I9: quality gates + smoke + CHANGELOG
 
-## Milestone 16: v1.5 — Scala, GCP Live Pricing, SSE, Config Unit Normalization
+## Milestone 16: Scala, GCP Live Pricing, SSE, Config Unit Normalization
 
 - [x] X1: `analysis/scala_parser.py` lexer-based Scala Spark parser
 - [x] X2: Scala smell coverage + new `groupbykey_usage` smell
@@ -478,7 +478,7 @@ the core plugin/registry abstractions that everything else is built on.
 - [x] I10: CLI `validate` range-check re-enable; review-finding fixes;
       quality gates + smoke + CHANGELOG
 
-## Milestone 17: v1.6 — Backlog
+## Milestone 17: Backlog
 
 These items were identified during v1.0–v1.5 and explicitly deferred. They
 are real gaps, not nice-to-haves.
@@ -520,11 +520,34 @@ are real gaps, not nice-to-haves.
       and add regression tests for each affected path
 - [x] Write a CI matrix proposal (ci-proposals/spark-42-matrix.yml) that adds a 
       PySpark 4.2 test leg alongside the existing Python versions, 
-      with a PR description explaining the git mv to apply it      
+      with a PR description explaining the git mv to apply it
+
+## Milestone 18: Continuous Optimization
+
+- [ ] Continuous re-tuning from production history: poll a Spark History Server (execution/history_server.py) on a schedule, detect workload drift vs the config's original profile, and open a "re-tune recommended" report when the surrogate model predicts >10% improvement — with a test using recorded event-log fixtures
+- [ ] Dynamic allocation advisor: reconstruct the executor timeline from event logs and recommend spark.dynamicAllocation min/max/initial + shuffle tracking settings, showing idle-executor waste in the current config as evidence
+- [ ] Skew doctor: from event-log task-time distributions, identify skewed stages and map them back to the responsible join/groupBy via the existing SQL/DataFrame analyzers; emit AQE skew-join configs or a salting snippet per finding — this cross-references analysis/ and execution/, which no mainstream tool does
+- [ ] Structured Streaming tuning mode: streaming-specific objectives (end-to-end latency, throughput) fed by StreamingQueryProgress metrics; tune trigger interval, maxOffsetsPerTrigger and state-store configs; extend the streaming workload template
+
+## Milestone 19: Cost Intelligence
+
+- [ ] Cross-platform what-if explorer: given a tuned workload, sweep instance families/sizes across EMR, Databricks and Dataproc using the live-pricing module and report "same SLA, cheapest platform" as a ranked table — extends the existing Pareto frontier across platforms
+- [ ] Spot/preemptible strategy advisor: recommend spot-vs-on-demand executor mix per platform with expected interruption cost modeled from the workload's stage retry tolerance
+
+## Milestone 20: Developer Workflow
+
+- [ ] CI guardrail mode: `spark-optima check` runs the smell detector + config validator against a repo and exits non-zero on new smells or config drift from a committed baseline; ship it as a published GitHub Action
+- [ ] Recommendation explanations: every recommended parameter carries a "why" — the heuristic rule or Bayesian trial evidence behind it, with a link to the relevant Spark doc; rendered in CLI, API response and report
+- [ ] Notebook integration: a %%spark_optima cell magic that profiles the live SparkSession in Jupyter/Databricks and prints inline recommendations
+- [ ] Spark Connect support: run trials against a remote Spark Connect endpoint (the Spark 4.x default) instead of a local session, so tuning works against real clusters without shipping code
+
+## Milestone 21: Trust & Proof
+
+- [ ] Reproducible benchmark suite: use data/generators.py to synthesize TPC-DS-like workloads, run before/after configs, and publish methodology + results to docs/BENCHMARKS.md — turns the "eliminates guesswork" claim into measured numbers
+- [ ] Helm chart + K8s Job runner for the API: run optimization jobs as Kubernetes Jobs with the existing Redis job store, documented for platform teams      
 
 ## Discovered
 
 - [ ] Fix `metrics_collector.py` to gracefully handle Spark 4.x removal of `sc.getExecutorMemoryStatus()` (currently relies on `hasattr` check, but should explicitly guard against AttributeError for 4.x compatibility)
 - [ ] Update `data/samplers.py` reservoir sampling `.drop()` to filter missing columns before drop for Spark 4.2 `KeyError` behavior change
 - [ ] Make `_generate_value` respect `config.random_seed` independently (currently only seeded inside `_generate_rdd`) so single-value calls are deterministic
-
