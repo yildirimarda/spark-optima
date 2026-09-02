@@ -104,6 +104,10 @@ check_untyped_defs = true
 module = [
     "boto3.*",
     "botocore.*",
+    "IPython.*",
+    "IPython.core.*",
+    "IPython.display.*",
+    "IPython.terminal.*",
     "sklearn.*",
     "joblib.*",
 ]
