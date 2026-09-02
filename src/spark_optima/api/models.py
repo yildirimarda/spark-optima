@@ -245,6 +245,9 @@ class OptimizationResponse(BaseModel):
     estimated_time_minutes: float = Field(..., ge=0.0, description="Estimated time")
     confidence_score: float = Field(..., ge=0.0, le=1.0, description="Confidence")
     code_suggestions: list[CodeSuggestionResponse] = Field(default_factory=list)
+    parameter_explanations: dict[str, Any] = Field(
+        default_factory=dict, description="Per-parameter rationale, doc links, and evidence"
+    )
     platform_specific: PlatformSpecificConfig = Field(...)
     metadata: OptimizationMetadataResponse = Field(...)
 

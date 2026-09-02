@@ -424,12 +424,19 @@ class Optimizer:
                     for point in self._bayesian_result.pareto_frontier[:MAX_PARETO_POINTS]
                 ]
 
+        # Build parameter explanations
+        parameter_explanations = self._build_parameter_explanations(
+            final_config=final_config,
+            heuristic_config=heuristic_config,
+        )
+
         # Build result
         return OptimizationResult(
             configuration=final_config,
             estimated_time_minutes=estimated_time,
             confidence_score=confidence,
             code_suggestions=code_suggestions or [],
+            parameter_explanations=parameter_explanations,
             platform_specific=platform_specific,
             metadata=metadata,
         )
@@ -546,6 +553,106 @@ class Optimizer:
         platform_config["spark_config"] = {k: v for k, v in config.items() if k in relevant_keys}
 
         return platform_config
+
+    def _build_parameter_explanations(
+        self,
+        final_config: dict[str, Any],
+        heuristic_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build explanation objects for each recommended parameter.
+
+        For heuristic-derived parameters, the explanation includes the
+        heuristic rule description and a link to the Spark documentation.
+        For Bayesian-tuned parameters, the explanation references the
+        best trial evidence and includes the doc URL.
+
+        Args:
+            final_config: Final optimized configuration.
+            heuristic_config: Initial heuristic configuration.
+
+        Returns:
+            Dictionary mapping parameter names to ParameterExplanation objects.
+
+        """
+        from spark_optima.core.result import ParameterExplanation
+
+        explanations: dict[str, Any] = {}
+        registry = self.heuristic_engine.rule_registry
+
+        # Load config database for doc URLs
+        config_set = self.config_set
+
+        for param, value in final_config.items():
+            rule = registry.get_rule(param) if registry else None
+            doc_url = ""
+            why = ""
+            source = "bayesian"
+
+            # Try to get doc URL from config database
+            if config_set is not None:
+                db_param = config_set.parameters.get(param)
+                if db_param is not None:
+                    doc_url = getattr(db_param, "doc_url", "") or ""
+                    # If the parameter description exists, include it as part of why
+                    if db_param.description:
+                        why = db_param.description
+
+            # Heuristic rule explanation takes precedence
+            if rule is not None:
+                source = "heuristic"
+                why = rule.description or why
+                # If no doc URL from DB, try to construct a generic Spark docs link
+                if not doc_url:
+                    doc_url = f"https://spark.apache.org/docs/{self.spark_version}/configuration.html"
+            else:
+                # For parameters that match the heuristic baseline exactly,
+                # label them as heuristic-derived
+                if param in heuristic_config and heuristic_config.get(param) == value:
+                    source = "heuristic"
+                    why = why or f"Set by heuristic baseline ({heuristic_config.get(param)})"
+                else:
+                    # Bayesian-tuned parameter evidence
+                    source = "bayesian"
+                    best_trial = -1
+                    best_value_str = ""
+                    if self._bayesian_result is not None:
+                        best_trial = self._bayesian_result.best_trial_number
+                        # Try to find the trial with this parameter closest to final value
+                        for trial in self._bayesian_result.all_trials:
+                            trial_config = (
+                                getattr(trial, "configuration", {}) or trial.config
+                                if hasattr(trial, "config")
+                                else trial.get("configuration", {})
+                            )
+                            # Some trial objects have `.configuration` directly
+                            if isinstance(trial_config, dict) and param in trial_config:
+                                best_value_str = str(trial_config[param])
+
+                    trial_evidence = (
+                        f"Tuned by Bayesian optimization (trial #{best_trial})"
+                        if best_trial >= 0
+                        else "Tuned by Bayesian optimization"
+                    )
+                    if best_value_str:
+                        trial_evidence += f" — trial value was {best_value_str}"
+                    why = trial_evidence if not why else f"{why}; {trial_evidence}"
+
+                    if not doc_url and config_set is not None:
+                        db_param = config_set.parameters.get(param)
+                        if db_param is not None:
+                            doc_url = getattr(db_param, "doc_url", "") or ""
+                    if not doc_url:
+                        doc_url = f"https://spark.apache.org/docs/{self.spark_version}/configuration.html"
+
+            explanations[param] = ParameterExplanation(
+                param_name=param,
+                value=value,
+                why=why or "Optimized by Spark Optima",
+                doc_url=doc_url,
+                source=source,
+            )
+
+        return explanations
 
     def get_heuristic_config(self) -> dict[str, Any] | None:
         """Get the heuristic baseline configuration.

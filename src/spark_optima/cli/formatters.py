@@ -624,12 +624,14 @@ def display_results_table(result: OptimizationResult) -> None:
     console.print(metrics)
     console.print()
 
-    # Configuration preview
+    # Configuration preview with explanations
     if result.configuration:
         console.print("[bold]Key Configuration Settings:[/bold]")
         config_table = Table(show_header=False)
         config_table.add_column("Key", style="cyan", no_wrap=True)
         config_table.add_column("Value", style="yellow")
+        config_table.add_column("Why / Source", style="dim", max_width=40)
+        config_table.add_column("Doc", style="blue", max_width=30)
 
         # Show important configs first
         priority_keys = [
@@ -642,16 +644,39 @@ def display_results_table(result: OptimizationResult) -> None:
             "spark.dynamicAllocation.enabled",
         ]
 
+        explanations = result.parameter_explanations or {}
         shown = 0
         for key in priority_keys:
             if key in result.configuration:
-                config_table.add_row(key, str(result.configuration[key]))
+                exp = explanations.get(key)
+                why_text = exp.why if hasattr(exp, "why") else exp.get("why", "") if isinstance(exp, dict) else ""
+                doc_url = (
+                    exp.doc_url if hasattr(exp, "doc_url") else exp.get("doc_url", "") if isinstance(exp, dict) else ""
+                )
+                source = (
+                    exp.source if hasattr(exp, "source") else exp.get("source", "") if isinstance(exp, dict) else ""
+                )
+                why_display = (why_text[:35] + "..." if len(str(why_text)) > 35 else why_text) or source
+                doc_display = doc_url[:25] + "..." if len(str(doc_url)) > 25 else doc_url
+                config_table.add_row(
+                    key, str(result.configuration[key]), why_display, doc_display if doc_display else "-"
+                )
                 shown += 1
 
         # Fill with other configs
         for key, value in result.configuration.items():
             if key not in priority_keys and shown < 15:
-                config_table.add_row(key, str(value))
+                exp = explanations.get(key)
+                why_text = exp.why if hasattr(exp, "why") else exp.get("why", "") if isinstance(exp, dict) else ""
+                doc_url = (
+                    exp.doc_url if hasattr(exp, "doc_url") else exp.get("doc_url", "") if isinstance(exp, dict) else ""
+                )
+                source = (
+                    exp.source if hasattr(exp, "source") else exp.get("source", "") if isinstance(exp, dict) else ""
+                )
+                why_display = (why_text[:35] + "..." if len(str(why_text)) > 35 else why_text) or source
+                doc_display = doc_url[:25] + "..." if len(str(doc_url)) > 25 else doc_url
+                config_table.add_row(key, str(value), why_display, doc_display if doc_display else "-")
                 shown += 1
 
         if len(result.configuration) > 15:

@@ -12,6 +12,35 @@ from typing import Any
 
 
 @dataclass
+class ParameterExplanation:
+    """Explanation for a recommended Spark configuration parameter.
+
+    Attributes:
+        param_name: Spark parameter name.
+        value: Recommended parameter value.
+        why: Rationale — heuristic rule description or Bayesian trial evidence.
+        doc_url: URL to the official Spark documentation for this parameter.
+        source: Where the recommendation came from ("heuristic", "database", "bayesian").
+
+    """
+
+    param_name: str
+    value: Any = None
+    why: str = ""
+    doc_url: str = ""
+    source: str = "bayesian"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "param_name": self.param_name,
+            "value": self.value,
+            "why": self.why,
+            "doc_url": self.doc_url,
+            "source": self.source,
+        }
+
+
+@dataclass
 class CodeSuggestion:
     """Represents a code improvement suggestion.
 
@@ -66,6 +95,7 @@ class OptimizationResult:
     estimated_time_minutes: float = 0.0
     confidence_score: float = 0.0
     code_suggestions: list[CodeSuggestion] = field(default_factory=list)
+    parameter_explanations: dict[str, ParameterExplanation] = field(default_factory=dict)
     platform_specific: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -85,6 +115,7 @@ class OptimizationResult:
         """
         return {
             "configuration": self.configuration,
+            "parameter_explanations": {k: v.to_dict() for k, v in self.parameter_explanations.items()},
             "estimated_time_minutes": self.estimated_time_minutes,
             "confidence_score": self.confidence_score,
             "code_suggestions": [

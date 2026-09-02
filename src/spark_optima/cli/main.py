@@ -1684,23 +1684,53 @@ def explain(
     )
 
     table = Table(title="Parameter Rationale")
-    table.add_column("Parameter", style="cyan", no_wrap=True)
-    table.add_column("Value", style="green")
-    table.add_column("Source", style="dim")
-    table.add_column("Rationale")
+    table.add_column("Parameter", style="cyan", no_wrap=True, max_width=28)
+    table.add_column("Value", style="green", max_width=10)
+    table.add_column("Source", style="dim", max_width=10)
+    table.add_column("Why", style="white", max_width=30)
+    table.add_column("Doc Link", style="blue", max_width=20)
+
+    explanations = result_data.get("parameter_explanations", {})
     for param, value in sorted(configuration.items()):
-        rule = registry.get_rule(param)
-        db_param = config_set.parameters.get(param) if config_set else None
-        if rule is not None and rule.description:
-            source = "heuristic"
-            rationale = rule.description
-        elif db_param is not None and db_param.description:
-            source = "database"
-            rationale = db_param.description
+        if param in explanations:
+            exp = explanations[param]
+            # Could be dict from JSON or ParameterExplanation object
+            if isinstance(exp, dict):
+                why_text = exp.get("why", "")
+                doc_url = exp.get("doc_url", "")
+                source = exp.get("source", "bayesian")
+            else:
+                why_text = getattr(exp, "why", "")
+                doc_url = getattr(exp, "doc_url", "")
+                source = getattr(exp, "source", "bayesian")
         else:
-            source = "bayesian"
-            rationale = "Tuned by Bayesian optimization"
-        table.add_row(param, str(value), source, rationale)
+            # Fallback to old logic for backward compatibility
+            rule = registry.get_rule(param)
+            db_param = config_set.parameters.get(param) if config_set else None
+            if rule is not None and rule.description:
+                source = "heuristic"
+                why_text = rule.description
+                doc_url = (
+                    getattr(db_param, "doc_url", "")
+                    or f"https://spark.apache.org/docs/{spark_version}/configuration.html"
+                )
+            elif db_param is not None and db_param.description:
+                source = "database"
+                why_text = db_param.description
+                doc_url = (
+                    getattr(db_param, "doc_url", "")
+                    or f"https://spark.apache.org/docs/{spark_version}/configuration.html"
+                )
+            else:
+                source = "bayesian"
+                why_text = "Tuned by Bayesian optimization"
+                doc_url = f"https://spark.apache.org/docs/{spark_version}/configuration.html"
+
+        doc_display = (
+            "spark.apache.org" if doc_url and "spark.apache.org" in doc_url else (doc_url[-18:] if doc_url else "-")
+        )
+        rationale_text = why_text if why_text else "-"
+        table.add_row(str(param), str(value), source, rationale_text, doc_display)
     console.print(table)
 
 
