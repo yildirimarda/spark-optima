@@ -43,7 +43,7 @@ _AQE_SKEW_CONFIG_KEYS = [
 ]
 
 # Salting snippet template for Python/PySpark.
-_SALTING_SNIPPET_TEMPLATE = '''# Manual salting for skewed column '{column}'
+_SALTING_SNIPPET_TEMPLATE = """# Manual salting for skewed column '{column}'
 from pyspark.sql.functions import rand, lit, explode, array
 
 salt_count = 10
@@ -57,7 +57,7 @@ df_salted = df.withColumn(
 # df_small_salted = small_df.withColumn("salt", explode(array([lit(i) for i in range(salt_count)])))
 # df_large_salted = large_df.withColumn("salt", (rand() * salt_count).cast("int"))
 # result = df_large_salted.join(df_small_salted, ["{column}", "salt"])
-'''
+"""
 
 
 @dataclass
@@ -150,16 +150,10 @@ class SkewDoctor:
             if stage.skew_ratio < self.skew_threshold:
                 continue
 
-            severity = (
-                SeverityLevel.CRITICAL
-                if stage.skew_ratio >= SKEW_SEVERE_THRESHOLD
-                else SeverityLevel.HIGH
-            )
+            severity = SeverityLevel.CRITICAL if stage.skew_ratio >= SKEW_SEVERE_THRESHOLD else SeverityLevel.HIGH
 
             mapped_op = self._map_operation(stage, analysis_result)
-            rec_type, recommendation = self._build_recommendation(
-                stage, mapped_op, severity
-            )
+            rec_type, recommendation = self._build_recommendation(stage, mapped_op, severity)
             explanation = self._build_explanation(stage, mapped_op, severity)
 
             findings.append(
@@ -229,7 +223,11 @@ class SkewDoctor:
             # an operation of the matching type, prefer it.
             if op_name == "join" and "join" in name_lower and op.operation_type == SparkOperationType.JOIN:
                 return op
-            if op_name in ("groupby", "groupbykey") and ("group" in name_lower or "groupby" in name_lower) and op.operation_type == SparkOperationType.AGGREGATION:
+            if (
+                op_name in ("groupby", "groupbykey")
+                and ("group" in name_lower or "groupby" in name_lower)
+                and op.operation_type == SparkOperationType.AGGREGATION
+            ):
                 return op
 
         # Fallback: pick the first shuffle-sensitive operation (JOIN or AGGREGATION)
@@ -264,11 +262,7 @@ class SkewDoctor:
 
         """
         lines: list[str] = []
-        op_ref = (
-            f" ({mapped_op.method_name} on '{mapped_op.dataframe_var}')"
-            if mapped_op
-            else ""
-        )
+        op_ref = f" ({mapped_op.method_name} on '{mapped_op.dataframe_var}')" if mapped_op else ""
 
         # AQE configuration is always recommended for severe/moderate skew.
         lines.append(
@@ -345,7 +339,7 @@ class SkewDoctor:
                         # the first quoted token.
                         if clean.startswith("[") and clean.endswith("]"):
                             inner = clean[1:-1]
-                            tokens = [t.strip().strip('"\'') for t in inner.split(",")]
+                            tokens = [t.strip().strip("\"'") for t in inner.split(",")]
                             if tokens:
                                 return tokens[0]
                 return indicator.replace("_", "_")  # best-effort fallback
@@ -359,7 +353,7 @@ class SkewDoctor:
             # Handle list-form keys like ["user_id", ...].
             if arg_str.startswith("[") and arg_str.endswith("]"):
                 inner = arg_str[1:-1]
-                tokens = [t.strip().strip('"\'') for t in inner.split(",")]
+                tokens = [t.strip().strip("\"'") for t in inner.split(",")]
                 for token in tokens:
                     if token and not token.startswith("["):
                         return token

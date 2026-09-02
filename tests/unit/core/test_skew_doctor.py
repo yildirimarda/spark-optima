@@ -97,9 +97,7 @@ class TestSkewDoctorSkewDetection:
 
     def test_moderate_skew_is_high_severity(self) -> None:
         doctor = SkewDoctor(skew_threshold=1.5)
-        summary = EventLogSummary(
-            stages=[StageSummary(stage_id=0, name="groupBy", skew_ratio=2.0)]
-        )
+        summary = EventLogSummary(stages=[StageSummary(stage_id=0, name="groupBy", skew_ratio=2.0)])
         findings = doctor.diagnose(summary)
         assert findings[0].severity == SeverityLevel.HIGH
 
@@ -148,18 +146,14 @@ class TestSkewDoctorMappingWithAnalysis:
             ]
         )
         doctor = SkewDoctor(skew_threshold=1.5)
-        summary = EventLogSummary(
-            stages=[StageSummary(stage_id=3, name="groupBy at job.py:20", skew_ratio=3.5)]
-        )
+        summary = EventLogSummary(stages=[StageSummary(stage_id=3, name="groupBy at job.py:20", skew_ratio=3.5)])
         findings = doctor.diagnose(summary, analysis)
         assert findings[0].mapped_operation is not None
         assert findings[0].mapped_operation.method_name == "groupBy"
 
     def test_no_analysis_result_maps_none(self) -> None:
         doctor = SkewDoctor(skew_threshold=1.5)
-        summary = EventLogSummary(
-            stages=[StageSummary(stage_id=0, name="unknown", skew_ratio=6.0)]
-        )
+        summary = EventLogSummary(stages=[StageSummary(stage_id=0, name="unknown", skew_ratio=6.0)])
         findings = doctor.diagnose(summary, analysis_result=None)
         assert findings[0].mapped_operation is None
         assert "Salting snippet" in findings[0].recommendation
@@ -178,9 +172,7 @@ class TestSkewDoctorMappingWithAnalysis:
             ]
         )
         doctor = SkewDoctor(skew_threshold=1.5)
-        summary = EventLogSummary(
-            stages=[StageSummary(stage_id=1, name="shuffle sort", skew_ratio=2.0)]
-        )
+        summary = EventLogSummary(stages=[StageSummary(stage_id=1, name="shuffle sort", skew_ratio=2.0)])
         findings = doctor.diagnose(summary, analysis)
         assert findings[0].mapped_operation is not None
 
@@ -217,9 +209,7 @@ class TestDiagnoseConvenience:
     """Module-level convenience function."""
 
     def test_convenience_function_returns_list(self) -> None:
-        summary = EventLogSummary(
-            stages=[StageSummary(stage_id=0, name="bad", skew_ratio=7.0)]
-        )
+        summary = EventLogSummary(stages=[StageSummary(stage_id=0, name="bad", skew_ratio=7.0)])
         result = diagnose(summary)
         assert isinstance(result, list)
         assert len(result) == 1
@@ -231,9 +221,7 @@ class TestRecommendationContent:
 
     def test_recommendation_contains_aqe_config(self) -> None:
         doctor = SkewDoctor(skew_threshold=1.5)
-        summary = EventLogSummary(
-            stages=[StageSummary(stage_id=1, name="bad", skew_ratio=3.0)]
-        )
+        summary = EventLogSummary(stages=[StageSummary(stage_id=1, name="bad", skew_ratio=3.0)])
         findings = doctor.diagnose(summary)
         assert "spark.sql.adaptive.skewJoin.enabled" in findings[0].recommendation
         assert "true" in findings[0].recommendation
@@ -251,17 +239,13 @@ class TestRecommendationContent:
                 )
             ]
         )
-        summary = EventLogSummary(
-            stages=[StageSummary(stage_id=1, name="join at job.py:5", skew_ratio=4.0)]
-        )
+        summary = EventLogSummary(stages=[StageSummary(stage_id=1, name="join at job.py:5", skew_ratio=4.0)])
         findings = doctor.diagnose(summary, analysis)
         assert "Salting snippet" in findings[0].recommendation
         assert "user_id" in findings[0].recommendation
 
     def test_recommendation_type_is_both(self) -> None:
         doctor = SkewDoctor(skew_threshold=1.5)
-        summary = EventLogSummary(
-            stages=[StageSummary(stage_id=1, name="bad", skew_ratio=3.0)]
-        )
+        summary = EventLogSummary(stages=[StageSummary(stage_id=1, name="bad", skew_ratio=3.0)])
         findings = doctor.diagnose(summary)
         assert findings[0].recommendation_type == "both"
