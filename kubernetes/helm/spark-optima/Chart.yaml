@@ -22,9 +22,9 @@ keywords:
   - databricks
   - aws-glue
 
-home: https://github.com/yourusername/spark-optima
+home: https://github.com/yildirimarda/spark-optima
 sources:
-  - https://github.com/yourusername/spark-optima
+  - https://github.com/yildirimarda/spark-optima
 
 maintainers:
   - name: Spark Optima Contributors

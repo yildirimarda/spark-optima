@@ -246,5 +246,5 @@ The SQLite store does **not** make the async API safe across replicas — each p
 ## 📞 Support
 
 For issues and questions:
-- GitHub Issues: https://github.com/yourusername/spark-optima/issues
+- GitHub Issues: https://github.com/yildirimarda/spark-optima/issues
 - Documentation: https://your-project.readthedocs.io

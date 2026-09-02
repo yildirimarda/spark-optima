@@ -130,7 +130,7 @@
       "Bash(/opt/homebrew/bin/poetry run *)",
       "Bash(xargs -0 sed -i '' 's/Spark Optima Team/Spark Optima Contributors/g')",
       "Bash(xargs -0 sed -i '' 's/team@sparkoptima\\\\.dev/your-email@example.com/g')",
-      "Bash(xargs -0 sed -i '' 's|https://github.com/spark-optima/spark-optima|https://github.com/yourusername/spark-optima|g')",
+      "Bash(xargs -0 sed -i '' 's|https://github.com/spark-optima/spark-optima|https://github.com/yildirimarda/spark-optima|g')",
       "Bash(xargs -0 sed -i '' 's|https://spark-optima.readthedocs.io|https://your-project.readthedocs.io|g')",
       "Bash(xargs -0 sed -i '' 's|https://sparkoptima.dev|https://your-domain.com|g')",
       "Bash(/opt/homebrew/bin/poetry export *)",
