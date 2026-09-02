@@ -29,7 +29,7 @@ IMPROVEMENT_THRESHOLD = 0.10  # 10%
 
 @dataclass
 class RetuneReport:
-    """"Re-tune recommended" report produced from production history."""
+    """ "Re-tune recommended" report produced from production history."""
 
     recommended: bool = False
     improvement_percent: float = 0.0
@@ -108,7 +108,9 @@ class ContinuousRetuner:
         original_size = original_profile.get("size_gb", hints.get("data_size_gb", 0.0))
         current_size = hints.get("data_size_gb", 0.0)
         # Drift when data size changed >20% or GC/shuffle patterns changed
-        gc_shift = abs(hints.get("gc_time_fraction", 0.0) - (original_profile.get("gc_time_fraction", 0.0))) > 0.05
+        gc_shift = (
+            abs(float(hints.get("gc_time_fraction", 0.0)) - float(original_profile.get("gc_time_fraction", 0.0))) > 0.05
+        )
         size_ratio = 0.0
         if original_size > 0 and current_size > 0:
             size_ratio = abs(current_size - original_size) / original_size
