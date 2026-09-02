@@ -531,7 +531,7 @@ are real gaps, not nice-to-haves.
 
 ## Milestone 19: Cost Intelligence
 
-- [ ] Cross-platform what-if explorer: given a tuned workload, sweep instance families/sizes across EMR, Databricks and Dataproc using the live-pricing module and report "same SLA, cheapest platform" as a ranked table — extends the existing Pareto frontier across platforms
+- [x] Cross-platform what-if explorer: given a tuned workload, sweep instance families/sizes across EMR, Databricks and Dataproc using the live-pricing module and report "same SLA, cheapest platform" as a ranked table — extends the existing Pareto frontier across platforms
 - [ ] Spot/preemptible strategy advisor: recommend spot-vs-on-demand executor mix per platform with expected interruption cost modeled from the workload's stage retry tolerance
 
 ## Milestone 20: Developer Workflow
