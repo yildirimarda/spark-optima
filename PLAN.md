@@ -538,7 +538,7 @@ are real gaps, not nice-to-haves.
 
 - [x] CI guardrail mode: `spark-optima check` runs the smell detector + config validator against a repo and exits non-zero on new smells or config drift from a committed baseline; ship it as a published GitHub Action
 - [x] Recommendation explanations: every recommended parameter carries a "why" — the heuristic rule or Bayesian trial evidence behind it, with a link to the relevant Spark doc; rendered in CLI, API response and report
-- [ ] Notebook integration: a %%spark_optima cell magic that profiles the live SparkSession in Jupyter/Databricks and prints inline recommendations
+- [x] Notebook integration: a %%spark_optima cell magic that profiles the live SparkSession in Jupyter/Databricks and prints inline recommendations
 - [ ] Spark Connect support: run trials against a remote Spark Connect endpoint (the Spark 4.x default) instead of a local session, so tuning works against real clusters without shipping code
 
 ## Milestone 21: Trust & Proof
