@@ -31,6 +31,8 @@ class OptimizationObjective(str, Enum):
     MINIMIZE_COST = "minimize_cost"
     MAXIMIZE_SUCCESS = "maximize_success"
     MINIMIZE_MEMORY = "minimize_memory"
+    MINIMIZE_STREAMING_LATENCY = "minimize_streaming_latency"
+    MAXIMIZE_THROUGHPUT = "maximize_throughput"
 
 
 @dataclass
@@ -55,6 +57,10 @@ class TrialMetrics:
     shuffle_read_gb: float = 0.0
     shuffle_write_gb: float = 0.0
     cost_estimate_usd: float = 0.0
+    streaming_latency_ms: float = 0.0
+    streaming_throughput_rows_per_second: float = 0.0
+    streaming_batch_duration_ms: float = 0.0
+    streaming_input_rows_per_second: float = 0.0
     success: bool = True
     error_message: str = ""
     warnings: list[str] = field(default_factory=list)
@@ -67,6 +73,10 @@ class TrialMetrics:
         shuffle_read_gb: float = 0.0,
         shuffle_write_gb: float = 0.0,
         cost_estimate_usd: float = 0.0,
+        streaming_latency_ms: float = 0.0,
+        streaming_throughput_rows_per_second: float = 0.0,
+        streaming_batch_duration_ms: float = 0.0,
+        streaming_input_rows_per_second: float = 0.0,
         success: bool = True,
         error_message: str = "",
         warnings: list[str] | None = None,
@@ -83,6 +93,10 @@ class TrialMetrics:
         self.shuffle_read_gb = shuffle_read_gb
         self.shuffle_write_gb = shuffle_write_gb
         self.cost_estimate_usd = cost_estimate_usd
+        self.streaming_latency_ms = streaming_latency_ms
+        self.streaming_throughput_rows_per_second = streaming_throughput_rows_per_second
+        self.streaming_batch_duration_ms = streaming_batch_duration_ms
+        self.streaming_input_rows_per_second = streaming_input_rows_per_second
         self.success = success
         self.error_message = error_message
         self.warnings = warnings if warnings is not None else []
@@ -114,6 +128,10 @@ class TrialMetrics:
             "shuffle_read_gb": self.shuffle_read_gb,
             "shuffle_write_gb": self.shuffle_write_gb,
             "cost_estimate_usd": self.cost_estimate_usd,
+            "streaming_latency_ms": self.streaming_latency_ms,
+            "streaming_throughput_rows_per_second": self.streaming_throughput_rows_per_second,
+            "streaming_batch_duration_ms": self.streaming_batch_duration_ms,
+            "streaming_input_rows_per_second": self.streaming_input_rows_per_second,
             "success": self.success,
             "error_message": self.error_message,
         }
@@ -128,6 +146,10 @@ class TrialMetrics:
             shuffle_read_gb=data.get("shuffle_read_gb", 0.0),
             shuffle_write_gb=data.get("shuffle_write_gb", 0.0),
             cost_estimate_usd=data.get("cost_estimate_usd", 0.0),
+            streaming_latency_ms=data.get("streaming_latency_ms", 0.0),
+            streaming_throughput_rows_per_second=data.get("streaming_throughput_rows_per_second", 0.0),
+            streaming_batch_duration_ms=data.get("streaming_batch_duration_ms", 0.0),
+            streaming_input_rows_per_second=data.get("streaming_input_rows_per_second", 0.0),
             success=data.get("success", True),
             error_message=data.get("error_message", ""),
         )

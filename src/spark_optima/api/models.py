@@ -143,7 +143,12 @@ class OptimizationRequest(BaseModel):
     @classmethod
     def validate_objectives(cls, v: list[str]) -> list[str]:
         """Validate optimization objectives."""
-        valid_objectives = {"minimize_time", "minimize_cost", "maximize_throughput"}
+        valid_objectives = {
+            "minimize_time",
+            "minimize_cost",
+            "maximize_throughput",
+            "minimize_streaming_latency",
+        }
         for obj in v:
             if obj not in valid_objectives:
                 raise ValueError(f"Invalid objective: {obj}. Must be one of: {valid_objectives}")

@@ -52,6 +52,10 @@ class SearchSpaceBuilder:
         "spark.sql.orc.compression.codec": ["zstd", "snappy", "zlib", "none"],
         "spark.shuffle.mapStatus.compression.codec": ["lz4", "zstd"],
         "spark.scheduler.mode": ["FIFO", "FAIR", "DRR"],
+        "spark.sql.streaming.stateStore.providerClass": [
+            "org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider",
+            "org.apache.spark.sql.execution.streaming.state.HashMapStateStoreProvider",
+        ],
     }
 
     # Boolean parameters (will be converted to categorical True/False)
@@ -66,6 +70,7 @@ class SearchSpaceBuilder:
         "spark.dynamicAllocation.enabled",
         "spark.kryo.registrationRequired",
         "spark.shuffle.service.enabled",
+        "spark.sql.streaming.stateStore.stateSchemaCheck",
     ]
 
     # Memory parameters with specific constraints
@@ -86,6 +91,7 @@ class SearchSpaceBuilder:
         "spark.default.parallelism",
         "spark.sql.shuffle.partitions",
         "spark.shuffle.partitions",
+        "spark.sql.streaming.kafka.maxOffsetsPerTrigger",
     ]
 
     # Time duration parameters
@@ -96,6 +102,8 @@ class SearchSpaceBuilder:
         "spark.dynamicAllocation.executorIdleTimeout",
         "spark.dynamicAllocation.cachedExecutorIdleTimeout",
         "spark.dynamicAllocation.schedulerBacklogTimeout",
+        "spark.sql.streaming.pollingDelay",
+        "spark.sql.streaming.stateStore.maintenanceInterval",
     ]
 
     # Fixed parameters that shouldn't be optimized

@@ -223,6 +223,57 @@ class MaximizeSuccessObjective(ObjectiveFunction):
         return max(0.0, min(1.0, score))
 
 
+class MinimizeStreamingLatencyObjective(ObjectiveFunction):
+    """Objective to minimize end-to-end streaming latency.
+
+    This objective uses StreamingQueryProgress metrics (batch duration and
+    latency) to prioritize configurations that reduce per-batch processing time,
+    useful for latency-sensitive streaming workloads.
+
+    """
+
+    def __init__(self, penalty_for_failure: float = 1e6) -> None:
+        super().__init__(
+            name=OptimizationObjective.MINIMIZE_STREAMING_LATENCY.value,
+            direction="minimize",
+        )
+        self.penalty_for_failure = penalty_for_failure
+
+    def compute(self, metrics: TrialMetrics) -> float:
+        if not metrics.success:
+            return self.penalty_for_failure
+        # Base value is streaming latency in milliseconds (converted to seconds for scale)
+        value = metrics.streaming_latency_ms / 1000.0
+        # Add throughput penalty: lower throughput increases latency cost
+        throughput_penalty = max(0.0, 1000.0 - metrics.streaming_throughput_rows_per_second) * 0.001
+        return value + throughput_penalty
+
+
+class MaximizeThroughputObjective(ObjectiveFunction):
+    """Objective to maximize streaming throughput.
+
+    This objective prioritizes configurations that process the most rows per
+    second, useful for high-volume streaming ingestion scenarios.
+
+    """
+
+    def __init__(self, penalty_for_failure: float = 1e6) -> None:
+        super().__init__(
+            name=OptimizationObjective.MAXIMIZE_THROUGHPUT.value,
+            direction="maximize",
+        )
+        self.penalty_for_failure = penalty_for_failure
+
+    def compute(self, metrics: TrialMetrics) -> float:
+        if not metrics.success:
+            return 0.0
+        # Maximize rows processed per second
+        value = metrics.streaming_throughput_rows_per_second
+        # Small bonus for low latency (encourages balanced configs)
+        latency_bonus = max(0.0, 500.0 - metrics.streaming_latency_ms) * 0.1
+        return value + latency_bonus
+
+
 class MinimizeMemoryObjective(ObjectiveFunction):
     """Objective to minimize memory usage.
 
@@ -389,6 +440,8 @@ class ObjectiveFunctionFactory:
         OptimizationObjective.MINIMIZE_COST.value: MinimizeCostObjective,
         OptimizationObjective.MAXIMIZE_SUCCESS.value: MaximizeSuccessObjective,
         OptimizationObjective.MINIMIZE_MEMORY.value: MinimizeMemoryObjective,
+        OptimizationObjective.MINIMIZE_STREAMING_LATENCY.value: MinimizeStreamingLatencyObjective,
+        OptimizationObjective.MAXIMIZE_THROUGHPUT.value: MaximizeThroughputObjective,
     }
 
     @classmethod
