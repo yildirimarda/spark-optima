@@ -1,9 +1,9 @@
-version=0.14.0
+version=0.15.0
 ref=local
 repo=https://github.com/yildirimarda/agentloop.git
-installed=2026-09-02T19:45:58Z
+installed=2026-09-02T20:16:17Z
 hash:PLAN.md=36928d17c6289cc4b33958f02b93cdcf
-hash:AGENTS.md=255a20c5c730b8ea1acf06770191d504
+hash:AGENTS.md=b1cf035f196dd0524aa72f7597ad23c4
 hash:opencode.json=123cfd2e766d9a4c74e3d67c3c6092bf
 hash:Dockerfile.agent=99f98e4bf529b2338559ba454e6c83bf
 hash:.github/workflows/release.yml=6eea44e205e3d5b3fb0716f79b103348
