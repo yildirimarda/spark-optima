@@ -1,0 +1,82 @@
+name: "Spark Optima Check"
+description: |
+  CI guardrail: run spark-optima check (smell detector + config validator)
+  against a repo. Exits non-zero on new smells or config drift from a
+  committed baseline.
+branding:
+  icon: "shield-check"
+  color: "blue"
+inputs:
+  repo_path:
+    description: "Path to the repository to scan"
+    required: false
+    default: "."
+  baseline_file:
+    description: "Path to the committed baseline JSON file"
+    required: false
+    default: ".spark-optima/check-baseline.json"
+  config_file:
+    description: "Spark config file (optional)"
+    required: false
+    default: ""
+  code_patterns:
+    description: "Comma-separated source file extensions"
+    required: false
+    default: ".py,.scala,.java"
+  output_format:
+    description: "Output format (table, json)"
+    required: false
+    default: "table"
+  python_version:
+    description: "Python version for the action"
+    required: false
+    default: "3.12"
+  create_baseline:
+    description: "Create/update baseline instead of comparing"
+    required: false
+    default: "false"
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        path: ${{ inputs.repo_path }}
+
+    - name: Set up Python ${{ inputs.python_version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python_version }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        uv sync --frozen --only-group dev || uv sync --frozen
+
+    - name: Run spark-optima check
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        PYTHONPATH: ${{ github.workspace }}/src
+      run: |
+        set -e
+        EXTRA_ARGS=""
+        if [ "${{ inputs.create_baseline }}" = "true" ]; then
+          EXTRA_ARGS="--create-baseline"
+        fi
+        if [ -n "${{ inputs.config_file }}" ]; then
+          EXTRA_ARGS="$EXTRA_ARGS --config ${{ inputs.config_file }}"
+        fi
+        uv run spark-optima check \
+          --repo "${{ inputs.repo_path }}" \
+          --baseline "${{ inputs.baseline_file }}" \
+          --patterns "${{ inputs.code_patterns }}" \
+          --output "${{ inputs.output_format }}" \
+          $EXTRA_ARGS
