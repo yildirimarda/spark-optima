@@ -2894,7 +2894,9 @@ class TestCLIWhatIfCommand:
         assert "what-if" in result.output.lower()
 
     def test_what_if_json_output(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["what-if", "--duration-hours", "0.5", "--platforms", "aws_emr", "--output", "json"])
+        result = runner.invoke(
+            app, ["what-if", "--duration-hours", "0.5", "--platforms", "aws_emr", "--output", "json"]
+        )
         assert result.exit_code == 0
         payload = json.loads(result.output)
         assert isinstance(payload, list)

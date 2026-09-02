@@ -109,13 +109,13 @@ def explore_what_if(
                         if platform_name == "aws_emr":
                             rate = get_live_hourly_rate(
                                 platform_name,
-                                region=(region or getattr(platform, "region", "us-east-1")),
+                                region=str(region or getattr(platform, "region", "us-east-1") or "us-east-1"),
                                 instance_type=worker.name,
                             )
                         elif platform_name == "gcp_dataproc":
                             rate = get_live_hourly_rate(
                                 platform_name,
-                                region=(region or getattr(platform, "region", "us-central1")),
+                                region=str(region or getattr(platform, "region", "us-central1") or "us-central1"),
                                 instance_type=worker.name,
                                 vcpus=worker.resources.cpu_cores,
                                 memory_gb=worker.resources.memory_gb,
@@ -127,21 +127,27 @@ def explore_what_if(
                         logger.debug("Live rate lookup failed for %s/%s: %s", platform_name, worker.name, exc)
                         instance_rate = None
 
-                results.append({
-                    "platform": platform_name,
-                    "platform_display": getattr(platform, "display_name", platform_name),
-                    "instance_family": worker.name.split(".")[0] if "." in worker.name else worker.name.split("-")[0] if "-" in worker.name else "other",
-                    "instance_size": worker.name,
-                    "instance_type": worker.name,
-                    "resources": worker.resources.to_dict(),
-                    "worker_type": worker.to_dict(),
-                    "cluster_config": config.to_dict() if hasattr(config, "to_dict") else config,
-                    "duration_hours": duration_hours,
-                    "total_cost": total_cost,
-                    "pricing_source": pricing_source,
-                    "instance_rate_live": instance_rate,
-                    "region": region or (getattr(platform, "region", None)),
-                })
+                results.append(
+                    {
+                        "platform": platform_name,
+                        "platform_display": getattr(platform, "display_name", platform_name),
+                        "instance_family": worker.name.split(".")[0]
+                        if "." in worker.name
+                        else worker.name.split("-")[0]
+                        if "-" in worker.name
+                        else "other",
+                        "instance_size": worker.name,
+                        "instance_type": worker.name,
+                        "resources": worker.resources.to_dict(),
+                        "worker_type": worker.to_dict(),
+                        "cluster_config": config.to_dict() if hasattr(config, "to_dict") else config,
+                        "duration_hours": duration_hours,
+                        "total_cost": total_cost,
+                        "pricing_source": pricing_source,
+                        "instance_rate_live": instance_rate,
+                        "region": region or (getattr(platform, "region", None)),
+                    }
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Skipping %s/%s due to error: %s", platform_name, worker.name, exc)
                 continue

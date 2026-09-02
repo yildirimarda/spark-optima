@@ -1316,6 +1316,7 @@ def what_if(
         try:
             with open(Path(result_file)) as f:
                 import json
+
                 workload_data = json.load(f)
             # Derive resource spec from result metadata if present
             meta = workload_data.get("metadata", {})
@@ -1345,6 +1346,7 @@ def what_if(
 
     if output_format == "json":
         import json
+
         typer.echo(json.dumps(results, indent=2, default=str))
         return
 
@@ -1366,13 +1368,17 @@ def what_if(
     table.add_column("Live Rate", justify="right")
 
     for idx, item in enumerate(results[:30], start=1):
-        live_rate_str = f"${item.get('instance_rate_live', 0) or 0:.4f}" if item.get("instance_rate_live") is not None else "-"
+        live_rate_str = (
+            f"${item.get('instance_rate_live', 0) or 0:.4f}" if item.get("instance_rate_live") is not None else "-"
+        )
         table.add_row(
             str(idx),
             item.get("platform_display", item.get("platform", "-")),
             item.get("instance_size", item.get("instance_type", "-")),
             item.get("instance_family", "-"),
-            str(item.get("cluster_config", {}).get("worker_count", "-")) if isinstance(item.get("cluster_config"), dict) else "-",
+            str(item.get("cluster_config", {}).get("worker_count", "-"))
+            if isinstance(item.get("cluster_config"), dict)
+            else "-",
             f"${item.get('total_cost', 0):.2f}",
             item.get("pricing_source", "-"),
             live_rate_str,
@@ -1386,7 +1392,9 @@ def what_if(
     best_per_platform: dict[str, dict[str, Any]] = {}
     for item in results:
         plat = item.get("platform", "unknown")
-        if plat not in best_per_platform or item.get("total_cost", float("inf")) < best_per_platform[plat].get("total_cost", float("inf")):
+        if plat not in best_per_platform or item.get("total_cost", float("inf")) < best_per_platform[plat].get(
+            "total_cost", float("inf")
+        ):
             best_per_platform[plat] = item
 
     if best_per_platform:
