@@ -666,3 +666,24 @@ class TestTrialRunnerMore:
 
         assert result.status == TrialStatus.FAILED
         assert result.metrics.success is False
+
+
+class TestSparkConnectInTrialRunner:
+    """Tests that spark_connect_url is passed through to execution engine."""
+
+    def test_trial_runner_accepts_spark_connect_url(self):
+        """Test TrialRunner initialization with spark_connect_url."""
+        runner = TrialRunner(mode="simulation", spark_connect_url="sc://test:15002")
+        assert runner.mode == "simulation"
+
+    @patch("spark_optima.core.bayesian.trial_runner.ExecutionEngine")
+    def test_execution_mode_passes_connect_url(self, mock_engine_class):
+        """Test that TrialRunner passes spark_connect_url to ExecutionEngine."""
+        mock_engine = MagicMock()
+        mock_engine_class.return_value = mock_engine
+
+        runner = TrialRunner(mode="execution", spark_connect_url="sc://remote:15002")
+        # The execution engine should have been initialized with the URL
+        mock_engine_class.assert_called_once()
+        _, kwargs = mock_engine_class.call_args
+        assert kwargs.get("spark_connect_url") == "sc://remote:15002"

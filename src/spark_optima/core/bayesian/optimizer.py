@@ -87,6 +87,7 @@ class BayesianOptimizer:
         code_path: str | Path | None = None,
         platform: str = "local",
         spark_version: str = "default",
+        spark_connect_url: str | None = None,
     ) -> None:
         """Initialize the Bayesian optimizer.
 
@@ -130,7 +131,12 @@ class BayesianOptimizer:
         )
 
         # Initialize trial runner
-        self._trial_runner = TrialRunner(mode=mode, platform=platform, spark_version=spark_version)
+        self._trial_runner = TrialRunner(
+            mode=mode,
+            platform=platform,
+            spark_version=spark_version,
+            spark_connect_url=spark_connect_url,
+        )
 
         # Initialize objective function
         self._objective_func = ObjectiveFunctionFactory.create_multi(self.objectives)

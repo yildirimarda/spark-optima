@@ -66,6 +66,7 @@ class ExecutionEngine:
         enable_monitoring: bool = True,
         use_docker: bool = True,
         platform: str | None = None,
+        spark_connect_url: str | None = None,
     ) -> None:
         """Initialize the execution engine.
 
@@ -75,6 +76,8 @@ class ExecutionEngine:
             use_docker: If True, use Docker for local execution.
             platform: Platform name ("local", "aws_glue", "databricks", "azure_synapse")
                 or None for local Docker execution.
+            spark_connect_url: Remote Spark Connect endpoint URL (e.g. sc://host:port).
+                When set, the local Spark session connects remotely instead of using local master.
 
         """
         self.app_name = app_name
@@ -91,7 +94,9 @@ class ExecutionEngine:
         self._runner: SparkRunner | None = None
         if self._platform_name == "local":
             try:
-                self._runner = SparkRunner(app_name=app_name, use_docker=use_docker)
+                self._runner = SparkRunner(
+                    app_name=app_name, use_docker=use_docker, spark_connect_url=spark_connect_url
+                )
                 self._spark_available = True
             except RuntimeError as e:
                 logger.warning(f"Spark not available: {e}")
