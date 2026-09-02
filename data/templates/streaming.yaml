@@ -37,6 +37,18 @@ config:
   spark.sql.adaptive.enabled:
     value: "false"
     comment: AQE does not benefit micro-batch plans and adds re-planning overhead per batch.
+  spark.sql.streaming.pollingDelay:
+    value: "5s"
+    comment: Trigger interval for continuous micro-batches; shorter lowers end-to-end latency, longer reduces overhead.
+  spark.sql.streaming.kafka.maxOffsetsPerTrigger:
+    value: "10000"
+    comment: Cap Kafka ingest per batch to bound micro-batch size and state growth.
+  spark.sql.streaming.stateStore.maintenanceInterval:
+    value: "600s"
+    comment: State-store cleanup interval; shorter improves recovery time at the cost of more frequent maintenance.
+  spark.sql.streaming.stateStore.stateSchemaCheck:
+    value: "true"
+    comment: Validate state schema on restart to prevent incompatible state errors.
 
 recommended_for:
   - Structured Streaming pipelines (Kafka, Kinesis, files)

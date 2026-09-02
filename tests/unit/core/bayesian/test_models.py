@@ -453,3 +453,5 @@ class TestOptimizationObjective:
         assert OptimizationObjective.MINIMIZE_COST.value == "minimize_cost"
         assert OptimizationObjective.MAXIMIZE_SUCCESS.value == "maximize_success"
         assert OptimizationObjective.MINIMIZE_MEMORY.value == "minimize_memory"
+        assert OptimizationObjective.MINIMIZE_STREAMING_LATENCY.value == "minimize_streaming_latency"
+        assert OptimizationObjective.MAXIMIZE_THROUGHPUT.value == "maximize_throughput"

@@ -170,6 +170,14 @@ class TestTemplateRegistryBundled:
         assert values["spark.memory.offHeap.enabled"] == "true"
         assert values["spark.serializer"].endswith("KryoSerializer")
 
+    def test_streaming_template_has_tuning_params(self, registry: TemplateRegistry) -> None:
+        """Streaming template includes trigger interval, max offsets and state-store configs."""
+        values = registry.get_template("streaming").config_values()
+        assert "spark.sql.streaming.pollingDelay" in values
+        assert "spark.sql.streaming.kafka.maxOffsetsPerTrigger" in values
+        assert "spark.sql.streaming.stateStore.maintenanceInterval" in values
+        assert "spark.sql.streaming.stateStore.stateSchemaCheck" in values
+
     def test_interactive_template_is_broadcast_friendly(self, registry: TemplateRegistry) -> None:
         """Interactive raises the broadcast threshold and lowers parallelism."""
         values = registry.get_template("interactive").config_values()

@@ -10,8 +10,10 @@ import pytest
 from spark_optima.core.bayesian.models import TrialMetrics
 from spark_optima.core.bayesian.objectives import (
     MaximizeSuccessObjective,
+    MaximizeThroughputObjective,
     MinimizeCostObjective,
     MinimizeMemoryObjective,
+    MinimizeStreamingLatencyObjective,
     MinimizeTimeObjective,
     MultiObjectiveFunction,
     ObjectiveFunction,
@@ -277,6 +279,54 @@ class TestMultiObjectiveFunction:
         assert multi.is_pareto_dominated(values2, values1) is False
 
 
+class TestMinimizeStreamingLatencyObjective:
+    """Tests for MinimizeStreamingLatencyObjective."""
+
+    def test_initialization(self) -> None:
+        obj = MinimizeStreamingLatencyObjective()
+        assert obj.name == "minimize_streaming_latency"
+        assert obj.direction == "minimize"
+
+    def test_compute_success(self) -> None:
+        obj = MinimizeStreamingLatencyObjective()
+        metrics = TrialMetrics(
+            streaming_latency_ms=500.0,
+            streaming_throughput_rows_per_second=800.0,
+            success=True,
+        )
+        value = obj.compute(metrics)
+        assert value == pytest.approx(0.5 + 0.2, rel=0.01)  # 0.5s + (1000-800)*0.001
+
+    def test_compute_failure(self) -> None:
+        obj = MinimizeStreamingLatencyObjective()
+        metrics = TrialMetrics(success=False)
+        assert obj.compute(metrics) == 1e6
+
+
+class TestMaximizeThroughputObjective:
+    """Tests for MaximizeThroughputObjective."""
+
+    def test_initialization(self) -> None:
+        obj = MaximizeThroughputObjective()
+        assert obj.name == "maximize_throughput"
+        assert obj.direction == "maximize"
+
+    def test_compute_success(self) -> None:
+        obj = MaximizeThroughputObjective()
+        metrics = TrialMetrics(
+            streaming_throughput_rows_per_second=5000.0,
+            streaming_latency_ms=200.0,
+            success=True,
+        )
+        value = obj.compute(metrics)
+        assert value == pytest.approx(5000.0 + 30.0, rel=0.01)
+
+    def test_compute_failure(self) -> None:
+        obj = MaximizeThroughputObjective()
+        metrics = TrialMetrics(success=False)
+        assert obj.compute(metrics) == 0.0
+
+
 class TestObjectiveFunctionFactory:
     """Tests for ObjectiveFunctionFactory."""
 
@@ -319,3 +369,5 @@ class TestObjectiveFunctionFactory:
         assert "minimize_cost" in objectives
         assert "maximize_success" in objectives
         assert "minimize_memory" in objectives
+        assert "minimize_streaming_latency" in objectives
+        assert "maximize_throughput" in objectives
