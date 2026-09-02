@@ -267,6 +267,9 @@ def _execute_optimization(
                 estimated_time_minutes=result.estimated_time_minutes,
                 confidence_score=result.confidence_score,
                 code_suggestions=code_suggestions,
+                parameter_explanations={
+                    k: v.to_dict() if hasattr(v, "to_dict") else v for k, v in result.parameter_explanations.items()
+                },
                 platform_specific=platform_specific,
                 metadata=metadata,
             )

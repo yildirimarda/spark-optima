@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from spark_optima.core.result import CodeSuggestion, OptimizationResult
+from spark_optima.core.result import CodeSuggestion, OptimizationResult, ParameterExplanation
 
 
 class TestCodeSuggestion:
@@ -412,6 +412,47 @@ class TestOptimizationResultEdgeCases:
         result_dict = result.to_dict()
         assert "中文" in result_dict["code_suggestions"][0]["description"]
         assert "🎉" in result_dict["code_suggestions"][0]["suggestion"]
+
+    def test_parameter_explanations_empty_by_default(self) -> None:
+        """Parameter explanations are empty by default."""
+        result = OptimizationResult()
+        assert result.parameter_explanations == {}
+        assert "parameter_explanations" in result.to_dict()
+
+    def test_parameter_explanation_to_dict(self) -> None:
+        """ParameterExplanation serializes correctly."""
+        exp = ParameterExplanation(
+            param_name="spark.executor.memory",
+            value="4g",
+            why="Distribute remaining memory across executors",
+            doc_url="https://spark.apache.org/docs/3.5.0/configuration.html",
+            source="heuristic",
+        )
+        data = exp.to_dict()
+        assert data["param_name"] == "spark.executor.memory"
+        assert data["value"] == "4g"
+        assert data["why"] == "Distribute remaining memory across executors"
+        assert data["doc_url"] == "https://spark.apache.org/docs/3.5.0/configuration.html"
+        assert data["source"] == "heuristic"
+
+    def test_optimization_result_with_explanations(self) -> None:
+        """OptimizationResult includes parameter explanations in to_dict."""
+        result = OptimizationResult(
+            configuration={"spark.executor.memory": "4g"},
+            parameter_explanations={
+                "spark.executor.memory": ParameterExplanation(
+                    param_name="spark.executor.memory",
+                    value="4g",
+                    why="Rule description",
+                    doc_url="https://example.com",
+                    source="heuristic",
+                )
+            },
+        )
+        data = result.to_dict()
+        assert "parameter_explanations" in data
+        assert data["parameter_explanations"]["spark.executor.memory"]["why"] == "Rule description"
+        assert data["parameter_explanations"]["spark.executor.memory"]["doc_url"] == "https://example.com"
 
     def test_none_values_in_metadata(self) -> None:
         """Test result with None values in metadata."""
