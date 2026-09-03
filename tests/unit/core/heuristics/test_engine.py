@@ -129,6 +129,14 @@ class TestHeuristicEngine:
         assert context.executor_memory_gb > 0
         assert context.driver_memory_gb > 0
 
+    def test_format_value_bytes_float_gb(self):
+        """Float GB numbers for bytes parameters convert correctly."""
+        # 12.96 GB should format as 12g (not 12b)
+        assert self.engine._format_value(12.96, "bytes") == "12g"
+        # 0.384 GB (384 MB) should format as 0g? Actually 0.384*1024**3 = 412316860 bytes -> 393m
+        # Let's test 3.5 GB -> 3g
+        assert self.engine._format_value(3.5, "bytes") == "3g"
+
     def test_format_value(self):
         """Test value formatting."""
         assert self.engine._format_value(1024**3, "bytes") == "1g"

@@ -350,8 +350,11 @@ class HeuristicEngine:
             return str(value).lower() in ("true", "1", "yes", "on")
         elif param_type == "bytes":
             # Format as human-readable bytes string
-            if isinstance(value, int | float):
-                return FormulaEvaluator.format_bytes(int(value))
+            if isinstance(value, float):
+                # Formulas return GB numbers (e.g. 12.96) — convert to bytes
+                value = int(round(value * 1024**3))
+            if isinstance(value, int):
+                return FormulaEvaluator.format_bytes(value)
             return str(value)
         elif param_type == "duration":
             # Format as human-readable duration string
