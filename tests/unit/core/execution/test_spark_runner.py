@@ -854,6 +854,7 @@ class TestSparkConnectSupport:
     def test_runner_reads_connect_url_from_environment(self):
         """Test that SparkRunner picks up SPARK_CONNECT_URL from env."""
         import os
+
         from spark_optima.core.execution.spark_runner import SparkRunner
 
         original = os.environ.get("SPARK_CONNECT_URL")

@@ -682,7 +682,7 @@ class TestSparkConnectInTrialRunner:
         mock_engine = MagicMock()
         mock_engine_class.return_value = mock_engine
 
-        runner = TrialRunner(mode="execution", spark_connect_url="sc://remote:15002")
+        TrialRunner(mode="execution", spark_connect_url="sc://remote:15002")
         # The execution engine should have been initialized with the URL
         mock_engine_class.assert_called_once()
         _, kwargs = mock_engine_class.call_args
