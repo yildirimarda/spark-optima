@@ -170,6 +170,14 @@ class EvaluationContext:
             # Platform and version
             "platform": self.platform,
             "spark_version": self.spark_version,
+            # Derived condition variables
+            "large_shuffles": self.has_large_shuffles(),
+            "memory_intensive": self.is_memory_intensive(),
+            "is_pyspark": bool(self.custom_vars.get("is_pyspark", False)),
+            "skew_factor": float(self.custom_vars.get("skew_factor", 1.0)),
+            "streaming": self.is_streaming(),
+            "gc_pressure": bool(self.custom_vars.get("gc_pressure", False)),
+            "spill_detected": bool(self.custom_vars.get("spill_detected", False)),
         }
 
         # Add custom variables

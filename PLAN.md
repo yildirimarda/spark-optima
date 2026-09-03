@@ -556,5 +556,5 @@ are real gaps, not nice-to-haves.
 - [x] Wire `SkewDoctor` into CLI `analyze-log` output so skew findings with AQE/salting recommendations are shown alongside tuning hints
 - [x] `pollingDelay` and streaming state-store parameters were missing from `SearchSpaceBuilder` duration/categorical/int lists, so Bayesian optimization skipped them; added to search space
 - [x] `maximize_throughput` was listed in API objective validation but had no objective class; implemented `MaximizeThroughputObjective` and wired it into `ObjectiveFunctionFactory`
-- [ ] `HeuristicEngine` ignores `rule.conditions` (conditions dict never evaluated in `_evaluate_rule`), so conditional rules like memory-intensive overhead and large-shuffle off-heap settings don't apply correctly
+- [x] `HeuristicEngine` ignores `rule.conditions` (conditions dict never evaluated in `_evaluate_rule`), so conditional rules like memory-intensive overhead and large-shuffle off-heap settings don't apply correctly
 - [ ] `HeuristicEngine` formats `bytes` parameters incorrectly: formulas return GB numbers (e.g. `12.96`) which get formatted as `12b` instead of `12g` or `12800m`
