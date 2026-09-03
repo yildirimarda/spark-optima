@@ -1496,6 +1496,9 @@ class TestCLIAnalyzeLogCommand:
         assert "Run Summary" in result.output
         assert "Stages by Duration" in result.output
         assert "Tuning Hints" in result.output
+        # SkewDoctor findings with AQE / salting recommendations shown
+        assert "Skew Findings (AQE / Salting Recommendations)" in result.output
+        assert "critical" in result.output.lower()
         # Skew ratio 10.0 should be flagged as severe with AQE advice
         assert "skew" in result.output.lower()
 
@@ -1516,6 +1519,11 @@ class TestCLIAnalyzeLogCommand:
         assert payload["tuning_hints"]["skew_factor"] == pytest.approx(10.0)
         assert payload["tuning_hints"]["spill_detected"] is True
         assert payload["tuning_hints"]["data_size_gb"] == pytest.approx(10.0)
+        assert "skew_findings" in payload
+        assert len(payload["skew_findings"]) == 1
+        assert payload["skew_findings"][0]["skew_ratio"] == pytest.approx(10.0)
+        assert payload["skew_findings"][0]["recommendation_type"] == "both"
+        assert "spark.sql.adaptive.skewJoin.enabled" in payload["skew_findings"][0]["recommendation"]
 
     def test_analyze_log_missing_file(self, runner: CliRunner, tmp_path: Path) -> None:
         """Test analyze-log errors cleanly for a missing log file."""

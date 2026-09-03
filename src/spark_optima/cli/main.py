@@ -19,6 +19,7 @@ from rich.table import Table
 
 from spark_optima import __version__
 from spark_optima.core.optimizer import Optimizer
+from spark_optima.core.skew_doctor import SkewDoctor
 from spark_optima.core.validate_import import (
     collect_anti_pattern_issues,
     collect_db_issues,
@@ -618,10 +619,12 @@ def analyze_log(
         raise typer.Exit(1)
 
     hints = summary.to_tuning_hints()
+    findings = SkewDoctor().diagnose(summary)
 
     if output_format == "json":
         payload = summary.to_dict()
         payload["tuning_hints"] = hints
+        payload["skew_findings"] = [f.to_dict() for f in findings]
         typer.echo(json.dumps(payload, indent=2))
         return
 
@@ -678,6 +681,26 @@ def analyze_log(
                 f"{stage.skew_ratio:.1f}",
             )
         console.print(stage_table)
+
+    if findings:
+        skew_table = Table(title="Skew Findings (AQE / Salting Recommendations)")
+        skew_table.add_column("Stage", style="cyan", max_width=30)
+        skew_table.add_column("Skew Ratio", justify="right", style="red")
+        skew_table.add_column("Severity", style="magenta")
+        skew_table.add_column("Rec Type", style="yellow")
+        skew_table.add_column("Recommendation", style="green", max_width=60)
+        for finding in findings:
+            stage_ref = f"{finding.stage.stage_id} — {finding.stage.name or '-'}"
+            skew_table.add_row(
+                stage_ref,
+                f"{finding.skew_ratio:.1f}",
+                finding.severity.value,
+                finding.recommendation_type,
+                finding.recommendation,
+            )
+        console.print(skew_table)
+    else:
+        console.print("[dim]No skew findings detected (threshold=1.5).[/dim]")
 
     advice = _build_tuning_advice(summary, hints)
     if advice:
