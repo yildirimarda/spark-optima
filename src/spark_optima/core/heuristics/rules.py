@@ -245,8 +245,8 @@ class RuleRegistry:
             HeuristicRuleDef(
                 param_name="spark.memory.offHeap.enabled",
                 category=ParameterCategory.MEMORY,
-                formula="false",
-                base_value=False,
+                formula="true",
+                base_value=True,
                 priority="medium",
                 conditions={"large_shuffles": True},
                 description="Enable for large shuffle operations to avoid GC pressure",

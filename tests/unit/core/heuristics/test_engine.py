@@ -129,6 +129,14 @@ class TestHeuristicEngine:
         assert context.executor_memory_gb > 0
         assert context.driver_memory_gb > 0
 
+    def test_format_value_bytes_float_gb(self):
+        """Float GB numbers for bytes parameters convert correctly."""
+        # 12.96 GB should format as 12g (not 12b)
+        assert self.engine._format_value(12.96, "bytes") == "12g"
+        # 0.384 GB (384 MB) should format as 0g? Actually 0.384*1024**3 = 412316860 bytes -> 393m
+        # Let's test 3.5 GB -> 3g
+        assert self.engine._format_value(3.5, "bytes") == "3g"
+
     def test_format_value(self):
         """Test value formatting."""
         assert self.engine._format_value(1024**3, "bytes") == "1g"
@@ -137,6 +145,69 @@ class TestHeuristicEngine:
         assert self.engine._format_value(3.14, "float") == 3.14
         assert self.engine._format_value("true", "boolean") is True
         assert self.engine._format_value("false", "boolean") is False
+
+    def test_evaluate_conditions_met_applies_rule(self):
+        """Rules with met conditions should be evaluated and applied."""
+        # Large shuffle condition should trigger speculation rules
+        config = self.engine.evaluate(
+            resources=self.resources,
+            platform="local",
+            data_profile=DataProfile(size_gb=150),
+        )
+        # Large shuffles (size > 100GB) should enable speculation
+        assert "spark.speculation" in config
+        assert config["spark.speculation"] is True
+
+    def test_evaluate_conditions_not_met_skips_rule(self):
+        """Rules with unmet conditions should not be applied."""
+        # Small data profile should not trigger large-shuffle rules
+        config = self.engine.evaluate(
+            resources=self.resources,
+            platform="local",
+            data_profile=DataProfile(size_gb=10),
+        )
+        # Speculation should not be enabled for small shuffles
+        assert "spark.speculation" not in config
+
+    def test_evaluate_memory_intensive_condition(self):
+        """Memory-intensive condition should affect overhead rules."""
+        config = self.engine.evaluate(
+            resources=self.resources,
+            platform="local",
+            custom_vars={"memory_intensive": True, "is_pyspark": False},
+        )
+        # memory_overhead_factor should stay at default when not pyspark
+        assert config.get("spark.executor.memoryOverheadFactor") == 0.1
+
+    def test_evaluate_pyspark_condition_applies_overhead(self):
+        """PySpark condition should apply 25% overhead factor."""
+        config = self.engine.evaluate(
+            resources=self.resources,
+            platform="local",
+            custom_vars={"is_pyspark": True},
+        )
+        assert config.get("spark.executor.memoryOverheadFactor") == 0.25
+
+    def test_evaluate_large_shuffle_off_heap(self):
+        """Large shuffle should enable off-heap memory settings."""
+        config = self.engine.evaluate(
+            resources=self.resources,
+            platform="local",
+            data_profile=DataProfile(size_gb=150),
+        )
+        assert "spark.memory.offHeap.enabled" in config
+        assert config["spark.memory.offHeap.enabled"] is True
+        assert "spark.memory.offHeap.size" in config
+
+    def test_evaluate_off_heap_condition_not_met(self):
+        """Without large shuffles, off-heap settings should not apply."""
+        config = self.engine.evaluate(
+            resources=self.resources,
+            platform="local",
+            data_profile=DataProfile(size_gb=10),
+        )
+        assert "spark.memory.offHeap.enabled" not in config
+        assert "spark.memory.offHeap.size" not in config
 
 
 class TestConfigDatabaseIntegration:

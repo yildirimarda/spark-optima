@@ -499,6 +499,53 @@ class TestMetricsCollectorWithSpark:
         finally:
             mc_module.PYSPARK_AVAILABLE = original_value
 
+    def test_collect_memory_metrics_attribute_error_for_spark_4x(self) -> None:
+        """Test graceful handling when getExecutorMemoryStatus raises AttributeError (Spark 4.x)."""
+        import spark_optima.core.execution.metrics_collector as mc_module
+
+        original_value = mc_module.PYSPARK_AVAILABLE
+
+        try:
+            mc_module.PYSPARK_AVAILABLE = True
+
+            mock_spark = MagicMock()
+            mock_sc = MagicMock()
+            # Simulate Spark 4.x removal: method exists but raises AttributeError
+            mock_sc.getExecutorMemoryStatus.side_effect = AttributeError("Method removed in Spark 4.x")
+            mock_spark.sparkContext = mock_sc
+
+            collector = MetricsCollector(spark=mock_spark)
+            memory = collector._collect_memory_metrics()
+
+            # Should fall back to defaults gracefully
+            assert memory == {"peak_gb": 0.0, "average_gb": 0.0}
+
+        finally:
+            mc_module.PYSPARK_AVAILABLE = original_value
+
+    def test_collect_memory_metrics_missing_method_for_spark_4x(self) -> None:
+        """Test graceful handling when getExecutorMemoryStatus attribute is missing (Spark 4.x)."""
+        import spark_optima.core.execution.metrics_collector as mc_module
+
+        original_value = mc_module.PYSPARK_AVAILABLE
+
+        try:
+            mc_module.PYSPARK_AVAILABLE = True
+
+            mock_spark = MagicMock()
+            mock_sc = MagicMock()
+            # Remove the method entirely (simulates removal in Spark 4.x)
+            del mock_sc.getExecutorMemoryStatus
+            mock_spark.sparkContext = mock_sc
+
+            collector = MetricsCollector(spark=mock_spark)
+            memory = collector._collect_memory_metrics()
+
+            assert memory == {"peak_gb": 0.0, "average_gb": 0.0}
+
+        finally:
+            mc_module.PYSPARK_AVAILABLE = original_value
+
     def test_collect_shuffle_metrics_with_spark(self) -> None:
         """Test _collect_shuffle_metrics when PySpark is available (lines 331-349)."""
         import spark_optima.core.execution.metrics_collector as mc_module

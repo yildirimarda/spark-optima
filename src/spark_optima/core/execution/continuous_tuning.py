@@ -18,9 +18,14 @@ from typing import Any
 
 from spark_optima.core.execution.event_log import EventLogSummary
 from spark_optima.core.execution.history_server import HistoryServerClient, HistoryServerError
+from spark_optima.core.heuristics.context import DataProfile
+from spark_optima.core.heuristics.engine import HeuristicEngine
+from spark_optima.core.history import OptimizationHistory
 from spark_optima.core.simulation.predictor import (
     extract_features,
+    parse_memory_gb,
 )
+from spark_optima.platforms.models import ResourceSpec
 
 logger = logging.getLogger(__name__)
 
@@ -119,22 +124,43 @@ class ContinuousRetuner:
         return significant_shift or gc_shift
 
     def _recommended_config_from_hints(self, hints: dict[str, Any], base_config: dict[str, Any]) -> dict[str, Any]:
-        """Derive a retuned config from tuning hints."""
-        retuned = base_config.copy()
-        if hints.get("large_shuffles"):
-            retuned["spark.sql.shuffle.partitions"] = max(
-                int(retuned.get("spark.sql.shuffle.partitions", 200)) * 2,
-                400,
-            )
-        if hints.get("gc_pressure") or hints.get("memory_intensive"):
-            current_mem = retuned.get("spark.executor.memory", "4g")
-            from spark_optima.core.simulation.predictor import parse_memory_gb
+        """Derive a retuned config from tuning hints via HeuristicEngine."""
+        # Derive resource spec from base_config when available; fall back to defaults
+        cpu_cores = 4
+        try:
+            cpu_cores = int(str(base_config.get("spark.executor.cores", "4")).replace(" ", ""))
+        except (ValueError, TypeError):
+            cpu_cores = 4
 
-            mem_gb = parse_memory_gb(current_mem, default=4.0)
-            retuned["spark.executor.memory"] = f"{max(mem_gb * 1.25, 4.0):.1f}g"
-        if hints.get("skew_factor", 1.0) > 1.5:
-            retuned["spark.sql.adaptive.skewJoin.enabled"] = "true"
-        return retuned
+        mem_str = base_config.get("spark.executor.memory", "4g")
+        try:
+            mem_gb = parse_memory_gb(mem_str, default=4.0)
+        except Exception:
+            mem_gb = 4.0
+
+        # Use a rough total memory estimate (executor memory * 4) for heuristics
+        resources = ResourceSpec(cpu_cores=cpu_cores, memory_gb=max(mem_gb * 4, 8.0))
+
+        # Derive platform and version from base_config or defaults
+        platform = base_config.get("platform", "local")
+        version = base_config.get("spark_version", "3.5.0")
+
+        data_profile = DataProfile(size_gb=hints.get("data_size_gb", 10.0))
+        custom_vars = dict(hints)
+
+        engine = HeuristicEngine()
+        retuned = engine.evaluate(
+            resources=resources,
+            platform=platform,
+            spark_version=version,
+            data_profile=data_profile,
+            custom_vars=custom_vars,
+        )
+
+        # Merge engine recommendations over the base config for consistent recommendations
+        result = base_config.copy()
+        result.update(retuned)
+        return result
 
     def generate_report(
         self,
@@ -162,15 +188,29 @@ class ContinuousRetuner:
         predicted_recommended = 0.0
 
         if predictor is not None and hasattr(predictor, "add_sample"):
-            # Train a minimal online surrogate with synthetic samples
-            # derived from original and retuned profiles
+            # Train the online surrogate on real measured trials from SQLite
+            # OptimizationHistory rather than synthetic samples, so predictions
+            # reflect actual production workload drift.
             try:
-                # Add synthetic original sample
-                predictor.add_sample(current_features, target_time=600.0, measured=False)
-                # Add synthetic retuned sample (assume 20% faster when retuned)
-                predictor.add_sample(retuned_features, target_time=480.0, measured=False)
-                # Train if enough samples
-                result = predictor.train_online(min_samples=2)
+                with OptimizationHistory() as history:
+                    entries = history.list_entries(limit=500)
+                    for entry in entries:
+                        # Only use execution-mode entries as real measured trials
+                        if entry.mode != "execution":
+                            continue
+                        config = entry.configuration or {}
+                        result = entry.result or {}
+                        # Derive a basic data profile from result metadata or defaults
+                        data_profile = result.get("metadata", {}) or {}
+                        if not isinstance(data_profile, dict) or not data_profile.get("size_gb"):
+                            data_profile = {"size_gb": hints.get("data_size_gb", 10.0)}
+                        features = extract_features(config, data_profile)
+                        # Convert estimated minutes to seconds for training target
+                        target_seconds = float(entry.estimated_time_minutes or 0.0) * 60.0
+                        if target_seconds > 0:
+                            predictor.add_sample(features, target_time=target_seconds, measured=True)
+                # Train if enough real samples accumulated
+                result = predictor.train_online(min_samples=4)
                 if result.get("trained"):
                     pred_current = predictor.predict_online(current_features)
                     pred_recommended = predictor.predict_online(retuned_features)

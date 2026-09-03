@@ -104,6 +104,35 @@ api:
   topologySpreadConstraints: []
 
 # =============================================================================
+# Optimization Job (K8s Job runner for API)
+# =============================================================================
+optimizationJob:
+  enabled: false  # Enable to deploy the optimization Job alongside the API
+  
+  platform: "local"
+  sparkVersion: "3.5.0"
+  outputFormat: "json"
+  maxTrials: 50
+  timeoutMinutes: 30
+  
+  # Redis-backed job store settings for multi-replica visibility
+  redisUrl: "redis://redis.spark-optima.svc.cluster.local:6379/0"
+  
+  # Job lifecycle
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 2
+  activeDeadlineSeconds: 3600
+  
+  # Resources
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+# =============================================================================
 # CLI Jobs
 # =============================================================================
 cli:

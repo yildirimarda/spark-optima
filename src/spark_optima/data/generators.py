@@ -437,6 +437,11 @@ class DataGenerator:
             Generated value.
 
         """
+        # Seed random generators independently from config so single-value
+        # calls are deterministic without relying on _generate_rdd seeding.
+        random.seed(config.random_seed)
+        np.random.seed(config.random_seed)
+
         # Check for null
         if column.nullable and random.random() < config.null_ratio:  # nosec B311 - pseudorandom used for data generation, not crypto
             return None

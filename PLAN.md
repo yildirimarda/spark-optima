@@ -543,16 +543,18 @@ are real gaps, not nice-to-haves.
 
 ## Milestone 21: Trust & Proof
 
-- [ ] Reproducible benchmark suite: use data/generators.py to synthesize TPC-DS-like workloads, run before/after configs, and publish methodology + results to docs/BENCHMARKS.md — turns the "eliminates guesswork" claim into measured numbers
-- [ ] Helm chart + K8s Job runner for the API: run optimization jobs as Kubernetes Jobs with the existing Redis job store, documented for platform teams      
+- [x] Reproducible benchmark suite: use data/generators.py to synthesize TPC-DS-like workloads, run before/after configs, and publish methodology + results to docs/BENCHMARKS.md — turns the "eliminates guesswork" claim into measured numbers
+- [x] Helm chart + K8s Job runner for the API: run optimization jobs as Kubernetes Jobs with the existing Redis job store, documented for platform teams      
 
 ## Discovered
 
-- [ ] Fix `metrics_collector.py` to gracefully handle Spark 4.x removal of `sc.getExecutorMemoryStatus()` (currently relies on `hasattr` check, but should explicitly guard against AttributeError for 4.x compatibility)
-- [ ] Update `data/samplers.py` reservoir sampling `.drop()` to filter missing columns before drop for Spark 4.2 `KeyError` behavior change
-- [ ] Make `_generate_value` respect `config.random_seed` independently (currently only seeded inside `_generate_rdd`) so single-value calls are deterministic
-- [ ] Continuous retuner: train the online surrogate on real measured trials from the SQLite `OptimizationHistory` rather than synthetic samples, so predictions reflect actual production workload drift
-- [ ] Continuous retuner: wire the retuned config derivation through `HeuristicEngine.evaluate()` instead of the basic hint-based rules, for consistent optimization recommendations
-- [ ] Wire `SkewDoctor` into CLI `analyze-log` output so skew findings with AQE/salting recommendations are shown alongside tuning hints
-- [ ] `pollingDelay` and streaming state-store parameters were missing from `SearchSpaceBuilder` duration/categorical/int lists, so Bayesian optimization skipped them; added to search space
-- [ ] `maximize_throughput` was listed in API objective validation but had no objective class; implemented `MaximizeThroughputObjective` and wired it into `ObjectiveFunctionFactory`
+- [x] Fix `metrics_collector.py` to gracefully handle Spark 4.x removal of `sc.getExecutorMemoryStatus()` (currently relies on `hasattr` check, but should explicitly guard against AttributeError for 4.x compatibility)
+- [x] Update `data/samplers.py` reservoir sampling `.drop()` to filter missing columns before drop for Spark 4.2 `KeyError` behavior change
+- [x] Make `_generate_value` respect `config.random_seed` independently (currently only seeded inside `_generate_rdd`) so single-value calls are deterministic
+- [x] Continuous retuner: train the online surrogate on real measured trials from the SQLite `OptimizationHistory` rather than synthetic samples, so predictions reflect actual production workload drift
+- [x] Continuous retuner: wire the retuned config derivation through `HeuristicEngine.evaluate()` instead of the basic hint-based rules, for consistent optimization recommendations
+- [x] Wire `SkewDoctor` into CLI `analyze-log` output so skew findings with AQE/salting recommendations are shown alongside tuning hints
+- [x] `pollingDelay` and streaming state-store parameters were missing from `SearchSpaceBuilder` duration/categorical/int lists, so Bayesian optimization skipped them; added to search space
+- [x] `maximize_throughput` was listed in API objective validation but had no objective class; implemented `MaximizeThroughputObjective` and wired it into `ObjectiveFunctionFactory`
+- [x] `HeuristicEngine` ignores `rule.conditions` (conditions dict never evaluated in `_evaluate_rule`), so conditional rules like memory-intensive overhead and large-shuffle off-heap settings don't apply correctly
+- [x] `HeuristicEngine` formats `bytes` parameters incorrectly: formulas return GB numbers (e.g. `12.96`) which get formatted as `12b` instead of `12g` or `12800m`

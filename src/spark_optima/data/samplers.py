@@ -287,7 +287,11 @@ class ReservoirSampler(Sampler):
             # Use window function to get top k
             window = Window.orderBy(col("_rand"))
             df_ranked = df_with_rand.withColumn("_rank", row_number().over(window))
-            sample_df = df_ranked.filter(col("_rank") <= sample_size).drop("_rand", "_rank")
+            existing_cols = set(df_ranked.columns)
+            cols_to_drop = [c for c in ("_rand", "_rank") if c in existing_cols]
+            sample_df = df_ranked.filter(col("_rank") <= sample_size)
+            if cols_to_drop:
+                sample_df = sample_df.drop(*cols_to_drop)
 
         # Write output
         output_path.parent.mkdir(parents=True, exist_ok=True)
