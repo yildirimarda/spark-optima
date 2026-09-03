@@ -544,7 +544,7 @@ are real gaps, not nice-to-haves.
 ## Milestone 21: Trust & Proof
 
 - [x] Reproducible benchmark suite: use data/generators.py to synthesize TPC-DS-like workloads, run before/after configs, and publish methodology + results to docs/BENCHMARKS.md — turns the "eliminates guesswork" claim into measured numbers
-- [ ] Helm chart + K8s Job runner for the API: run optimization jobs as Kubernetes Jobs with the existing Redis job store, documented for platform teams      
+- [x] Helm chart + K8s Job runner for the API: run optimization jobs as Kubernetes Jobs with the existing Redis job store, documented for platform teams      
 
 ## Discovered
 
