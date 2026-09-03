@@ -191,6 +191,45 @@ class TestSearchSpaceBuilder:
         # But the method should work without error
         assert isinstance(memory_space, dict)
 
+    def test_streaming_state_store_params_in_search_space(self) -> None:
+        """Streaming duration, categorical, boolean and int params build correctly."""
+        builder = SearchSpaceBuilder()
+        config_set = ConfigSet(version="3.5.0")
+
+        heuristic_config = {
+            "spark.sql.streaming.pollingDelay": "5s",
+            "spark.sql.streaming.stateStore.providerClass": "org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider",
+            "spark.sql.streaming.stateStore.maintenanceInterval": "600s",
+            "spark.sql.streaming.stateStore.stateSchemaCheck": True,
+            "spark.sql.streaming.kafka.maxOffsetsPerTrigger": 10000,
+        }
+
+        search_space = builder.build_from_heuristic(heuristic_config, config_set)
+
+        # Duration parameters
+        assert "spark.sql.streaming.pollingDelay" in search_space
+        assert search_space["spark.sql.streaming.pollingDelay"]["type"] == "int"
+        assert "spark.sql.streaming.stateStore.maintenanceInterval" in search_space
+        assert search_space["spark.sql.streaming.stateStore.maintenanceInterval"]["type"] == "int"
+
+        # Categorical state-store provider
+        assert "spark.sql.streaming.stateStore.providerClass" in search_space
+        assert search_space["spark.sql.streaming.stateStore.providerClass"]["type"] == "categorical"
+        assert (
+            "org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider"
+            in search_space["spark.sql.streaming.stateStore.providerClass"]["choices"]
+        )
+
+        # Boolean parameter (converted to categorical)
+        assert "spark.sql.streaming.stateStore.stateSchemaCheck" in search_space
+        assert search_space["spark.sql.streaming.stateStore.stateSchemaCheck"]["type"] == "categorical"
+        assert True in search_space["spark.sql.streaming.stateStore.stateSchemaCheck"]["choices"]
+        assert False in search_space["spark.sql.streaming.stateStore.stateSchemaCheck"]["choices"]
+
+        # Integer/core parameter
+        assert "spark.sql.streaming.kafka.maxOffsetsPerTrigger" in search_space
+        assert search_space["spark.sql.streaming.kafka.maxOffsetsPerTrigger"]["type"] == "int"
+
     def test_build_memory_search_space(self) -> None:
         """Test _build_memory_search_space method (lines 228-277)."""
         builder = SearchSpaceBuilder()
