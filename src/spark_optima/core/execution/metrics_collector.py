@@ -316,17 +316,16 @@ class MetricsCollector:
         # Get executor memory status (not available in Spark 4.x)
         # This is simplified - full implementation would track over time
         try:
-            if hasattr(sc, "getExecutorMemoryStatus"):
-                executor_memory_status = sc.getExecutorMemoryStatus()
+            executor_memory_status = sc.getExecutorMemoryStatus()
 
-                if executor_memory_status:
-                    total_used = sum((total - free) for (_, (total, free)) in executor_memory_status.items())
-                    total_available = sum(total for (_, (total, _)) in executor_memory_status.items())
+            if executor_memory_status:
+                total_used = sum((total - free) for (_, (total, free)) in executor_memory_status.items())
+                total_available = sum(total for (_, (total, _)) in executor_memory_status.items())
 
-                    avg_gb = total_used / (1024**3) if total_used > 0 else 0.0
-                    peak_gb = total_available / (1024**3) * 0.8  # Estimate
+                avg_gb = total_used / (1024**3) if total_used > 0 else 0.0
+                peak_gb = total_available / (1024**3) * 0.8  # Estimate
 
-                    return {"peak_gb": peak_gb, "average_gb": avg_gb}
+                return {"peak_gb": peak_gb, "average_gb": avg_gb}
         except (AttributeError, TypeError, KeyError):
             pass
 
