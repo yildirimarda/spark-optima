@@ -124,6 +124,11 @@ class HeuristicEngine:
         evaluated_vars: dict[str, Any] = context.to_variables()
 
         for rule in rules:
+            # Once a parameter has been set by a higher-priority rule,
+            # lower-priority rules for the same parameter should not overwrite.
+            if rule.param_name in config:
+                continue
+
             try:
                 value = self._evaluate_rule(rule, evaluated_vars)
                 if value is not None:
@@ -132,6 +137,11 @@ class HeuristicEngine:
                     var_name = rule.param_name.replace(".", "_")
                     evaluated_vars[var_name] = value
                     evaluated_vars[rule.param_name] = value
+                    # Add condition-alias variables for cross-rule dependency checks
+                    if rule.param_name == "spark.memory.offHeap.enabled":
+                        evaluated_vars["off_heap_enabled"] = value
+                    if rule.param_name == "spark.dynamicAllocation.enabled":
+                        evaluated_vars["dynamic_allocation_enabled"] = value
             except (KeyError, ValueError, TypeError, AttributeError, RuntimeError) as e:
                 logger.warning(f"Failed to evaluate rule {rule.param_name}: {e}")
                 # Fall back to base_value if available
@@ -175,6 +185,111 @@ class HeuristicEngine:
             driver_memory_gb=driver_memory_gb,
         )
 
+    def _evaluate_conditions(
+        self,
+        conditions: dict[str, Any],
+        variables: dict[str, Any],
+    ) -> bool:
+        """Evaluate rule conditions against available variables.
+
+        Args:
+            conditions: Condition dictionary from the rule.
+            variables: Available variable values.
+
+        Returns:
+            True if all conditions are met, False otherwise.
+        """
+        if not conditions:
+            return True
+
+        for key, expected in conditions.items():
+            # Look up variable (case-insensitive, matching context behavior)
+            var_value = None
+            for var_name, var_val in variables.items():
+                if var_name.lower() == key.lower():
+                    var_value = var_val
+                    break
+            if var_value is None:
+                # Variable not present; condition fails
+                return False
+
+            if isinstance(expected, bool):
+                if var_value is not expected:
+                    return False
+            elif isinstance(expected, str):
+                # Parse comparison expression like ">8", ">=1.5", "==true"
+                expected_str = expected.strip()
+                if not expected_str:
+                    return False
+
+                # Try to split operator from operand
+                # Supported operators: >=, <=, ==, !=, >, <, =
+                op = None
+                operand_str = expected_str
+                for op_candidate in (">=", "<=", "==", "!=", ">", "<", "="):
+                    if expected_str.startswith(op_candidate):
+                        op = op_candidate
+                        operand_str = expected_str[len(op_candidate) :].strip()
+                        break
+
+                if op is None:
+                    # No operator found: treat as equality check against string
+                    if str(var_value) != expected_str:
+                        return False
+                    continue
+
+                # Evaluate operand
+                try:
+                    # Try numeric evaluation first
+                    operand = float(operand_str) if "." in operand_str else int(operand_str)
+                except ValueError:
+                    # Handle boolean/string operands
+                    operand_str_lower = operand_str.lower()
+                    if operand_str_lower == "true":
+                        operand = True
+                    elif operand_str_lower == "false":
+                        operand = False
+                    else:
+                        operand = operand_str
+
+                # Compare
+                if op == "=" or op == "==":
+                    if var_value != operand:
+                        return False
+                elif op == "!=":
+                    if var_value == operand:
+                        return False
+                elif op == ">":
+                    try:
+                        if not (var_value > operand):
+                            return False
+                    except TypeError:
+                        return False
+                elif op == "<":
+                    try:
+                        if not (var_value < operand):
+                            return False
+                    except TypeError:
+                        return False
+                elif op == ">=":
+                    try:
+                        if not (var_value >= operand):
+                            return False
+                    except TypeError:
+                        return False
+                elif op == "<=":
+                    try:
+                        if not (var_value <= operand):
+                            return False
+                    except TypeError:
+                        return False
+            else:
+                # Numeric or other literal: equality check
+                if var_value != expected:
+                    return False
+
+        return True
+
     def _evaluate_rule(
         self,
         rule: Any,
@@ -187,9 +302,12 @@ class HeuristicEngine:
             variables: Available variables.
 
         Returns:
-            Evaluated value or None if cannot evaluate.
-
+            Evaluated value or None if cannot evaluate (conditions not met).
         """
+        # Check conditions first
+        if not self._evaluate_conditions(rule.conditions, variables):
+            return None
+
         if not rule.formula:
             return rule.base_value
 
