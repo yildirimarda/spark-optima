@@ -351,6 +351,18 @@ class TestObjectiveFunctionFactory:
         obj = ObjectiveFunctionFactory.create("minimize_memory")
         assert isinstance(obj, MinimizeMemoryObjective)
 
+    def test_create_minimize_streaming_latency(self) -> None:
+        """Test creating minimize_streaming_latency objective."""
+        obj = ObjectiveFunctionFactory.create("minimize_streaming_latency")
+        assert isinstance(obj, MinimizeStreamingLatencyObjective)
+        assert obj.name == "minimize_streaming_latency"
+
+    def test_create_maximize_throughput(self) -> None:
+        """Test creating maximize_throughput objective."""
+        obj = ObjectiveFunctionFactory.create("maximize_throughput")
+        assert isinstance(obj, MaximizeThroughputObjective)
+        assert obj.name == "maximize_throughput"
+
     def test_create_invalid(self) -> None:
         """Test creating invalid objective."""
         with pytest.raises(ValueError, match="Unknown objective"):
