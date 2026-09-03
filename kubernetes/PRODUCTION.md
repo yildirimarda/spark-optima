@@ -243,6 +243,81 @@ The SQLite store does **not** make the async API safe across replicas — each p
 
 **Webhook callbacks (v1.4):** async submissions may include a `webhook_url`; the API POSTs a JSON notification (job id, status, timestamps, result or error) when the job finishes, with a 10s timeout and up to 3 attempts (1s/2s backoff). URLs targeting `localhost`, loopback/link-local addresses (including `169.254.169.254`), `0.0.0.0`, or `*.internal` hosts are rejected at request time — but the guard is hostname-based and best-effort, so also enforce egress NetworkPolicies if the cluster can reach sensitive internal endpoints. Delivery outcome is exposed as `webhook_status` on `GET /api/v1/jobs/{id}`.
 
+## 🏃 Kubernetes Job Runner (v21.0)
+
+Platform teams can run optimization jobs as Kubernetes Jobs that share state through the existing Redis job store. This decouples long-running optimizations from the API pod lifecycle and makes results visible to every API replica.
+
+### What the Job runner provides
+
+- **Independent execution** — optimization runs in a dedicated `batch/v1` Job, not inside the API process.
+- **Redis-backed persistence** — the Job writes to the same `spark_optima:job:*` keys used by the async API (`SPARK_OPTIMA_JOB_STORE=redis`). Any API replica can poll `GET /api/v1/jobs/{id}` for progress.
+- **Configurable lifecycle** — TTL (`ttlSecondsAfterFinished`), retry (`backoffLimit`), and timeout (`activeDeadlineSeconds`) are set in the Helm values.
+
+### Deploying the optimization Job
+
+Using Helm (recommended):
+
+```bash
+helm upgrade spark-optima kubernetes/helm/spark-optima \
+  -f kubernetes/helm/spark-optima/values-production.yaml \
+  --set optimizationJob.enabled=true \
+  --set optimizationJob.platform=kubernetes \
+  --set optimizationJob.redisUrl=redis://redis.spark-optima.svc.cluster.local:6379/0 \
+  -n spark-optima
+```
+
+Using raw manifests:
+
+```bash
+kubectl apply -f kubernetes/base/job-optimization.yaml
+```
+
+Edit `SPARK_OPTIMA_REDIS_URL` in the manifest (or ConfigMap) to point at your Redis Service.
+
+### Job settings (Helm `values.yaml` / `values-production.yaml`)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `optimizationJob.enabled` | `false` | Deploy the optimization Job |
+| `optimizationJob.platform` | `local` | Target Spark platform |
+| `optimizationJob.sparkVersion` | `3.5.0` | Spark version |
+| `optimizationJob.outputFormat` | `json` | Result format |
+| `optimizationJob.maxTrials` | `50` | Bayesian trial count |
+| `optimizationJob.timeoutMinutes` | `30` | Optimization timeout |
+| `optimizationJob.redisUrl` | `redis://...` | Redis connection for shared job store |
+| `optimizationJob.ttlSecondsAfterFinished` | `3600` | Job retention after finish |
+| `optimizationJob.backoffLimit` | `2` | Retries on failure |
+| `optimizationJob.activeDeadlineSeconds` | `3600` | Max run time |
+
+### Prerequisites for the Job runner
+
+- The `redis` Python package must be present in the container image (already included when `SPARK_OPTIMA_JOB_STORE=redis` is selected).
+- A Redis instance reachable from the Job pod (same namespace Service recommended, e.g. `redis.spark-optima.svc.cluster.local:6379`).
+- A PVC-backed `spark-optima-data` claim for result persistence.
+
+### Monitoring the Job
+
+```bash
+# Job status
+kubectl get jobs -n spark-optima -l app.kubernetes.io/component=optimization-job
+
+# Pod logs
+kubectl logs -n spark-optima job/spark-optima-optimization
+
+# Results file (via PVC)
+kubectl exec -n spark-optima -l app.kubernetes.io/component=optimization-job -- cat /app/data/results/optimization_result.json
+```
+
+### Integration with async API
+
+When both the API (`SPARK_OPTIMA_JOB_STORE=redis`) and the optimization Job (`SPARK_OPTIMA_JOB_STORE=redis`, same `SPARK_OPTIMA_REDIS_URL`) are configured with the same Redis instance:
+
+- A Job submitted via `POST /api/v1/optimize/async` writes its state to Redis.
+- The Kubernetes Job can read/update that state independently.
+- Platform teams can submit jobs through the REST API and monitor them through standard Kubernetes Job resources (`kubectl`), without requiring sticky sessions or single-replica constraints.
+
+See `docs/user-guide/k8s-job-runner.md` for the full platform-team guide.
+
 ## 📞 Support
 
 For issues and questions:
