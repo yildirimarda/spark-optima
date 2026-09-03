@@ -60,6 +60,7 @@ class TrialRunner:
         max_consecutive_failures: int | None = None,
         platform: str = "local",
         spark_version: str = "default",
+        spark_connect_url: str | None = None,
     ) -> None:
         """Initialize the trial runner.
 
@@ -71,6 +72,7 @@ class TrialRunner:
             max_consecutive_failures: Stop after N consecutive failures (default: 10).
             platform: Platform identifier, used for surrogate model persistence naming.
             spark_version: Spark version, used for surrogate model persistence naming.
+            spark_connect_url: Remote Spark Connect endpoint URL for execution mode.
 
         Raises:
             ValueError: If mode is invalid.
@@ -92,7 +94,7 @@ class TrialRunner:
 
         if mode == "execution" and self._execution_engine is None:
             try:
-                self._execution_engine = ExecutionEngine(use_docker=True)
+                self._execution_engine = ExecutionEngine(use_docker=True, spark_connect_url=spark_connect_url)
             except RuntimeError as e:
                 logger.warning(f"Execution engine not available: {e}")
 
@@ -267,16 +269,19 @@ class ExecutionRunner(TrialRunner):
         self,
         spark_session: Any | None = None,
         timeout_seconds: float = 3600,
+        spark_connect_url: str | None = None,
     ) -> None:
         """Initialize the execution runner.
 
         Args:
             spark_session: Optional Spark session to use.
             timeout_seconds: Maximum trial execution time.
+            spark_connect_url: Remote Spark Connect endpoint URL for execution.
 
         """
-        super().__init__(mode="execution", timeout_seconds=timeout_seconds)
+        super().__init__(mode="execution", timeout_seconds=timeout_seconds, spark_connect_url=spark_connect_url)
         self.spark_session = spark_session
+        self.spark_connect_url = spark_connect_url
         self.enable_monitoring = False
         self._simulation_model = SimulationModel()
 
@@ -331,7 +336,7 @@ class ExecutionRunner(TrialRunner):
 
         # Try to execute with Spark
         try:
-            spark_runner = SparkRunner()
+            spark_runner = SparkRunner(spark_connect_url=self.spark_connect_url)
             result = spark_runner.execute_code(
                 code=code or "",
                 config=config,

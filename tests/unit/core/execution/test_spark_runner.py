@@ -816,3 +816,54 @@ class TestSparkRunnerExecuteFileEdgeCases:
         )
 
         assert any("Invalid numeric value" in e for e in errors)
+
+
+class TestSparkConnectSupport:
+    """Tests for remote Spark Connect endpoint support."""
+
+    @patch("spark_optima.core.execution.spark_runner.SparkSession")
+    def test_build_session_uses_remote_when_connect_url_set(self, mock_spark_class):
+        """Test that _build_session calls .remote() when spark_connect_url is configured."""
+        from spark_optima.core.execution.spark_runner import SparkRunner
+
+        mock_spark = MagicMock()
+        mock_spark.version = "4.1.0"
+        mock_spark.sparkContext.uiWebUrl = "http://localhost:4040"
+
+        # Mock the builder chain: appName -> remote -> config -> getOrCreate
+        remote_builder = MagicMock()
+        remote_builder.config.return_value = remote_builder
+        remote_builder.getOrCreate.return_value = mock_spark
+
+        app_builder = MagicMock()
+        app_builder.remote.return_value = remote_builder
+
+        mock_spark_class.builder.appName.return_value = app_builder
+
+        runner = SparkRunner(use_docker=False, spark_connect_url="sc://remote:15002")
+        session = runner._build_session(config={}, resource_spec=None)
+
+        assert session == mock_spark
+        mock_spark_class.builder.appName.assert_called_once()
+        # remote should have been called on the builder returned by appName
+        app_builder = mock_spark_class.builder.appName.return_value
+        app_builder.remote.assert_called_once_with("sc://remote:15002")
+        # master() should NOT be called when remote is configured
+        mock_spark_class.builder.master.assert_not_called()
+
+    def test_runner_reads_connect_url_from_environment(self):
+        """Test that SparkRunner picks up SPARK_CONNECT_URL from env."""
+        import os
+
+        from spark_optima.core.execution.spark_runner import SparkRunner
+
+        original = os.environ.get("SPARK_CONNECT_URL")
+        try:
+            os.environ["SPARK_CONNECT_URL"] = "sc://env-host:15002"
+            runner = SparkRunner(use_docker=False)
+            assert runner.remote_url == "sc://env-host:15002"
+        finally:
+            if original is None:
+                os.environ.pop("SPARK_CONNECT_URL", None)
+            else:
+                os.environ["SPARK_CONNECT_URL"] = original

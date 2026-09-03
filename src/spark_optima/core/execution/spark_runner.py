@@ -155,6 +155,7 @@ class SparkRunner:
         log_level: str = "WARN",
         docker_image: str = "spark-optima:latest",
         use_docker: bool = False,
+        spark_connect_url: str | None = None,
     ) -> None:
         """Initialize the Spark runner.
 
@@ -165,6 +166,8 @@ class SparkRunner:
             docker_image: Docker image to use for isolated execution.
             use_docker: If True, use Docker for isolated execution.
                 If False, run locally (default: False).
+            spark_connect_url: Remote Spark Connect endpoint URL (e.g. sc://host:port).
+                When set, the session connects remotely instead of using local master.
 
         Raises:
             RuntimeError: If Docker is required but not available.
@@ -173,6 +176,7 @@ class SparkRunner:
         self.app_name = app_name
         self.master = master
         self.log_level = log_level
+        self.remote_url = spark_connect_url or os.environ.get("SPARK_CONNECT_URL")
         self._docker_image = docker_image
         self._use_docker = use_docker
 
@@ -268,7 +272,10 @@ class SparkRunner:
             Configured SparkSession.
 
         """
-        builder = SparkSession.builder.appName(self.app_name).master(self.master)
+        if self.remote_url:
+            builder = SparkSession.builder.appName(self.app_name).remote(self.remote_url)
+        else:
+            builder = SparkSession.builder.appName(self.app_name).master(self.master)
 
         # Apply configuration
         config = config or {}

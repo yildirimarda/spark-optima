@@ -69,6 +69,7 @@ class Optimizer:
         platform: str,
         spark_version: str = "3.5.0",
         optimization_mode: str = "simulation",
+        spark_connect_url: str | None = None,
     ) -> None:
         """Initialize the optimizer.
 
@@ -76,6 +77,8 @@ class Optimizer:
             platform: Target platform (local, databricks, aws_glue, azure_synapse).
             spark_version: Spark version to optimize for.
             optimization_mode: Either "simulation" or "execution".
+            spark_connect_url: Remote Spark Connect endpoint URL (e.g. sc://host:port).
+                Used when optimization_mode is "execution" to connect to a remote Spark cluster.
 
         Raises:
             ValueError: If platform or optimization_mode is invalid.
@@ -100,6 +103,7 @@ class Optimizer:
         self.platform = platform
         self.spark_version = spark_version
         self.optimization_mode = optimization_mode
+        self.spark_connect_url = spark_connect_url
 
         # Initialize configuration database
         self.config_database = ConfigDatabase()
@@ -294,6 +298,7 @@ class Optimizer:
             code_path=code_path,
             platform=self.platform,
             spark_version=self.spark_version,
+            spark_connect_url=self.spark_connect_url,
         )
 
         # Run optimization
