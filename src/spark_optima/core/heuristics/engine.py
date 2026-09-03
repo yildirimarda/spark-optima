@@ -239,6 +239,7 @@ class HeuristicEngine:
                     continue
 
                 # Evaluate operand
+                operand: Any = None
                 try:
                     # Try numeric evaluation first
                     operand = float(operand_str) if "." in operand_str else int(operand_str)
