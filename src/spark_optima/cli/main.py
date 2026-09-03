@@ -707,8 +707,8 @@ def analyze_log(
         hints_table = Table(title="Tuning Hints")
         hints_table.add_column("Finding", style="yellow")
         hints_table.add_column("Advice", style="green")
-        for finding, recommendation in advice:
-            hints_table.add_row(finding, recommendation)
+        for finding_text, recommendation in advice:
+            hints_table.add_row(finding_text, recommendation)
         console.print(hints_table)
     else:
         console.print("[green]No obvious bottlenecks detected in this run.[/green]")
