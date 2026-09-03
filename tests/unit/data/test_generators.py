@@ -1538,6 +1538,15 @@ class TestPySparkImportFailure:
 class TestGenerateValueEdgeCases:
     """Additional tests for _generate_value edge cases."""
 
+    def test_generate_value_deterministic_with_config_seed(self) -> None:
+        """_generate_value must be deterministic from config.random_seed alone."""
+        generator = DataGenerator()
+        col = ColumnSpec(name="test", data_type="int", min_value=1, max_value=100)
+        config = DataGeneratorConfig(random_seed=99, null_ratio=0.0)
+        value1 = generator._generate_value(col, config)
+        value2 = generator._generate_value(col, config)
+        assert value1 == value2
+
     def test_generate_value_boolean_type(self) -> None:
         """Test generating boolean values specifically."""
         generator = DataGenerator()
