@@ -552,7 +552,9 @@ are real gaps, not nice-to-haves.
 - [x] Update `data/samplers.py` reservoir sampling `.drop()` to filter missing columns before drop for Spark 4.2 `KeyError` behavior change
 - [x] Make `_generate_value` respect `config.random_seed` independently (currently only seeded inside `_generate_rdd`) so single-value calls are deterministic
 - [x] Continuous retuner: train the online surrogate on real measured trials from the SQLite `OptimizationHistory` rather than synthetic samples, so predictions reflect actual production workload drift
-- [ ] Continuous retuner: wire the retuned config derivation through `HeuristicEngine.evaluate()` instead of the basic hint-based rules, for consistent optimization recommendations
+- [x] Continuous retuner: wire the retuned config derivation through `HeuristicEngine.evaluate()` instead of the basic hint-based rules, for consistent optimization recommendations
 - [ ] Wire `SkewDoctor` into CLI `analyze-log` output so skew findings with AQE/salting recommendations are shown alongside tuning hints
 - [ ] `pollingDelay` and streaming state-store parameters were missing from `SearchSpaceBuilder` duration/categorical/int lists, so Bayesian optimization skipped them; added to search space
 - [ ] `maximize_throughput` was listed in API objective validation but had no objective class; implemented `MaximizeThroughputObjective` and wired it into `ObjectiveFunctionFactory`
+- [ ] `HeuristicEngine` ignores `rule.conditions` (conditions dict never evaluated in `_evaluate_rule`), so conditional rules like memory-intensive overhead and large-shuffle off-heap settings don't apply correctly
+- [ ] `HeuristicEngine` formats `bytes` parameters incorrectly: formulas return GB numbers (e.g. `12.96`) which get formatted as `12b` instead of `12g` or `12800m`

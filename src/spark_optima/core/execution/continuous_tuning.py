@@ -18,10 +18,14 @@ from typing import Any
 
 from spark_optima.core.execution.event_log import EventLogSummary
 from spark_optima.core.execution.history_server import HistoryServerClient, HistoryServerError
+from spark_optima.core.heuristics.context import DataProfile
+from spark_optima.core.heuristics.engine import HeuristicEngine
 from spark_optima.core.history import OptimizationHistory
 from spark_optima.core.simulation.predictor import (
     extract_features,
+    parse_memory_gb,
 )
+from spark_optima.platforms.models import ResourceSpec
 
 logger = logging.getLogger(__name__)
 
@@ -120,22 +124,43 @@ class ContinuousRetuner:
         return significant_shift or gc_shift
 
     def _recommended_config_from_hints(self, hints: dict[str, Any], base_config: dict[str, Any]) -> dict[str, Any]:
-        """Derive a retuned config from tuning hints."""
-        retuned = base_config.copy()
-        if hints.get("large_shuffles"):
-            retuned["spark.sql.shuffle.partitions"] = max(
-                int(retuned.get("spark.sql.shuffle.partitions", 200)) * 2,
-                400,
-            )
-        if hints.get("gc_pressure") or hints.get("memory_intensive"):
-            current_mem = retuned.get("spark.executor.memory", "4g")
-            from spark_optima.core.simulation.predictor import parse_memory_gb
+        """Derive a retuned config from tuning hints via HeuristicEngine."""
+        # Derive resource spec from base_config when available; fall back to defaults
+        cpu_cores = 4
+        try:
+            cpu_cores = int(str(base_config.get("spark.executor.cores", "4")).replace(" ", ""))
+        except (ValueError, TypeError):
+            cpu_cores = 4
 
-            mem_gb = parse_memory_gb(current_mem, default=4.0)
-            retuned["spark.executor.memory"] = f"{max(mem_gb * 1.25, 4.0):.1f}g"
-        if hints.get("skew_factor", 1.0) > 1.5:
-            retuned["spark.sql.adaptive.skewJoin.enabled"] = "true"
-        return retuned
+        mem_str = base_config.get("spark.executor.memory", "4g")
+        try:
+            mem_gb = parse_memory_gb(mem_str, default=4.0)
+        except Exception:
+            mem_gb = 4.0
+
+        # Use a rough total memory estimate (executor memory * 4) for heuristics
+        resources = ResourceSpec(cpu_cores=cpu_cores, memory_gb=max(mem_gb * 4, 8.0))
+
+        # Derive platform and version from base_config or defaults
+        platform = base_config.get("platform", "local")
+        version = base_config.get("spark_version", "3.5.0")
+
+        data_profile = DataProfile(size_gb=hints.get("data_size_gb", 10.0))
+        custom_vars = dict(hints)
+
+        engine = HeuristicEngine()
+        retuned = engine.evaluate(
+            resources=resources,
+            platform=platform,
+            spark_version=version,
+            data_profile=data_profile,
+            custom_vars=custom_vars,
+        )
+
+        # Merge engine recommendations over the base config for consistent recommendations
+        result = base_config.copy()
+        result.update(retuned)
+        return result
 
     def generate_report(
         self,
