@@ -5,6 +5,21 @@ All notable changes to the Spark Optima project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/yildirimarda/spark-optima/compare/v0.3.1...v0.4.0) (2026-09-03)
+
+
+### Features
+
+* continuous retuning from production history with history server polling ([#24](https://github.com/yildirimarda/spark-optima/issues/24)) ([b949ee4](https://github.com/yildirimarda/spark-optima/commit/b949ee4c4e525fab5ecc6fe3312cb3630bd3da37))
+* dynamic allocation advisor with executor timeline reconstruction ([#25](https://github.com/yildirimarda/spark-optima/issues/25)) ([ddacb5b](https://github.com/yildirimarda/spark-optima/commit/ddacb5ba25550e7218b40707b3ab59dcc1fa2b44))
+* skew doctor cross-references event-log skew with code analysis ([#26](https://github.com/yildirimarda/spark-optima/issues/26)) ([f585da6](https://github.com/yildirimarda/spark-optima/commit/f585da6f4d5e17215cdce2e3c662d474b2bedeb2))
+* structured streaming tuning mode with latency/throughput objectives and extended template ([#27](https://github.com/yildirimarda/spark-optima/issues/27)) ([e35a870](https://github.com/yildirimarda/spark-optima/commit/e35a87054feac7736d01181d5735ea4e88a97f84))
+
+
+### Bug Fixes
+
+* **ci:** open release PRs with a PAT so their checks run without maintainer approval ([393aa65](https://github.com/yildirimarda/spark-optima/commit/393aa65591e1e3ec5a261e05a4878a793e5af217))
+
 ## [0.3.1](https://github.com/yildirimarda/spark-optima/compare/v0.3.0...v0.3.1) (2026-08-31)
 
 
