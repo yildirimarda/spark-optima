@@ -550,7 +550,7 @@ are real gaps, not nice-to-haves.
 
 - [x] Fix `metrics_collector.py` to gracefully handle Spark 4.x removal of `sc.getExecutorMemoryStatus()` (currently relies on `hasattr` check, but should explicitly guard against AttributeError for 4.x compatibility)
 - [x] Update `data/samplers.py` reservoir sampling `.drop()` to filter missing columns before drop for Spark 4.2 `KeyError` behavior change
-- [ ] Make `_generate_value` respect `config.random_seed` independently (currently only seeded inside `_generate_rdd`) so single-value calls are deterministic
+- [x] Make `_generate_value` respect `config.random_seed` independently (currently only seeded inside `_generate_rdd`) so single-value calls are deterministic
 - [ ] Continuous retuner: train the online surrogate on real measured trials from the SQLite `OptimizationHistory` rather than synthetic samples, so predictions reflect actual production workload drift
 - [ ] Continuous retuner: wire the retuned config derivation through `HeuristicEngine.evaluate()` instead of the basic hint-based rules, for consistent optimization recommendations
 - [ ] Wire `SkewDoctor` into CLI `analyze-log` output so skew findings with AQE/salting recommendations are shown alongside tuning hints
