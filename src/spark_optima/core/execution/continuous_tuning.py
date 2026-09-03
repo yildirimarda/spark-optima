@@ -18,6 +18,7 @@ from typing import Any
 
 from spark_optima.core.execution.event_log import EventLogSummary
 from spark_optima.core.execution.history_server import HistoryServerClient, HistoryServerError
+from spark_optima.core.history import OptimizationHistory
 from spark_optima.core.simulation.predictor import (
     extract_features,
 )
@@ -162,15 +163,29 @@ class ContinuousRetuner:
         predicted_recommended = 0.0
 
         if predictor is not None and hasattr(predictor, "add_sample"):
-            # Train a minimal online surrogate with synthetic samples
-            # derived from original and retuned profiles
+            # Train the online surrogate on real measured trials from SQLite
+            # OptimizationHistory rather than synthetic samples, so predictions
+            # reflect actual production workload drift.
             try:
-                # Add synthetic original sample
-                predictor.add_sample(current_features, target_time=600.0, measured=False)
-                # Add synthetic retuned sample (assume 20% faster when retuned)
-                predictor.add_sample(retuned_features, target_time=480.0, measured=False)
-                # Train if enough samples
-                result = predictor.train_online(min_samples=2)
+                with OptimizationHistory() as history:
+                    entries = history.list_entries(limit=500)
+                    for entry in entries:
+                        # Only use execution-mode entries as real measured trials
+                        if entry.mode != "execution":
+                            continue
+                        config = entry.configuration or {}
+                        result = entry.result or {}
+                        # Derive a basic data profile from result metadata or defaults
+                        data_profile = result.get("metadata", {}) or {}
+                        if not isinstance(data_profile, dict) or not data_profile.get("size_gb"):
+                            data_profile = {"size_gb": hints.get("data_size_gb", 10.0)}
+                        features = extract_features(config, data_profile)
+                        # Convert estimated minutes to seconds for training target
+                        target_seconds = float(entry.estimated_time_minutes or 0.0) * 60.0
+                        if target_seconds > 0:
+                            predictor.add_sample(features, target_time=target_seconds, measured=True)
+                # Train if enough real samples accumulated
+                result = predictor.train_online(min_samples=4)
                 if result.get("trained"):
                     pred_current = predictor.predict_online(current_features)
                     pred_recommended = predictor.predict_online(retuned_features)
