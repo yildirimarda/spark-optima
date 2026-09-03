@@ -57,6 +57,24 @@ api:
             topologyKey: topology.kubernetes.io/zone
 
 # =============================================================================
+# Optimization Job (K8s Job runner for API) — Production
+# =============================================================================
+optimizationJob:
+  enabled: true  # Enable optimization Job in production
+  platform: "kubernetes"
+  sparkVersion: "3.5.0"
+  maxTrials: 100
+  timeoutMinutes: 60
+  redisUrl: "redis://redis.spark-optima.svc.cluster.local:6379/0"
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+# =============================================================================
 # CLI Jobs - Production
 # =============================================================================
 cli:
